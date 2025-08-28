@@ -16,7 +16,8 @@ dependencies = [
     "networkx",
     "pandas",
     "plotly",
-    "graphviz"
+    "graphviz",
+    "pyyaml"
 ]
 license = {text = "MIT"}
 keywords = ["EnergyPlus", "MCP", "server"]

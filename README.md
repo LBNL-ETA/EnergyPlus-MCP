@@ -21,11 +21,13 @@ A Model Context Protocol (MCP) server that provides **35 comprehensive tools** f
       - [Docker Setup](#docker-setup)
       - [Local Development](#local-development)
   - [Available Tools](#available-tools)
-    - [🗂️ Model Config \& Loading (9 tools)](#️-model-config--loading-9-tools)
-    - [🔍 Model Inspection (Aggregated)](#-model-inspection-aggregated)
-    - [⚙️ Model Modification (Aggregated)](#️-model-modification-aggregated)
-    - [🚀 Simulation \& Results (4 tools)](#-simulation--results-4-tools)
-    - [🖥️ Server Management (5 tools)](#️-server-management-5-tools)
+    - [🔍 Inspection](#-inspection)
+    - [⚙️ Modification](#️-modification)
+    - [✅ Preflight](#-preflight)
+    - [🚀 Simulation](#-simulation)
+    - [📊 Post-Processing](#-post-processing)
+    - [🗂️ Files](#️-files)
+    - [🖥️ Server Management](#️-server-management)
     - [Tool Exposure Flags](#tool-exposure-flags)
   - [Usage Examples](#usage-examples)
     - [Basic Workflow](#basic-workflow)
@@ -247,19 +249,26 @@ Use the unified tools first; expose individual wrappers via env flags only when 
   - Actions: `run | update_settings | update_run_period | status | capabilities`
   - Wrappers (optional): `run_simulation`, `run_energyplus_simulation` (deprecated), `modify_simulation_control`, `modify_run_period`
 
+### 📊 Post-Processing
+- `post_processing`
+  - Actions: `interactive_plot | capabilities`
+  - Wrappers (optional): `create_interactive_plot`
+
+### 🧩 Domain Managers (optional)
+- `envelope_manager` — Inspect/modify envelope (surfaces, materials; infiltration.scale, window film, coating)
+- `internal_load_manager` — Inspect/modify people/lights/electric equipment
+- `hvac_manager` — Discover/topology/visualize HVAC loops
+- `outputs_manager` — List or add output variables/meters (with discovery)
+
 ### 🗂️ Files
 - `file_utils`
   - Actions: `list` (sample/example/weather), `copy` (with dry_run/apply)
   - Wrappers (optional): `list_available_files`, `copy_file`
 
 ### 🖥️ Server Management
-- `server_housekeeping`
+- `server_manager`
   - Actions: `status` (optionally include_config), `logs` (server/error/both, filters), `clear_logs` (dry_run/apply)
   - Wrappers (optional): `get_server_status`, `get_server_logs`, `get_error_logs`, `clear_logs`
-
-### 🚀 Lifecycle & Results
-- `load_idf_model`, `validate_idf`
-- `create_interactive_plot`
 
 ### Tool Exposure Flags
 
@@ -272,8 +281,11 @@ Use the unified tools first; expose individual wrappers via env flags only when 
 - `MCP_EXPOSE_FILE_WRAPPERS=true` — Expose legacy file wrappers (`list_available_files`, `copy_file`).
 - `MCP_EXPOSE_SIM_WRAPPERS=true` — Expose simulation wrappers (`run_simulation`, legacy `run_energyplus_simulation`, `modify_simulation_control`, `modify_run_period`).
 - `MCP_EXPOSE_MODEL_WRAPPERS=true` — Expose model preflight wrappers (`load_idf_model`, `validate_idf`).
+- `MCP_EXPOSE_POST_WRAPPERS=true` — Expose post-processing wrappers (`create_interactive_plot`).
+- `MCP_EXPOSE_DOMAIN_MANAGERS=true` — Expose domain manager tools (`envelope_manager`, `internal_load_manager`, `hvac_manager`).
+  - Controlled via YAML too: `tool_surface.mode: domains|hybrid`; per-domain toggles under `tool_surface.domains.*`.
 
-By default, unified tools are exposed (`inspect_model`, `get_outputs`, `modify_basic_parameters`, `simulation_manager`, `server_housekeeping`, `hvac_loop_inspect`, `file_utils`, `create_interactive_plot`). Enable thin wrappers via the flags above as needed.
+By default, unified tools are exposed (`inspect_model`, `get_outputs`, `model_preflight`, `modify_basic_parameters`, `simulation_manager`, `server_manager`, `hvac_loop_inspect`, `file_utils`, `post_processing`). Enable thin wrappers via the flags above as needed.
 
 ## Usage Examples
 
@@ -315,8 +327,9 @@ By default, unified tools are exposed (`inspect_model`, `get_outputs`, `modify_b
 4. **Create visualization**:
    ```json
    {
-     "tool": "create_interactive_plot",
+     "tool": "post_processing",
      "arguments": {
+       "action": "interactive_plot",
        "output_directory": "outputs/1ZoneUncontrolled",
        "file_type": "variable"
      }
@@ -405,7 +418,7 @@ By default, unified tools are exposed (`inspect_model`, `get_outputs`, `modify_b
 **Housekeeping: Status**
 ```json
 {
-  "tool": "server_housekeeping",
+  "tool": "server_manager",
   "arguments": { "action": "status" }
 }
 ```
@@ -413,7 +426,7 @@ By default, unified tools are exposed (`inspect_model`, `get_outputs`, `modify_b
 **Housekeeping: Error Logs (raw)**
 ```json
 {
-  "tool": "server_housekeeping",
+  "tool": "server_manager",
   "arguments": { "action": "logs", "type": "error", "lines": 100, "format": "raw" }
 }
 ```
@@ -421,7 +434,7 @@ By default, unified tools are exposed (`inspect_model`, `get_outputs`, `modify_b
 **Housekeeping: Rotate Logs (dry-run)**
 ```json
 {
-  "tool": "server_housekeeping",
+  "tool": "server_manager",
   "arguments": { "action": "clear_logs", "mode": "dry_run" }
 }
 ```
@@ -564,3 +577,65 @@ The server auto-detects EnergyPlus installation and uses sensible defaults. Conf
 ## License
 
 See [LICENSE](License.txt) file for details.
+**Outputs via Domain Manager**
+```json
+{
+  "tool": "outputs_manager",
+  "arguments": {
+    "action": "list",
+    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "type": "both",
+    "discover_available": true,
+    "run_days": 1
+  }
+}
+```
+## Tool Surface Profiles (config.yaml)
+
+You can control how tools are presented via `config.yaml` (default path `energyplus-mcp-server/config.yaml`, override with `MCP_CONFIG_PATH`). The server loads this on startup to decide which tool groups to register.
+
+- Location: `energyplus-mcp-server/config.yaml` (checked first), or path in `MCP_CONFIG_PATH`.
+- Parser: requires `pyyaml` (included in dependencies). If missing, the server falls back to env flags and logs a note.
+- Restart required after edits.
+
+Schema (minimal):
+```yaml
+tool_surface:
+  mode: masters | domains | hybrid
+  enable_wrappers: true | false   # optional, overrides all wrapper flags
+  domains:                        # optional fine-grained controls
+    envelope: true | false
+    internal_loads: true | false
+    hvac: true | false
+    outputs: true | false
+```
+
+Profiles
+- Masters (default):
+```yaml
+tool_surface:
+  mode: masters
+  enable_wrappers: false
+```
+
+- Domains-only (all domains):
+```yaml
+tool_surface:
+  mode: domains
+  domains:
+    envelope: true
+    internal_loads: true
+    hvac: true
+    outputs: true
+```
+
+- Hybrid (both):
+```yaml
+tool_surface:
+  mode: hybrid
+  enable_wrappers: false
+  domains:
+    outputs: true
+```
+
+Env flags remain supported and act as defaults when YAML is absent. YAML, if present, takes precedence for mode and global wrapper exposure.

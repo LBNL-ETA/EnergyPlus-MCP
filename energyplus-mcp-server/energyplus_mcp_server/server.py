@@ -16,11 +16,42 @@ from mcp.server.fastmcp import FastMCP
 # Import our EnergyPlus utilities and configuration
 from energyplus_mcp_server.energyplus_tools import EnergyPlusManager
 from energyplus_mcp_server.config import get_config, Config
+from energyplus_mcp_server.domains import register_all as register_domain_managers
+from energyplus_mcp_server.tools import register_all as register_master_tools
 
 logger = logging.getLogger(__name__)
 
 # Initialize configuration and set up logging
 config = get_config()
+
+# Optional YAML tool-surface config
+def _load_tool_surface_config() -> Dict[str, Any]:
+    cfg: Dict[str, Any] = {
+        "mode": None,
+        "enable_wrappers": None,
+        "domains": {"envelope": None, "internal_loads": None, "hvac": None},
+    }
+    path = os.getenv("MCP_CONFIG_PATH") or str(Path(config.paths.workspace_root) / "config.yaml")
+    try:
+        import yaml  # type: ignore
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                data = yaml.safe_load(f) or {}
+            ts = (data or {}).get("tool_surface", {})
+            cfg["mode"] = ts.get("mode")
+            cfg["enable_wrappers"] = ts.get("enable_wrappers")
+            doms = ts.get("domains", {}) or {}
+            cfg["domains"]["envelope"] = doms.get("envelope")
+            cfg["domains"]["internal_loads"] = doms.get("internal_loads")
+            cfg["domains"]["hvac"] = doms.get("hvac")
+            logger.info(f"Loaded tool_surface config from {path}: {cfg}")
+        else:
+            logger.info(f"Tool surface config not found at {path}; using defaults/env flags")
+    except Exception as e:
+        logger.info(f"YAML not available or failed to parse ({e}); using defaults/env flags")
+    return cfg
+
+tool_surface_cfg = _load_tool_surface_config()
 
 # Initialize the FastMCP server with configuration
 mcp = FastMCP(config.server.name)
@@ -35,63 +66,71 @@ EXPOSE_HVAC_WRAPPERS = os.getenv("MCP_EXPOSE_HVAC_WRAPPERS", "false").lower() in
 EXPOSE_FILE_WRAPPERS = os.getenv("MCP_EXPOSE_FILE_WRAPPERS", "false").lower() in ("1", "true", "yes")
 # Model wrapper exposure (load/validate wrappers)
 EXPOSE_MODEL_WRAPPERS = os.getenv("MCP_EXPOSE_MODEL_WRAPPERS", "false").lower() in ("1", "true", "yes")
+# Post-processing wrapper exposure
+EXPOSE_POST_WRAPPERS = os.getenv("MCP_EXPOSE_POST_WRAPPERS", "false").lower() in ("1", "true", "yes")
+# Domain managers and masters exposure (default masters on, domains via config or env)
+EXPOSE_DOMAIN_MANAGERS = os.getenv("MCP_EXPOSE_DOMAIN_MANAGERS", "false").lower() in ("1", "true", "yes")
+EXPOSE_MASTERS = os.getenv("MCP_EXPOSE_MASTERS", "true").lower() in ("1", "true", "yes")
+
+def _apply_tool_surface_overrides() -> None:
+    global EXPOSE_DOMAIN_MANAGERS, EXPOSE_MASTERS
+    global EXPOSE_INSPECT_WRAPPERS, EXPOSE_OUTPUT_WRAPPERS, EXPOSE_SUMMARY_WRAPPER
+    global EXPOSE_MODIFY_WRAPPERS, EXPOSE_SERVER_WRAPPERS, EXPOSE_HVAC_WRAPPERS
+    global EXPOSE_FILE_WRAPPERS, EXPOSE_MODEL_WRAPPERS, EXPOSE_POST_WRAPPERS
+
+    mode = (tool_surface_cfg.get("mode") or "").lower()
+    if mode in ("masters", "domains", "hybrid"):
+        EXPOSE_MASTERS = mode in ("masters", "hybrid")
+        EXPOSE_DOMAIN_MANAGERS = mode in ("domains", "hybrid")
+        logger.info(f"Tool surface mode='{mode}' => masters={EXPOSE_MASTERS}, domains={EXPOSE_DOMAIN_MANAGERS}")
+    ew = tool_surface_cfg.get("enable_wrappers")
+    if isinstance(ew, bool):
+        EXPOSE_INSPECT_WRAPPERS = ew
+        EXPOSE_OUTPUT_WRAPPERS = ew
+        EXPOSE_SUMMARY_WRAPPER = ew
+        EXPOSE_MODIFY_WRAPPERS = ew
+        EXPOSE_SERVER_WRAPPERS = ew
+        EXPOSE_HVAC_WRAPPERS = ew
+        EXPOSE_FILE_WRAPPERS = ew
+        EXPOSE_MODEL_WRAPPERS = ew
+        EXPOSE_POST_WRAPPERS = ew
+        logger.info(f"Wrapper exposure overridden by config: {ew}")
+
+_apply_tool_surface_overrides()
 # Simulation wrapper exposure (run/modify wrappers)
 EXPOSE_SIM_WRAPPERS = os.getenv("MCP_EXPOSE_SIM_WRAPPERS", "false").lower() in ("1", "true", "yes")
 
 def expose_inspect_tool():
-    """Decorator factory: expose inspect wrappers only when enabled.
-    Falls back to a no-op decorator when wrappers should be hidden.
-    """
-    if EXPOSE_INSPECT_WRAPPERS:
-        return mcp.tool()
     def _noop(func):
         return func
     return _noop
 
 def expose_output_tool():
-    """Decorator factory: expose output wrappers only when enabled."""
-    if EXPOSE_OUTPUT_WRAPPERS:
-        return mcp.tool()
     def _noop(func):
         return func
     return _noop
 
 def expose_summary_tool():
-    """Decorator factory: expose model summary wrapper only when enabled."""
-    if EXPOSE_SUMMARY_WRAPPER:
-        return mcp.tool()
     def _noop(func):
         return func
     return _noop
 
 def expose_modify_tool():
-    """Decorator factory: expose legacy modify_* wrappers only when enabled."""
-    if EXPOSE_MODIFY_WRAPPERS:
-        return mcp.tool()
     def _noop(func):
         return func
     return _noop
 
 def expose_server_tool():
-    """Decorator factory: expose legacy server wrappers only when enabled."""
-    if EXPOSE_SERVER_WRAPPERS:
-        return mcp.tool()
     def _noop(func):
         return func
     return _noop
 
 def expose_hvac_tool():
-    """Decorator factory: expose legacy HVAC loop wrappers only when enabled."""
-    if EXPOSE_HVAC_WRAPPERS:
-        return mcp.tool()
     def _noop(func):
         return func
     return _noop
 
 def expose_file_tool():
-    """Decorator factory: expose legacy file utils wrappers only when enabled."""
-    if EXPOSE_FILE_WRAPPERS:
-        return mcp.tool()
     def _noop(func):
         return func
     return _noop
@@ -105,9 +144,16 @@ def expose_sim_tool():
     return _noop
 
 def expose_model_tool():
-    """Decorator factory: expose model preflight wrappers only when enabled."""
-    if EXPOSE_MODEL_WRAPPERS:
-        return mcp.tool()
+    def _noop(func):
+        return func
+    return _noop
+
+def expose_post_tool():
+    def _noop(func):
+        return func
+    return _noop
+
+def expose_master_tool():
     def _noop(func):
         return func
     return _noop
@@ -119,123 +165,46 @@ logger.info(f"EnergyPlus MCP Server '{config.server.name}' v{config.server.versi
 # Track startup time for reporting uptime
 STARTUP_TIME = datetime.utcnow()
 
-
-# Add this tool function to server.py
-
-@mcp.tool()
-async def inspect_model(
-    idf_path: str,
-    focus: Optional[List[str]] = None,
-    detail: str = "summary",
-    include_values: bool = False,
-) -> str:
-    """
-    Aggregate inspection over multiple model aspects with one call.
-
-    Args:
-        idf_path: Path to the IDF file.
-        focus: One or more of ["summary","zones","surfaces","materials","schedules","people","lights","electric_equipment"] or ["all"].
-        detail: "summary" or "detailed" (controls verbosity; some inspectors may ignore it).
-        include_values: If true, schedules include time-series values (applies to schedules only).
-
-    Returns:
-        JSON string containing results keyed by focus, plus metadata and per-section errors.
-    """
-    logger.info(
-        f"inspect_model start: idf_path={idf_path}, focus={focus}, detail={detail}, include_values={include_values}"
+# Optionally register domain manager tools
+logger.info("EXPOSE_DOMAIN_MANAGERS=%s EXPOSE_MASTERS=%s", EXPOSE_DOMAIN_MANAGERS, EXPOSE_MASTERS)
+if EXPOSE_DOMAIN_MANAGERS:
+    # Override per-domain toggles via YAML if provided
+    doms = tool_surface_cfg.get("domains") or {}
+    envelope = doms.get("envelope")
+    internal_loads = doms.get("internal_loads")
+    hvac = doms.get("hvac")
+    outputs = doms.get("outputs")
+    register_domain_managers(
+        mcp,
+        ep_manager,
+        config,
+        envelope=True if envelope is None else bool(envelope),
+        internal_loads=True if internal_loads is None else bool(internal_loads),
+        hvac=True if hvac is None else bool(hvac),
+        outputs=True if outputs else False,
     )
+    logger.info("Domain manager tools registered")
+else:
+    logger.info("Domain manager tools not registered (flag disabled)")
 
-    # Normalize and validate focus
-    canonical = {
-        "summary": "summary",
-        "model_summary": "summary",
-        "basics": "summary",
-        "model": "summary",
-        "zones": "zones",
-        "zone": "zones",
-        "surfaces": "surfaces",
-        "surface": "surfaces",
-        "materials": "materials",
-        "material": "materials",
-        "schedules": "schedules",
-        "schedule": "schedules",
-        "people": "people",
-        "occupancy": "people",
-        "lights": "lights",
-        "lighting": "lights",
-        "electric_equipment": "electric_equipment",
-        "equipment": "electric_equipment",
-        "electric-equipment": "electric_equipment",
-        "all": "all",
-    }
+# Register master tools via submodules when requested.
+if EXPOSE_MASTERS:
+    # Prevent local definitions (below) from registering by setting flag false,
+    # and rely on submodule registration instead.
+    EXPOSE_MASTERS = False
+    register_master_tools(mcp, ep_manager, config)
+    # Provide STARTUP_TIME to tools.server for uptime reporting
+    try:
+        from energyplus_mcp_server.tools import server as tools_server
+        tools_server.STARTUP_TIME = STARTUP_TIME
+    except Exception:
+        pass
+    logger.info("Master tools registered via tools/ submodules")
 
-    all_focus = [
-        "summary",
-        "zones",
-        "surfaces",
-        "materials",
-        "schedules",
-        "people",
-        "lights",
-        "electric_equipment",
-    ]
 
-    if not focus or any(canonical.get(x, x) == "all" for x in focus):
-        normalized: List[str] = list(all_focus)
-    else:
-        normalized = []
-        invalid: List[str] = []
-        for item in focus:
-            key = canonical.get(item, item)
-            if key in all_focus:
-                normalized.append(key)
-            else:
-                invalid.append(item)
-        if invalid:
-            msg = f"Invalid focus values: {invalid}. Allowed: {all_focus + ['all']}"
-            logger.warning(msg)
-            return json.dumps({
-                "meta": {"idf_path": idf_path, "detail": detail},
-                "results": {},
-                "errors": {"focus": msg},
-            }, indent=2)
-
-    results: Dict[str, Any] = {}
-    errors: Dict[str, str] = {}
-
-    # Dispatch map to internal helpers (EnergyPlusManager)
-    for section in normalized:
-        try:
-            if section == "summary":
-                results[section] = ep_manager.get_model_basics(idf_path)
-            elif section == "zones":
-                results[section] = ep_manager.list_zones(idf_path)
-            elif section == "surfaces":
-                results[section] = ep_manager.get_surfaces(idf_path)
-            elif section == "materials":
-                results[section] = ep_manager.get_materials(idf_path)
-            elif section == "schedules":
-                results[section] = ep_manager.inspect_schedules(idf_path, include_values)
-            elif section == "people":
-                results[section] = ep_manager.inspect_people(idf_path)
-            elif section == "lights":
-                results[section] = ep_manager.inspect_lights(idf_path)
-            elif section == "electric_equipment":
-                results[section] = ep_manager.inspect_electric_equipment(idf_path)
-        except FileNotFoundError as e:
-            logger.warning(f"File not found during inspect: {idf_path} -> {section}")
-            errors[section] = f"File not found: {str(e)}"
-        except Exception as e:
-            logger.error(f"Error inspecting {section} for {idf_path}: {str(e)}")
-            errors[section] = str(e)
-
-    payload = {
-        "meta": {"idf_path": idf_path, "detail": detail, "focus": normalized},
-        "results": results,
-        "errors": errors,
-    }
-    logger.info("inspect_model complete")
-    return json.dumps(payload, indent=2)
+"""Tools are registered via domains/ and tools/ submodules based on config.yaml.
+This module bootstraps configuration and FastMCP, then registers tool groups.
+"""
 
 @expose_file_tool()
 async def copy_file(source_path: str, target_path: str, overwrite: bool = False, file_types: Optional[List[str]] = None) -> str:
@@ -271,20 +240,11 @@ async def copy_file(source_path: str, target_path: str, overwrite: bool = False,
         # Copy with fuzzy matching (e.g., city name for weather files)
         copy_file("san francisco", "my_weather.epw", file_types=[".epw"])
     """
-    try:
-        logger.info(f"Copying file: '{source_path}' -> '{target_path}' (overwrite={overwrite}, file_types={file_types})")
-        result = ep_manager.copy_file(source_path, target_path, overwrite, file_types)
-        return f"File copy operation completed:\n{result}"
-    except ValueError as e:
-        logger.warning(f"Invalid arguments for copy_file: {str(e)}")
-        return f"Invalid arguments: {str(e)}"
-    except Exception as e:
-        logger.error(f"Unexpected error copying file: {str(e)}")
-        return f"Error copying file: {str(e)}"
+    return json.dumps({"error": "copy_file wrapper removed; use file_utils in tools/"}, indent=2)
 
 
-@mcp.tool()
-async def server_housekeeping(
+@expose_master_tool()
+async def server_manager(
     action: Literal["status", "logs", "clear_logs"],
     include_config: bool = False,
     detail: Literal["summary", "detailed"] = "summary",
@@ -353,7 +313,7 @@ async def server_housekeeping(
 
             return json.dumps({"meta": {"action": action, "detail": detail, "timestamp": now}, "data": data}, indent=2)
         except Exception as e:
-            logger.error(f"server_housekeeping status error: {e}")
+            logger.error(f"server_manager status error: {e}")
             return f"Error getting status: {str(e)}"
 
     if action == "logs":
@@ -413,7 +373,7 @@ async def server_housekeeping(
 
             return json.dumps({"meta": {"action": action, "detail": format, "timestamp": now}, "data": data}, indent=2)
         except Exception as e:
-            logger.error(f"server_housekeeping logs error: {e}")
+            logger.error(f"server_manager logs error: {e}")
             return f"Error getting logs: {str(e)}"
 
     if action == "clear_logs":
@@ -449,13 +409,13 @@ async def server_housekeeping(
                 "data": {"rotated": rotated, "backup_dir": str(log_dir), "message": "Log files rotated"}
             }, indent=2)
         except Exception as e:
-            logger.error(f"server_housekeeping clear_logs error: {e}")
+            logger.error(f"server_manager clear_logs error: {e}")
             return f"Error clearing logs: {str(e)}"
 
     return json.dumps({"error": f"Unknown action '{action}'"}, indent=2)
 
 
-@mcp.tool()
+@expose_master_tool()
 async def hvac_loop_inspect(
     idf_path: str,
     action: Literal["discover", "topology", "visualize"],
@@ -484,7 +444,7 @@ async def hvac_loop_inspect(
     timestamp = datetime.utcnow().isoformat()
     try:
         if action == "discover":
-            loops_json = ep_manager.discover_hvac_loops(idf_path)
+            loops_json = hvac_discover(ep_manager, idf_path)
             try:
                 loops_data = json.loads(loops_json)
             except Exception:
@@ -510,7 +470,7 @@ async def hvac_loop_inspect(
         if action == "topology":
             if not loop_name:
                 return json.dumps({"error": "loop_name is required for action='topology'"}, indent=2)
-            topo_json = ep_manager.get_loop_topology(idf_path, loop_name)
+            topo_json = hvac_topology(ep_manager, idf_path, loop_name)
             try:
                 topo = json.loads(topo_json)
             except Exception:
@@ -520,13 +480,7 @@ async def hvac_loop_inspect(
             return json.dumps(payload, indent=2)
 
         if action == "visualize":
-            viz_json = ep_manager.visualize_loop_diagram(
-                idf_path=idf_path,
-                loop_name=loop_name,
-                output_path=output_path,
-                format=image_format,
-                show_legend=show_legend,
-            )
+            viz_json = hvac_visualize(ep_manager, idf_path, loop_name, output_path, image_format, show_legend)
             try:
                 viz = json.loads(viz_json)
             except Exception:
@@ -554,7 +508,7 @@ async def hvac_loop_inspect(
         return f"Error inspecting HVAC loops: {str(e)}"
 
 
-@mcp.tool()
+@expose_master_tool()
 async def file_utils(
     action: Literal["list", "copy"],
     # list options
@@ -826,35 +780,12 @@ async def modify_basic_parameters(
             continue
 
         try:
-            if op_name == "people.update":
+            if op_name in {"people.update", "lights.update", "electric_equipment.update"}:
                 mods = params.get("modifications") or []
-                resp = ep_manager.modify_people(current_path, mods, None)
-            elif op_name == "lights.update":
-                mods = params.get("modifications") or []
-                resp = ep_manager.modify_lights(current_path, mods, None)
-            elif op_name == "electric_equipment.update":
-                mods = params.get("modifications") or []
-                resp = ep_manager.modify_electric_equipment(current_path, mods, None)
+                resp = modify_internal_loads(ep_manager, current_path, op_name, mods, None)
             # simulation_control.update and run_period.update are handled via simulation_manager
-            elif op_name == "infiltration.scale":
-                mult = float(params.get("mult", 1.0))
-                resp = ep_manager.change_infiltration_by_mult(current_path, mult, None)
-            elif op_name == "envelope.add_window_film":
-                resp = ep_manager.add_window_film_outside(
-                    idf_path=current_path,
-                    u_value=float(params.get("u_value", 4.94)),
-                    shgc=float(params.get("shgc", 0.45)),
-                    visible_transmittance=float(params.get("visible_transmittance", 0.66)),
-                    output_path=None,
-                )
-            elif op_name == "envelope.add_coating":
-                resp = ep_manager.add_coating_outside(
-                    idf_path=current_path,
-                    location=str(params.get("location", "wall")),
-                    solar_abs=float(params.get("solar_abs", 0.4)),
-                    thermal_abs=float(params.get("thermal_abs", 0.9)),
-                    output_path=None,
-                )
+            elif op_name in {"infiltration.scale", "envelope.add_window_film", "envelope.add_coating"}:
+                resp = modify_envelope(ep_manager, current_path, op_name, params, None)
             elif op_name == "outputs.add_variables":
                 resp = ep_manager.add_output_variables(
                     idf_path=current_path,
@@ -922,10 +853,10 @@ async def modify_basic_parameters(
     return json.dumps(payload, indent=2)
 
 
-@mcp.tool()
+@expose_model_tool()
 async def load_idf_model(idf_path: str) -> str:
     """
-    Load and validate an EnergyPlus IDF file
+    Deprecated thin wrapper. Use model_preflight(action="load").
     
     Args:
         idf_path: Path to the IDF file (can be absolute, relative, or just filename for sample files)
@@ -933,7 +864,7 @@ async def load_idf_model(idf_path: str) -> str:
     Returns:
         JSON string with model information and loading status
     """
-    # Deprecated direct tool; use model_preflight(action="load"). Kept for compatibility.
+    # Delegate to unified preflight tool
     return await model_preflight(action="load", idf_path=idf_path)
 
 
@@ -960,7 +891,7 @@ async def get_model_summary(idf_path: str) -> str:
         return f"Error getting model summary for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_master_tool()
 async def model_preflight(
     action: Literal["load", "validate", "info", "resolve_paths", "readiness", "capabilities"],
     idf_path: Optional[str] = None,
@@ -1744,7 +1675,7 @@ async def validate_idf(idf_path: str) -> str:
     return await model_preflight(action="validate", idf_path=idf_path)
 
 
-@mcp.tool()
+@expose_master_tool()
 async def get_outputs(
     idf_path: str,
     type: str = "variables",
@@ -2020,7 +1951,7 @@ async def get_server_configuration() -> str:
     """
     try:
         # Delegate to unified housekeeping tool with detailed config
-        return await server_housekeeping(action="status", include_config=True, detail="detailed")
+        return await server_manager(action="status", include_config=True, detail="detailed")
     except Exception as e:
         logger.error(f"Error getting configuration: {str(e)}")
         return f"Error getting configuration: {str(e)}"
@@ -2036,7 +1967,7 @@ async def get_server_status() -> str:
     """
     try:
         # Delegate to unified tool
-        return await server_housekeeping(action="status")
+        return await server_manager(action="status")
         
     except Exception as e:
         logger.error(f"Error getting server status: {str(e)}")
@@ -2126,7 +2057,7 @@ async def visualize_loop_diagram(
         return f"Error creating loop diagram for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_master_tool()
 async def simulation_manager(
     action: Literal["run", "update_settings", "update_run_period", "status", "capabilities"],
     idf_path: Optional[str] = None,
@@ -2273,6 +2204,50 @@ async def simulation_manager(
         return f"Error in simulation_manager: {str(e)}"
 
 
+# --- Post-processing (unified) ---
+@expose_master_tool()
+async def post_processing(
+    action: Literal["interactive_plot", "capabilities"],
+    output_directory: Optional[str] = None,
+    idf_name: Optional[str] = None,
+    file_type: Literal["auto", "meter", "variable"] = "auto",
+    custom_title: Optional[str] = None,
+) -> str:
+    """
+    Unified post-processing entry point.
+
+    - interactive_plot: Create interactive HTML plot from time-series outputs
+    - capabilities: Enumerate supported actions and parameters
+    """
+    try:
+        if action == "capabilities":
+            return json.dumps({
+                "tool": "post_processing",
+                "actions": [
+                    {
+                        "name": "interactive_plot",
+                        "required": ["output_directory"],
+                        "optional": ["idf_name", "file_type", "custom_title"],
+                    }
+                ]
+            }, indent=2)
+
+        if action == "interactive_plot":
+            if not output_directory:
+                return "Missing required parameter: output_directory"
+            logger.info(f"post_processing.interactive_plot from: {output_directory}")
+            result = ep_manager.create_interactive_plot(output_directory, idf_name, file_type, custom_title)
+            return f"Interactive plot created:\n{result}"
+
+        return f"Unsupported action: {action}"
+    except FileNotFoundError as e:
+        logger.warning(f"Post-processing file not found: {str(e)}")
+        return f"Files not found: {str(e)}"
+    except Exception as e:
+        logger.error(f"post_processing error: {str(e)}")
+        return f"Error in post_processing: {str(e)}"
+
+
 # --- Simulation wrappers (optional exposure) ---
 @expose_sim_tool()
 async def run_simulation(
@@ -2284,17 +2259,7 @@ async def run_simulation(
     readvars: bool = True,
     expandobjects: bool = True,
 ) -> str:
-    """Thin wrapper around simulation_manager(action="run")."""
-    return await simulation_manager(
-        action="run",
-        idf_path=idf_path,
-        weather_file=weather_file,
-        output_directory=output_directory,
-        annual=annual,
-        design_day=design_day,
-        readvars=readvars,
-        expandobjects=expandobjects,
-    )
+    return json.dumps({"error": "run_simulation wrapper removed; use simulation_manager(action='run')"}, indent=2)
 
 
 @expose_sim_tool()
@@ -2307,47 +2272,18 @@ async def run_energyplus_simulation(
     readvars: bool = True,
     expandobjects: bool = True,
 ) -> str:
-    """Deprecated wrapper. Prefer run_simulation or simulation_manager."""
-    return await run_simulation(
-        idf_path=idf_path,
-        weather_file=weather_file,
-        output_directory=output_directory,
-        annual=annual,
-        design_day=design_day,
-        readvars=readvars,
-        expandobjects=expandobjects,
-    )
+    return json.dumps({"error": "Deprecated; use simulation_manager(action='run')"}, indent=2)
 
 
-@mcp.tool()
+@expose_post_tool()
 async def create_interactive_plot(
     output_directory: str,
     idf_name: Optional[str] = None,
     file_type: str = "auto",
     custom_title: Optional[str] = None
 ) -> str:
-    """
-    Create interactive HTML plot from EnergyPlus output files (meter or variable outputs)
-    
-    Args:
-        output_directory: Directory containing the CSV output files from simulation
-        idf_name: Name of the IDF file (without extension). If None, auto-detects from files
-        file_type: Type of file to plot - "meter", "variable", or "auto" (default: auto)
-        custom_title: Custom title for the plot (optional)
-    
-    Returns:
-        JSON string with plot creation results and file path
-    """
-    try:
-        logger.info(f"Creating interactive plot from: {output_directory}")
-        result = ep_manager.create_interactive_plot(output_directory, idf_name, file_type, custom_title)
-        return f"Interactive plot created:\n{result}"
-    except FileNotFoundError as e:
-        logger.warning(f"Output files not found: {str(e)}")
-        return f"Files not found: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error creating interactive plot: {str(e)}")
-        return f"Error creating interactive plot: {str(e)}"
+    """Deprecated wrapper. Prefer post_processing(action="interactive_plot")."""
+    return json.dumps({"error": "create_interactive_plot wrapper removed; use post_processing(action='interactive_plot')"}, indent=2)
 
 
 @expose_server_tool()
@@ -2361,12 +2297,7 @@ async def get_server_logs(lines: int = 50) -> str:
     Returns:
         Recent log entries as text
     """
-    try:
-        return await server_housekeeping(action="logs", type="server", lines=lines, format="summary")
-        
-    except Exception as e:
-        logger.error(f"Error reading server logs: {str(e)}")
-        return f"Error reading server logs: {str(e)}"
+    return json.dumps({"error": "get_server_logs wrapper removed; use server_manager(action='logs')"}, indent=2)
 
 
 @expose_server_tool()
@@ -2380,12 +2311,7 @@ async def get_error_logs(lines: int = 20) -> str:
     Returns:
         Recent error log entries as text
     """
-    try:
-        return await server_housekeeping(action="logs", type="error", lines=lines, format="summary")
-        
-    except Exception as e:
-        logger.error(f"Error reading error logs: {str(e)}")
-        return f"Error reading error logs: {str(e)}"
+    return json.dumps({"error": "get_error_logs wrapper removed; use server_manager(action='logs', type='error')"}, indent=2)
 
 
 @expose_server_tool()
@@ -2396,12 +2322,7 @@ async def clear_logs() -> str:
     Returns:
         Status of log clearing operation
     """
-    try:
-        return await server_housekeeping(action="clear_logs", select="both", mode="apply")
-        
-    except Exception as e:
-        logger.error(f"Error clearing logs: {str(e)}")
-        return f"Error clearing logs: {str(e)}"
+    return json.dumps({"error": "clear_logs wrapper removed; use server_manager(action='clear_logs')"}, indent=2)
 
 
 if __name__ == "__main__":
