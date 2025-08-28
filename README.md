@@ -9,23 +9,33 @@ A Model Context Protocol (MCP) server that provides **35 comprehensive tools** f
 <details open>
 <summary><h2>📑 Table of Contents</h2></summary>
 
-- [Overview](#overview)
-- [Installation](#installation)
-  - [Using the MCP Server](#using-the-mcp-server)
-    - [Claude Desktop](#claude-desktop)
-    - [VS Code](#vs-code)
-    - [Cursor](#cursor)
-  - [Development Setup](#development-setup)
-    - [VS Code Dev Container](#vs-code-dev-container)
-    - [Docker Setup](#docker-setup)
-    - [Local Development](#local-development)
-- [Available Tools](#available-tools)
-- [Usage Examples](#usage-examples)
-- [Architecture](#architecture)
-- [Configuration](#configuration)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
+- [EnergyPlus MCP Server](#energyplus-mcp-server)
+  - [Overview](#overview)
+  - [Installation](#installation)
+    - [Using the MCP Server](#using-the-mcp-server)
+      - [Claude Desktop](#claude-desktop)
+      - [VS Code](#vs-code)
+      - [Cursor](#cursor)
+    - [Development Setup](#development-setup)
+      - [VS Code Dev Container](#vs-code-dev-container)
+      - [Docker Setup](#docker-setup)
+      - [Local Development](#local-development)
+  - [Available Tools](#available-tools)
+    - [🗂️ Model Config \& Loading (9 tools)](#️-model-config--loading-9-tools)
+    - [🔍 Model Inspection (Aggregated)](#-model-inspection-aggregated)
+    - [⚙️ Model Modification (Aggregated)](#️-model-modification-aggregated)
+    - [🚀 Simulation \& Results (4 tools)](#-simulation--results-4-tools)
+    - [🖥️ Server Management (5 tools)](#️-server-management-5-tools)
+    - [Tool Exposure Flags](#tool-exposure-flags)
+  - [Usage Examples](#usage-examples)
+    - [Basic Workflow](#basic-workflow)
+    - [Advanced Features](#advanced-features)
+    - [Using with MCP Inspector](#using-with-mcp-inspector)
+  - [Architecture](#architecture)
+  - [Configuration](#configuration)
+  - [Troubleshooting](#troubleshooting)
+  - [Contributing](#contributing)
+  - [License](#license)
 
 </details>
 
@@ -213,7 +223,7 @@ uv run python -m energyplus_mcp_server.server
 
 The server provides tools organized into categories. To reduce cognitive load for LLMs, use the aggregated inspection/output tools by default (wrappers can be re-exposed via env flags).
 
-### 🗂️ Model Config & Loading (9 tools)
+### 🗂️ Model Config & Loading
 - `load_idf_model` - Load and validate IDF files
 - `validate_idf` - Comprehensive model validation
 - `list_available_files` - Browse sample files and weather data
@@ -222,7 +232,7 @@ The server provides tools organized into categories. To reduce cognitive load fo
 - `check_simulation_settings` - Review simulation control settings
 - `modify_simulation_control` - Modify simulation parameters
 - `modify_run_period` - Adjust simulation time periods
-- `get_server_configuration` - Get server configuration info
+  
 
 ### 🔍 Model Inspection (Aggregated)
 - `inspect_model` — Unified inspector. Args: `idf_path`, `focus: list["summary"|"zones"|"surfaces"|"materials"|"schedules"|"people"|"lights"|"electric_equipment"|"all"]`, `detail`, `include_values` (schedules only).
@@ -230,15 +240,17 @@ The server provides tools organized into categories. To reduce cognitive load fo
 
 Wrappers like `inspect_people`, `inspect_lights`, `list_zones`, `get_surfaces`, `get_materials`, `get_output_variables`, `get_output_meters` are hidden by default but can be exposed by setting env flags (see below).
 
-### ⚙️ Model Modification (8 tools)
-- `modify_people` - Update occupancy settings
-- `modify_lights` - Update lighting loads
-- `modify_electric_equipment` - Update equipment loads
-- `change_infiltration_by_mult` - Modify infiltration rates
-- `add_window_film_outside` - Add window films
-- `add_coating_outside` - Apply surface coatings
-- `add_output_variables` - Add output variables
-- `add_output_meters` - Add energy meters
+### ⚙️ Model Modification (Aggregated)
+- `modify_basic_parameters` — Orchestrate non-HVAC edits by delegating to existing helpers. Supports ops:
+  - `people.update`, `lights.update`, `electric_equipment.update`
+  - `simulation_control.update`, `run_period.update`
+  - `infiltration.scale`, `envelope.add_window_film`, `envelope.add_coating`
+  - `outputs.add_variables`, `outputs.add_meters`
+  Args: `idf_path`, `operations: list[object]`, `mode: "dry_run"|"apply"` (default dry_run), `output_path?`, `capabilities?`, `detail?`.
+  - Capabilities: Call with `capabilities=true` (or `mode="dry_run"` and empty `operations`) to list supported ops, params, enums, and model hints without changing the file.
+  Returns: execution plan (dry-run/capabilities) or per-op results and final file (apply).
+
+Wrappers like `modify_people`, `modify_lights`, `modify_electric_equipment`, etc. are hidden by default and can be exposed via env flags.
 
 ### 🚀 Simulation & Results (4 tools)
 - `run_energyplus_simulation` - Execute simulations
@@ -246,18 +258,21 @@ Wrappers like `inspect_people`, `inspect_lights`, `list_zones`, `get_surfaces`, 
 - `discover_hvac_loops` - Find all HVAC loops
 - `get_loop_topology` - Get HVAC loop details
 
-### 🖥️ Server Management (5 tools)
-- `visualize_loop_diagram` - Generate HVAC diagrams
-- `get_server_status` - Check server health
-- `get_server_logs` - View recent logs
-- `get_error_logs` - Get error logs
-- `clear_logs` - Clear/rotate log files
+### 🖥️ Server Management
+- `server_housekeeping` — Unified server ops.
+  - `action: "status"` → Server/system/paths/logs diagnostics (use `include_config: true` + `detail: "detailed"` to include config)
+  - `action: "logs"` → View logs with filters: `type: "server"|"error"|"both"`, `lines`, optional `contains`, `since`, `format`
+  - `action: "clear_logs"` → Safe rotation: `select: "server"|"error"|"both"`, `mode: "dry_run"|"apply"` (rotate only, no delete)
+
+Legacy wrappers (`get_server_status`, `get_server_logs`, `get_error_logs`, `clear_logs`) can be re-exposed via `MCP_EXPOSE_SERVER_WRAPPERS=true`.
 
 ### Tool Exposure Flags
 
 - `MCP_EXPOSE_INSPECT_WRAPPERS=true` — Expose individual inspection wrappers (`inspect_people`, `inspect_lights`, `list_zones`, etc.).
 - `MCP_EXPOSE_OUTPUT_WRAPPERS=true` — Expose legacy output wrappers (`get_output_variables`, `get_output_meters`).
 - `MCP_EXPOSE_SUMMARY_WRAPPER=true` — Expose `get_model_summary` wrapper.
+- `MCP_EXPOSE_MODIFY_WRAPPERS=true` — Expose legacy modify wrappers (`modify_people`, `modify_lights`, etc.).
+- `MCP_EXPOSE_SERVER_WRAPPERS=true` — Expose legacy server wrappers (`get_server_status`, `get_server_logs`, `get_error_logs`, `clear_logs`).
 
 By default, only `inspect_model` and `get_outputs` are exposed for read-only inspection/output.
 
@@ -345,6 +360,30 @@ By default, only `inspect_model` and `get_outputs` are exposed for read-only ins
 }
 ```
 
+**Housekeeping: Status**
+```json
+{
+  "tool": "server_housekeeping",
+  "arguments": { "action": "status" }
+}
+```
+
+**Housekeeping: Error Logs (raw)**
+```json
+{
+  "tool": "server_housekeeping",
+  "arguments": { "action": "logs", "type": "error", "lines": 100, "format": "raw" }
+}
+```
+
+**Housekeeping: Rotate Logs (dry-run)**
+```json
+{
+  "tool": "server_housekeeping",
+  "arguments": { "action": "clear_logs", "mode": "dry_run" }
+}
+```
+
 **Model Summary via Aggregator**:
 ```json
 {
@@ -352,6 +391,33 @@ By default, only `inspect_model` and `get_outputs` are exposed for read-only ins
   "arguments": {
     "idf_path": "sample_files/5ZoneAirCooled.idf",
     "focus": ["summary"]
+  }
+}
+```
+
+**Modify Basic Parameters (dry-run plan)**:
+```json
+{
+  "tool": "modify_basic_parameters",
+  "arguments": {
+    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "mode": "dry_run",
+    "operations": [
+      { "op": "people.update", "params": { "modifications": [{"target": "all", "field_updates": {"Number_of_People": 10}}] } },
+      { "op": "envelope.add_window_film", "params": { "u_value": 4.94, "shgc": 0.45, "visible_transmittance": 0.66 } }
+    ]
+  }
+}
+```
+
+**Discover Modifiable Parameters (capabilities)**:
+```json
+{
+  "tool": "modify_basic_parameters",
+  "arguments": {
+    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "capabilities": true,
+    "detail": "summary"
   }
 }
 ```

@@ -6,7 +6,7 @@ import os
 import asyncio
 import logging
 import json
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 from pathlib import Path
 from datetime import datetime
 
@@ -29,6 +29,8 @@ mcp = FastMCP(config.server.name)
 EXPOSE_INSPECT_WRAPPERS = os.getenv("MCP_EXPOSE_INSPECT_WRAPPERS", "false").lower() in ("1", "true", "yes")
 EXPOSE_OUTPUT_WRAPPERS = os.getenv("MCP_EXPOSE_OUTPUT_WRAPPERS", "false").lower() in ("1", "true", "yes")
 EXPOSE_SUMMARY_WRAPPER = os.getenv("MCP_EXPOSE_SUMMARY_WRAPPER", "false").lower() in ("1", "true", "yes")
+EXPOSE_MODIFY_WRAPPERS = os.getenv("MCP_EXPOSE_MODIFY_WRAPPERS", "false").lower() in ("1", "true", "yes")
+EXPOSE_SERVER_WRAPPERS = os.getenv("MCP_EXPOSE_SERVER_WRAPPERS", "false").lower() in ("1", "true", "yes")
 
 def expose_inspect_tool():
     """Decorator factory: expose inspect wrappers only when enabled.
@@ -56,10 +58,28 @@ def expose_summary_tool():
         return func
     return _noop
 
+def expose_modify_tool():
+    """Decorator factory: expose legacy modify_* wrappers only when enabled."""
+    if EXPOSE_MODIFY_WRAPPERS:
+        return mcp.tool()
+    def _noop(func):
+        return func
+    return _noop
+
+def expose_server_tool():
+    """Decorator factory: expose legacy server wrappers only when enabled."""
+    if EXPOSE_SERVER_WRAPPERS:
+        return mcp.tool()
+    def _noop(func):
+        return func
+    return _noop
+
 # Initialize EnergyPlus manager with configuration
 ep_manager = EnergyPlusManager(config)
 
 logger.info(f"EnergyPlus MCP Server '{config.server.name}' v{config.server.version} initialized")
+# Track startup time for reporting uptime
+STARTUP_TIME = datetime.utcnow()
 
 
 # Add this tool function to server.py
@@ -226,6 +246,463 @@ async def copy_file(source_path: str, target_path: str, overwrite: bool = False,
 
 
 @mcp.tool()
+async def server_housekeeping(
+    action: Literal["status", "logs", "clear_logs"],
+    include_config: bool = False,
+    detail: Literal["summary", "detailed"] = "summary",
+    type: Literal["server", "error", "both"] = "server",
+    lines: int = 50,
+    contains: Optional[str] = None,
+    since: Optional[str] = None,
+    format: Literal["summary", "raw"] = "summary",
+    select: Literal["server", "error", "both"] = "both",
+    mode: Literal["dry_run", "apply"] = "dry_run",
+) -> str:
+    """
+    Unified server management:
+    - action="status": returns server/system/energyplus/logs info (include_config to add config; detail controls verbosity)
+    - action="logs": returns recent logs with filters (type, lines, contains, since, format)
+    - action="clear_logs": rotates logs safely (select, mode), never deletes
+    """
+    log_dir = Path(config.paths.workspace_root) / "logs"
+    now = datetime.utcnow().isoformat()
+
+    def _file_info(p: Path) -> Dict[str, Any]:
+        try:
+            return {
+                "path": str(p),
+                "exists": p.exists(),
+                "size_bytes": p.stat().st_size if p.exists() else 0,
+                "last_modified": datetime.utcfromtimestamp(p.stat().st_mtime).isoformat() if p.exists() else None,
+            }
+        except Exception:
+            return {"path": str(p), "exists": False}
+
+    if action == "status":
+        try:
+            uptime_seconds = int((datetime.utcnow() - STARTUP_TIME).total_seconds())
+            import sys, platform
+            data = {
+                "server": {
+                    "name": config.server.name,
+                    "version": config.server.version,
+                    "log_level": config.server.log_level,
+                    "startup_time": STARTUP_TIME.isoformat(),
+                    "uptime_seconds": uptime_seconds,
+                    "debug_mode": config.debug_mode,
+                },
+                "system": {
+                    "python_version": sys.version,
+                    "platform": platform.platform(),
+                    "architecture": platform.architecture()[0],
+                },
+                "energyplus": {
+                    "version": config.energyplus.version,
+                    "idd_available": os.path.exists(config.energyplus.idd_path) if config.energyplus.idd_path else False,
+                    "executable_available": os.path.exists(config.energyplus.executable_path) if config.energyplus.executable_path else False,
+                },
+                "logs": {
+                    "directory": str(log_dir),
+                    "server_log": _file_info(log_dir / "energyplus_mcp_server.log"),
+                    "error_log": _file_info(log_dir / "energyplus_mcp_errors.log"),
+                },
+            }
+            if include_config and detail == "detailed":
+                try:
+                    data["config"] = json.loads(ep_manager.get_configuration_info())
+                except Exception:
+                    data["config"] = {"note": "configuration info unavailable"}
+
+            return json.dumps({"meta": {"action": action, "detail": detail, "timestamp": now}, "data": data}, indent=2)
+        except Exception as e:
+            logger.error(f"server_housekeeping status error: {e}")
+            return f"Error getting status: {str(e)}"
+
+    if action == "logs":
+        try:
+            targets: List[Path] = []
+            if type in ("server", "both"):
+                targets.append(log_dir / "energyplus_mcp_server.log")
+            if type in ("error", "both"):
+                targets.append(log_dir / "energyplus_mcp_errors.log")
+
+            files_meta = [_file_info(p) for p in targets]
+            content_parts: List[str] = []
+            truncated = False
+
+            def _parse_line_ts(line: str) -> Optional[datetime]:
+                # Expect leading 'YYYY-MM-DD HH:MM:SS'
+                try:
+                    ts = line[:19]
+                    return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    return None
+
+            since_dt = None
+            if since:
+                try:
+                    since_dt = datetime.fromisoformat(since)
+                except Exception:
+                    since_dt = None
+
+            for p in targets:
+                if not p.exists():
+                    continue
+                with open(p, "r") as f:
+                    lines_all = f.readlines()
+                lines_filtered = lines_all
+                if contains:
+                    lines_filtered = [ln for ln in lines_filtered if contains in ln]
+                if since_dt:
+                    tmp = []
+                    for ln in lines_filtered:
+                        ts = _parse_line_ts(ln)
+                        if (ts is None) or (ts >= since_dt):
+                            tmp.append(ln)
+                    lines_filtered = tmp
+                if len(lines_filtered) > lines:
+                    lines_filtered = lines_filtered[-lines:]
+                    truncated = True
+                content_parts.append("".join(lines_filtered))
+
+            data = {
+                "files": files_meta,
+                "showing": {"type": type, "lines": lines, "filtered_contains": contains or None, "since": since},
+                "truncated": truncated,
+            }
+            if content_parts:
+                data["content"] = "\n\n".join(content_parts)
+
+            return json.dumps({"meta": {"action": action, "detail": format, "timestamp": now}, "data": data}, indent=2)
+        except Exception as e:
+            logger.error(f"server_housekeeping logs error: {e}")
+            return f"Error getting logs: {str(e)}"
+
+    if action == "clear_logs":
+        try:
+            to_rotate: List[Path] = []
+            if select in ("server", "both"):
+                to_rotate.append(log_dir / "energyplus_mcp_server.log")
+            if select in ("error", "both"):
+                to_rotate.append(log_dir / "energyplus_mcp_errors.log")
+            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            plan = []
+            for p in to_rotate:
+                if p.exists():
+                    suggested = p.with_name(f"{p.stem}_backup_{ts}{p.suffix}")
+                    plan.append({"from": str(p), "to": str(suggested)})
+            if mode == "dry_run":
+                return json.dumps({
+                    "meta": {"action": action, "mode": mode, "timestamp": now},
+                    "data": {"will_rotate": plan, "backup_dir": str(log_dir)}
+                }, indent=2)
+            rotated = []
+            for item in plan:
+                src = Path(item["from"])
+                dst = Path(item["to"])
+                try:
+                    if src.exists():
+                        src.rename(dst)
+                        rotated.append({"from": str(src), "to": str(dst)})
+                except Exception as e:
+                    logger.error(f"Error rotating {src}: {e}")
+            return json.dumps({
+                "meta": {"action": action, "mode": mode, "timestamp": now},
+                "data": {"rotated": rotated, "backup_dir": str(log_dir), "message": "Log files rotated"}
+            }, indent=2)
+        except Exception as e:
+            logger.error(f"server_housekeeping clear_logs error: {e}")
+            return f"Error clearing logs: {str(e)}"
+
+    return json.dumps({"error": f"Unknown action '{action}'"}, indent=2)
+async def modify_basic_parameters(
+    idf_path: str,
+    operations: List[Dict[str, Any]],
+    mode: Literal["dry_run", "apply"] = "dry_run",
+    output_path: Optional[str] = None,
+    validation_level: Literal["strict", "moderate", "lenient"] = "moderate",
+    conflict_strategy: Literal["error", "skip", "overwrite"] = "error",
+    capabilities: bool = False,
+    detail: Literal["summary", "detailed"] = "summary",
+) -> str:
+    """
+    Orchestrate non-HVAC model modifications by delegating to existing helpers.
+
+    Args:
+        idf_path: Path to the input IDF file.
+        operations: List of operations with fields:
+          - op: one of [
+              "people.update", "lights.update", "electric_equipment.update",
+              "simulation_control.update", "run_period.update",
+              "infiltration.scale", "envelope.add_window_film", "envelope.add_coating",
+              "outputs.add_variables", "outputs.add_meters"
+            ]
+          - target: optional object with selection hints (passed through where supported)
+          - params: op-specific parameters (see individual modify_* tools for shapes)
+        mode: "dry_run" (default) validates and returns a plan; "apply" executes changes.
+        output_path: Optional final output path (if provided and mode==apply, final file is copied here).
+        validation_level: Validation strictness passed to output ops where applicable.
+        conflict_strategy: Future use; reserved for in-place/conflict behaviors.
+        capabilities: If true (or when mode="dry_run" and operations=[]), return capability info
+          describing supported operations and parameter schemas without making changes.
+        detail: Controls verbosity of capabilities payload ("summary" or "detailed").
+
+    Returns:
+        JSON with meta, per-op results, errors, and final file path if applied.
+    """
+    logger.info(f"modify_basic_parameters start: {idf_path}, mode={mode}, ops={len(operations)}")
+
+    allowed_ops = {
+        "people.update",
+        "lights.update",
+        "electric_equipment.update",
+        "simulation_control.update",
+        "run_period.update",
+        "infiltration.scale",
+        "envelope.add_window_film",
+        "envelope.add_coating",
+        "outputs.add_variables",
+        "outputs.add_meters",
+    }
+
+    # Capabilities mode: describe what can be modified safely
+    if capabilities or (mode.lower() == "dry_run" and not operations):
+        try:
+            freq_enum_vars = list(getattr(ep_manager.output_var_manager, "VALID_FREQUENCIES", {}).keys())
+            freq_enum_meters = list(getattr(ep_manager.output_meter_manager, "VALID_FREQUENCIES", {}).keys())
+            meter_types = list(getattr(ep_manager.output_meter_manager, "VALID_METER_TYPES", {}).keys())
+        except Exception:
+            freq_enum_vars, freq_enum_meters, meter_types = [], [], []
+
+        ops_spec = [
+            {"op": "people.update", "description": "Update People objects by all/zone/name target.",
+             "params": {"modifications": "list of {target, field_updates}"}},
+            {"op": "lights.update", "description": "Update Lights objects by all/zone/name target.",
+             "params": {"modifications": "list of {target, field_updates}"}},
+            {"op": "electric_equipment.update", "description": "Update ElectricEquipment by all/zone/name target.",
+             "params": {"modifications": "list of {target, field_updates}"}},
+            {"op": "simulation_control.update", "description": "Update SimulationControl fields.",
+             "params": {"field_updates": "dict of SimulationControl fields"}},
+            {"op": "run_period.update", "description": "Update RunPeriod fields.",
+             "params": {"field_updates": "dict of RunPeriod fields", "run_period_index": 0}},
+            {"op": "infiltration.scale", "description": "Scale ZoneInfiltration:DesignFlowRate by factor.",
+             "params": {"mult": 0.9}},
+            {"op": "envelope.add_window_film", "description": "Apply exterior window film via SimpleGlazingSystem.",
+             "params": {"u_value": 4.94, "shgc": 0.45, "visible_transmittance": 0.66}},
+            {"op": "envelope.add_coating", "description": "Apply exterior coating to walls or roofs.",
+             "params": {"location": "wall|roof", "solar_abs": 0.4, "thermal_abs": 0.9}},
+            {"op": "outputs.add_variables", "description": "Add Output:Variable entries.",
+             "params": {"variables": "list[str|[name,frequency]|dict]", "validation_level": validation_level, "allow_duplicates": False}},
+            {"op": "outputs.add_meters", "description": "Add Output:Meter entries.",
+             "params": {"meters": "list[str|[name,frequency]|dict]", "validation_level": validation_level, "allow_duplicates": False}},
+        ]
+
+        targets = {
+            "people.update|lights.update|electric_equipment.update": [
+                "all", "zone:ZoneName", "name:ObjectName"
+            ]
+        }
+
+        enums = {
+            "reporting_frequencies_variables": freq_enum_vars,
+            "reporting_frequencies_meters": freq_enum_meters,
+            "meter_types": meter_types,
+        }
+
+        model_hints: Dict[str, Any] = {"included": False}
+        # Provide light model hints if an idf_path is given and detail requested
+        if idf_path and detail == "detailed":
+            try:
+                zones_json = ep_manager.list_zones(idf_path)
+                zone_list = json.loads(zones_json)
+                model_hints = {
+                    "included": True,
+                    "zones": [z.get("Name") for z in zone_list][:10],
+                    "zones_count": len(zone_list),
+                }
+            except Exception:
+                model_hints = {"included": False}
+
+        capability_payload = {
+            "meta": {
+                "idf_path": idf_path,
+                "mode": mode,
+                "capabilities": True,
+                "detail": detail,
+            },
+            "supported_ops": ops_spec,
+            "targets": targets,
+            "enums": enums,
+            "limitations": [
+                "HVAC graph edits are not handled by this orchestrator.",
+                "Schedules and geometry edits are out of scope here.",
+            ],
+            "model_hints": model_hints,
+            "examples": [
+                {
+                    "op": "people.update",
+                    "params": {"modifications": [{"target": "all", "field_updates": {"Number_of_People": 10}}]}
+                },
+                {
+                    "op": "outputs.add_variables",
+                    "params": {"variables": [["Zone Air Temperature", "hourly"]]}
+                }
+            ],
+        }
+        return json.dumps(capability_payload, indent=2)
+
+    plan = []
+    errors: Dict[str, Any] = {}
+    results: List[Dict[str, Any]] = []
+
+    # Basic schema validation and planning
+    for idx, op in enumerate(operations):
+        op_name = str(op.get("op", "")).strip()
+        if op_name not in allowed_ops:
+            errors[str(idx)] = f"Unknown op '{op_name}'. Allowed: {sorted(list(allowed_ops))}"
+            continue
+        plan.append({"index": idx, "op": op_name})
+
+    if mode.lower() != "apply":
+        payload = {
+            "meta": {
+                "idf_path": idf_path,
+                "mode": mode,
+                "validation_level": validation_level,
+                "conflict_strategy": conflict_strategy,
+            },
+            "plan": plan,
+            "errors": errors,
+        }
+        return json.dumps(payload, indent=2)
+
+    # Apply mode: execute sequentially and chain output files
+    current_path = idf_path
+    final_output = None
+
+    for idx, op in enumerate(operations):
+        op_name = str(op.get("op", "")).strip()
+        target = op.get("target", {}) or {}
+        params = op.get("params", {}) or {}
+
+        if op_name not in allowed_ops:
+            results.append({"index": idx, "op": op_name, "status": "error", "error": "unsupported"})
+            continue
+
+        try:
+            if op_name == "people.update":
+                mods = params.get("modifications") or []
+                resp = ep_manager.modify_people(current_path, mods, None)
+            elif op_name == "lights.update":
+                mods = params.get("modifications") or []
+                resp = ep_manager.modify_lights(current_path, mods, None)
+            elif op_name == "electric_equipment.update":
+                mods = params.get("modifications") or []
+                resp = ep_manager.modify_electric_equipment(current_path, mods, None)
+            elif op_name == "simulation_control.update":
+                fields = params.get("field_updates") or {}
+                resp = ep_manager.modify_simulation_settings(
+                    idf_path=current_path,
+                    object_type="SimulationControl",
+                    field_updates=fields,
+                    output_path=None,
+                )
+            elif op_name == "run_period.update":
+                fields = params.get("field_updates") or {}
+                run_idx = int(params.get("run_period_index", 0))
+                resp = ep_manager.modify_simulation_settings(
+                    idf_path=current_path,
+                    object_type="RunPeriod",
+                    field_updates=fields,
+                    run_period_index=run_idx,
+                    output_path=None,
+                )
+            elif op_name == "infiltration.scale":
+                mult = float(params.get("mult", 1.0))
+                resp = ep_manager.change_infiltration_by_mult(current_path, mult, None)
+            elif op_name == "envelope.add_window_film":
+                resp = ep_manager.add_window_film_outside(
+                    idf_path=current_path,
+                    u_value=float(params.get("u_value", 4.94)),
+                    shgc=float(params.get("shgc", 0.45)),
+                    visible_transmittance=float(params.get("visible_transmittance", 0.66)),
+                    output_path=None,
+                )
+            elif op_name == "envelope.add_coating":
+                resp = ep_manager.add_coating_outside(
+                    idf_path=current_path,
+                    location=str(params.get("location", "wall")),
+                    solar_abs=float(params.get("solar_abs", 0.4)),
+                    thermal_abs=float(params.get("thermal_abs", 0.9)),
+                    output_path=None,
+                )
+            elif op_name == "outputs.add_variables":
+                resp = ep_manager.add_output_variables(
+                    idf_path=current_path,
+                    variables=params.get("variables", []),
+                    validation_level=str(params.get("validation_level", validation_level)),
+                    allow_duplicates=bool(params.get("allow_duplicates", False)),
+                    output_path=None,
+                )
+            elif op_name == "outputs.add_meters":
+                resp = ep_manager.add_output_meters(
+                    idf_path=current_path,
+                    meters=params.get("meters", []),
+                    validation_level=str(params.get("validation_level", validation_level)),
+                    allow_duplicates=bool(params.get("allow_duplicates", False)),
+                    output_path=None,
+                )
+
+            status = "applied"
+            output_file = None
+            try:
+                data = json.loads(resp)
+                output_file = data.get("output_file") or data.get("output_path")
+            except Exception:
+                data = {"raw": resp}
+
+            if output_file:
+                current_path = output_file
+                final_output = output_file
+
+            results.append({
+                "index": idx,
+                "op": op_name,
+                "status": status,
+                "output_file": output_file,
+            })
+
+        except FileNotFoundError as e:
+            logger.warning(f"File not found during modify_basic_parameters: {current_path}")
+            results.append({"index": idx, "op": op_name, "status": "error", "error": f"File not found: {str(e)}"})
+        except Exception as e:
+            logger.error(f"Error applying op {op_name} at index {idx}: {str(e)}")
+            results.append({"index": idx, "op": op_name, "status": "error", "error": str(e)})
+
+    # Optional final copy
+    final_copied = None
+    if output_path and final_output:
+        try:
+            ep_manager.copy_file(final_output, output_path, True, None)
+            final_copied = output_path
+        except Exception as e:
+            errors["final_copy"] = str(e)
+
+    payload = {
+        "meta": {
+            "idf_path": idf_path,
+            "mode": mode,
+            "validation_level": validation_level,
+            "conflict_strategy": conflict_strategy,
+        },
+        "results": results,
+        "final_file": final_copied or final_output or idf_path,
+        "errors": errors,
+    }
+    logger.info("modify_basic_parameters complete")
+    return json.dumps(payload, indent=2)
+
+@mcp.tool()
 async def load_idf_model(idf_path: str) -> str:
     """
     Load and validate an EnergyPlus IDF file
@@ -348,7 +825,7 @@ async def inspect_people(idf_path: str) -> str:
         return f"Error inspecting People objects for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_modify_tool()
 async def modify_people(
     idf_path: str,
     modifications: List[Dict[str, Any]],
@@ -460,7 +937,7 @@ async def inspect_lights(idf_path: str) -> str:
         return f"Error inspecting Lights objects for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_modify_tool()
 async def modify_lights(
     idf_path: str,
     modifications: List[Dict[str, Any]],
@@ -574,7 +1051,7 @@ async def inspect_electric_equipment(idf_path: str) -> str:
         return f"Error inspecting ElectricEquipment objects for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_modify_tool()
 async def modify_electric_equipment(
     idf_path: str,
     modifications: List[Dict[str, Any]],
@@ -655,7 +1132,7 @@ async def modify_electric_equipment(
         return f"Error modifying ElectricEquipment objects for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_modify_tool()
 async def modify_simulation_control(
     idf_path: str, 
     field_updates: Dict[str, Any],  # Changed from str to Dict[str, Any]
@@ -691,7 +1168,7 @@ async def modify_simulation_control(
         return f"Error modifying SimulationControl for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_modify_tool()
 async def modify_run_period(
     idf_path: str, 
     field_updates: Dict[str, Any],  # Changed from str to Dict[str, Any]
@@ -730,7 +1207,7 @@ async def modify_run_period(
         return f"Error modifying RunPeriod for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_modify_tool()
 async def change_infiltration_by_mult(
     idf_path: str, 
     mult: float,
@@ -765,7 +1242,7 @@ async def change_infiltration_by_mult(
         return f"Error Infiltration modification for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_modify_tool()
 async def add_window_film_outside(
     idf_path: str,
     u_value: float = 4.94,
@@ -804,7 +1281,7 @@ async def add_window_film_outside(
         return f"Error adding window film for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_modify_tool()
 async def add_coating_outside(
     idf_path: str,
     location: str,
@@ -1049,7 +1526,7 @@ async def get_output_meters(idf_path: str, discover_available: bool = False, run
         return f"Error getting output meters for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_modify_tool()
 async def add_output_variables(
     idf_path: str,
     variables: List,  # Can be List[Dict], List[str], or mixed
@@ -1114,7 +1591,7 @@ async def add_output_variables(
         return f"Error adding output variables: {str(e)}"
 
 
-@mcp.tool()
+@expose_modify_tool()
 async def add_output_meters(
     idf_path: str,
     meters: List,  # Can be List[Dict], List[str], or mixed
@@ -1204,7 +1681,7 @@ async def list_available_files(
         return f"Error listing available files: {str(e)}"
 
 
-@mcp.tool()
+@expose_server_tool()
 async def get_server_configuration() -> str:
     """
     Get current server configuration information
@@ -1213,15 +1690,14 @@ async def get_server_configuration() -> str:
         JSON string with configuration details
     """
     try:
-        logger.info("Getting server configuration")
-        config_info = ep_manager.get_configuration_info()
-        return f"Current server configuration:\n{config_info}"
+        # Delegate to unified housekeeping tool with detailed config
+        return await server_housekeeping(action="status", include_config=True, detail="detailed")
     except Exception as e:
         logger.error(f"Error getting configuration: {str(e)}")
         return f"Error getting configuration: {str(e)}"
 
 
-@mcp.tool()
+@expose_server_tool()
 async def get_server_status() -> str:
     """
     Get current server status and health information
@@ -1230,37 +1706,8 @@ async def get_server_status() -> str:
         JSON string with server status
     """
     try:
-        import sys
-        import platform
-        from datetime import datetime
-        
-        status_info = {
-            "server": {
-                "name": config.server.name,
-                "version": config.server.version,
-                "status": "running",
-                "startup_time": datetime.now().isoformat(),
-                "debug_mode": config.debug_mode
-            },
-            "system": {
-                "python_version": sys.version,
-                "platform": platform.platform(),
-                "architecture": platform.architecture()[0]
-            },
-            "energyplus": {
-                "version": config.energyplus.version,
-                "idd_available": os.path.exists(config.energyplus.idd_path) if config.energyplus.idd_path else False,
-                "executable_available": os.path.exists(config.energyplus.executable_path) if config.energyplus.executable_path else False
-            },
-            "paths": {
-                "sample_files_available": os.path.exists(config.paths.sample_files_path),
-                "temp_dir_available": os.path.exists(config.paths.temp_dir),
-                "output_dir_available": os.path.exists(config.paths.output_dir)
-            }
-        }
-        
-        import json
-        return f"Server status:\n{json.dumps(status_info, indent=2)}"
+        # Delegate to unified tool
+        return await server_housekeeping(action="status")
         
     except Exception as e:
         logger.error(f"Error getting server status: {str(e)}")
@@ -1429,7 +1876,7 @@ async def create_interactive_plot(
         return f"Error creating interactive plot: {str(e)}"
 
 
-@mcp.tool()
+@expose_server_tool()
 async def get_server_logs(lines: int = 50) -> str:
     """
     Get recent server log entries
@@ -1441,31 +1888,14 @@ async def get_server_logs(lines: int = 50) -> str:
         Recent log entries as text
     """
     try:
-        log_file = Path(config.paths.workspace_root) / "logs" / "energyplus_mcp_server.log"
-        
-        if not log_file.exists():
-            return "Log file not found. Server may be using console logging only."
-        
-        # Read last N lines efficiently
-        with open(log_file, 'r') as f:
-            all_lines = f.readlines()
-            recent_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
-        
-        log_content = {
-            "log_file": str(log_file),
-            "total_lines": len(all_lines),
-            "showing_lines": len(recent_lines),
-            "recent_logs": "".join(recent_lines)
-        }
-        
-        return f"Recent server logs:\n{json.dumps(log_content, indent=2)}"
+        return await server_housekeeping(action="logs", type="server", lines=lines, format="summary")
         
     except Exception as e:
         logger.error(f"Error reading server logs: {str(e)}")
         return f"Error reading server logs: {str(e)}"
 
 
-@mcp.tool()
+@expose_server_tool()
 async def get_error_logs(lines: int = 20) -> str:
     """
     Get recent error log entries
@@ -1477,30 +1907,14 @@ async def get_error_logs(lines: int = 20) -> str:
         Recent error log entries as text
     """
     try:
-        error_log_file = Path(config.paths.workspace_root) / "logs" / "energyplus_mcp_errors.log"
-        
-        if not error_log_file.exists():
-            return "Error log file not found. No errors logged yet."
-        
-        with open(error_log_file, 'r') as f:
-            all_lines = f.readlines()
-            recent_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
-        
-        error_content = {
-            "error_log_file": str(error_log_file),
-            "total_error_lines": len(all_lines),
-            "showing_lines": len(recent_lines),
-            "recent_errors": "".join(recent_lines)
-        }
-        
-        return f"Recent error logs:\n{json.dumps(error_content, indent=2)}"
+        return await server_housekeeping(action="logs", type="error", lines=lines, format="summary")
         
     except Exception as e:
         logger.error(f"Error reading error logs: {str(e)}")
         return f"Error reading error logs: {str(e)}"
 
 
-@mcp.tool()
+@expose_server_tool()
 async def clear_logs() -> str:
     """
     Clear/rotate current log files (creates backup)
@@ -1509,36 +1923,7 @@ async def clear_logs() -> str:
         Status of log clearing operation
     """
     try:
-        log_dir = Path(config.paths.workspace_root) / "logs"
-        
-        if not log_dir.exists():
-            return "No log directory found."
-        
-        cleared_files = []
-        
-        # Main log file
-        main_log = log_dir / "energyplus_mcp_server.log"
-        if main_log.exists():
-            backup_name = f"energyplus_mcp_server_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-            main_log.rename(log_dir / backup_name)
-            cleared_files.append(str(main_log))
-        
-        # Error log file
-        error_log = log_dir / "energyplus_mcp_errors.log"
-        if error_log.exists():
-            backup_name = f"energyplus_mcp_errors_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-            error_log.rename(log_dir / backup_name)
-            cleared_files.append(str(error_log))
-        
-        result = {
-            "success": True,
-            "cleared_files": cleared_files,
-            "backup_location": str(log_dir),
-            "message": "Log files cleared and backed up successfully"
-        }
-        
-        logger.info("Log files cleared and backed up")
-        return json.dumps(result, indent=2)
+        return await server_housekeeping(action="clear_logs", select="both", mode="apply")
         
     except Exception as e:
         logger.error(f"Error clearing logs: {str(e)}")
