@@ -211,7 +211,7 @@ uv run python -m energyplus_mcp_server.server
 
 ## Available Tools
 
-The server provides **35 tools** organized into **5 categories**:
+The server provides tools organized into categories. To reduce cognitive load for LLMs, use the aggregated inspection/output tools by default (wrappers can be re-exposed via env flags).
 
 ### 🗂️ Model Config & Loading (9 tools)
 - `load_idf_model` - Load and validate IDF files
@@ -224,16 +224,11 @@ The server provides **35 tools** organized into **5 categories**:
 - `modify_run_period` - Adjust simulation time periods
 - `get_server_configuration` - Get server configuration info
 
-### 🔍 Model Inspection (9 tools)
-- `list_zones` - List all thermal zones with properties
-- `get_surfaces` - Get building surface information
-- `get_materials` - Extract material definitions
-- `inspect_schedules` - Analyze all schedule objects
-- `inspect_people` - Analyze occupancy settings
-- `inspect_lights` - Analyze lighting loads
-- `inspect_electric_equipment` - Analyze equipment loads
-- `get_output_variables` - Get/discover output variables
-- `get_output_meters` - Get/discover energy meters
+### 🔍 Model Inspection (Aggregated)
+- `inspect_model` — Unified inspector. Args: `idf_path`, `focus: list["summary"|"zones"|"surfaces"|"materials"|"schedules"|"people"|"lights"|"electric_equipment"|"all"]`, `detail`, `include_values` (schedules only).
+- `get_outputs` — Unified outputs accessor. Args: `idf_path`, `type: "variables"|"meters"|"both"`, `discover_available`, `run_days`.
+
+Wrappers like `inspect_people`, `inspect_lights`, `list_zones`, `get_surfaces`, `get_materials`, `get_output_variables`, `get_output_meters` are hidden by default but can be exposed by setting env flags (see below).
 
 ### ⚙️ Model Modification (8 tools)
 - `modify_people` - Update occupancy settings
@@ -257,6 +252,14 @@ The server provides **35 tools** organized into **5 categories**:
 - `get_server_logs` - View recent logs
 - `get_error_logs` - Get error logs
 - `clear_logs` - Clear/rotate log files
+
+### Tool Exposure Flags
+
+- `MCP_EXPOSE_INSPECT_WRAPPERS=true` — Expose individual inspection wrappers (`inspect_people`, `inspect_lights`, `list_zones`, etc.).
+- `MCP_EXPOSE_OUTPUT_WRAPPERS=true` — Expose legacy output wrappers (`get_output_variables`, `get_output_meters`).
+- `MCP_EXPOSE_SUMMARY_WRAPPER=true` — Expose `get_model_summary` wrapper.
+
+By default, only `inspect_model` and `get_outputs` are exposed for read-only inspection/output.
 
 ## Usage Examples
 
@@ -329,14 +332,26 @@ The server provides **35 tools** organized into **5 categories**:
 }
 ```
 
-**Discover Output Variables**:
+**Discover Outputs (variables/meters)**:
 ```json
 {
-  "tool": "get_output_variables",
+  "tool": "get_outputs",
   "arguments": {
     "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "type": "both",
     "discover_available": true,
     "run_days": 1
+  }
+}
+```
+
+**Model Summary via Aggregator**:
+```json
+{
+  "tool": "inspect_model",
+  "arguments": {
+    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "focus": ["summary"]
   }
 }
 ```
@@ -357,7 +372,7 @@ The server follows a layered architecture:
 ┌─────────────────────────┐
 │   MCP Protocol Layer    │  FastMCP server handling client communications
 ├─────────────────────────┤
-│     Tools Layer         │  35 tools organized into 5 categories
+│     Tools Layer         │  Tools organized into categories (aggregated inspectors/outputs)
 ├─────────────────────────┤
 │  Orchestration Layer    │  EnergyPlus Manager & Config Module
 ├─────────────────────────┤

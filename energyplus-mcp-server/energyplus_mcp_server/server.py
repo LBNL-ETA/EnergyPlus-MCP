@@ -25,6 +25,37 @@ config = get_config()
 # Initialize the FastMCP server with configuration
 mcp = FastMCP(config.server.name)
 
+# Flag to control exposure of individual inspect wrappers
+EXPOSE_INSPECT_WRAPPERS = os.getenv("MCP_EXPOSE_INSPECT_WRAPPERS", "false").lower() in ("1", "true", "yes")
+EXPOSE_OUTPUT_WRAPPERS = os.getenv("MCP_EXPOSE_OUTPUT_WRAPPERS", "false").lower() in ("1", "true", "yes")
+EXPOSE_SUMMARY_WRAPPER = os.getenv("MCP_EXPOSE_SUMMARY_WRAPPER", "false").lower() in ("1", "true", "yes")
+
+def expose_inspect_tool():
+    """Decorator factory: expose inspect wrappers only when enabled.
+    Falls back to a no-op decorator when wrappers should be hidden.
+    """
+    if EXPOSE_INSPECT_WRAPPERS:
+        return mcp.tool()
+    def _noop(func):
+        return func
+    return _noop
+
+def expose_output_tool():
+    """Decorator factory: expose output wrappers only when enabled."""
+    if EXPOSE_OUTPUT_WRAPPERS:
+        return mcp.tool()
+    def _noop(func):
+        return func
+    return _noop
+
+def expose_summary_tool():
+    """Decorator factory: expose model summary wrapper only when enabled."""
+    if EXPOSE_SUMMARY_WRAPPER:
+        return mcp.tool()
+    def _noop(func):
+        return func
+    return _noop
+
 # Initialize EnergyPlus manager with configuration
 ep_manager = EnergyPlusManager(config)
 
@@ -32,6 +63,121 @@ logger.info(f"EnergyPlus MCP Server '{config.server.name}' v{config.server.versi
 
 
 # Add this tool function to server.py
+
+@mcp.tool()
+async def inspect_model(
+    idf_path: str,
+    focus: Optional[List[str]] = None,
+    detail: str = "summary",
+    include_values: bool = False,
+) -> str:
+    """
+    Aggregate inspection over multiple model aspects with one call.
+
+    Args:
+        idf_path: Path to the IDF file.
+        focus: One or more of ["summary","zones","surfaces","materials","schedules","people","lights","electric_equipment"] or ["all"].
+        detail: "summary" or "detailed" (controls verbosity; some inspectors may ignore it).
+        include_values: If true, schedules include time-series values (applies to schedules only).
+
+    Returns:
+        JSON string containing results keyed by focus, plus metadata and per-section errors.
+    """
+    logger.info(
+        f"inspect_model start: idf_path={idf_path}, focus={focus}, detail={detail}, include_values={include_values}"
+    )
+
+    # Normalize and validate focus
+    canonical = {
+        "summary": "summary",
+        "model_summary": "summary",
+        "basics": "summary",
+        "model": "summary",
+        "zones": "zones",
+        "zone": "zones",
+        "surfaces": "surfaces",
+        "surface": "surfaces",
+        "materials": "materials",
+        "material": "materials",
+        "schedules": "schedules",
+        "schedule": "schedules",
+        "people": "people",
+        "occupancy": "people",
+        "lights": "lights",
+        "lighting": "lights",
+        "electric_equipment": "electric_equipment",
+        "equipment": "electric_equipment",
+        "electric-equipment": "electric_equipment",
+        "all": "all",
+    }
+
+    all_focus = [
+        "summary",
+        "zones",
+        "surfaces",
+        "materials",
+        "schedules",
+        "people",
+        "lights",
+        "electric_equipment",
+    ]
+
+    if not focus or any(canonical.get(x, x) == "all" for x in focus):
+        normalized: List[str] = list(all_focus)
+    else:
+        normalized = []
+        invalid: List[str] = []
+        for item in focus:
+            key = canonical.get(item, item)
+            if key in all_focus:
+                normalized.append(key)
+            else:
+                invalid.append(item)
+        if invalid:
+            msg = f"Invalid focus values: {invalid}. Allowed: {all_focus + ['all']}"
+            logger.warning(msg)
+            return json.dumps({
+                "meta": {"idf_path": idf_path, "detail": detail},
+                "results": {},
+                "errors": {"focus": msg},
+            }, indent=2)
+
+    results: Dict[str, Any] = {}
+    errors: Dict[str, str] = {}
+
+    # Dispatch map to internal helpers (EnergyPlusManager)
+    for section in normalized:
+        try:
+            if section == "summary":
+                results[section] = ep_manager.get_model_basics(idf_path)
+            elif section == "zones":
+                results[section] = ep_manager.list_zones(idf_path)
+            elif section == "surfaces":
+                results[section] = ep_manager.get_surfaces(idf_path)
+            elif section == "materials":
+                results[section] = ep_manager.get_materials(idf_path)
+            elif section == "schedules":
+                results[section] = ep_manager.inspect_schedules(idf_path, include_values)
+            elif section == "people":
+                results[section] = ep_manager.inspect_people(idf_path)
+            elif section == "lights":
+                results[section] = ep_manager.inspect_lights(idf_path)
+            elif section == "electric_equipment":
+                results[section] = ep_manager.inspect_electric_equipment(idf_path)
+        except FileNotFoundError as e:
+            logger.warning(f"File not found during inspect: {idf_path} -> {section}")
+            errors[section] = f"File not found: {str(e)}"
+        except Exception as e:
+            logger.error(f"Error inspecting {section} for {idf_path}: {str(e)}")
+            errors[section] = str(e)
+
+    payload = {
+        "meta": {"idf_path": idf_path, "detail": detail, "focus": normalized},
+        "results": results,
+        "errors": errors,
+    }
+    logger.info("inspect_model complete")
+    return json.dumps(payload, indent=2)
 
 @mcp.tool()
 async def copy_file(source_path: str, target_path: str, overwrite: bool = False, file_types: Optional[List[str]] = None) -> str:
@@ -105,7 +251,7 @@ async def load_idf_model(idf_path: str) -> str:
         return f"Error loading IDF {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_summary_tool()
 async def get_model_summary(idf_path: str) -> str:
     """
     Get basic model information (Building, Site, SimulationControl, Version)
@@ -151,7 +297,7 @@ async def check_simulation_settings(idf_path: str) -> str:
         return f"Error checking simulation settings for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_inspect_tool()
 async def inspect_schedules(idf_path: str, include_values: bool = False) -> str:
     """
     Inspect and inventory all schedule objects in the EnergyPlus model
@@ -175,7 +321,7 @@ async def inspect_schedules(idf_path: str, include_values: bool = False) -> str:
         return f"Error inspecting schedules for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_inspect_tool()
 async def inspect_people(idf_path: str) -> str:
     """
     Inspect and list all People objects in the EnergyPlus model
@@ -287,7 +433,7 @@ async def modify_people(
         return f"Error modifying People objects for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_inspect_tool()
 async def inspect_lights(idf_path: str) -> str:
     """
     Inspect and list all Lights objects in the EnergyPlus model
@@ -401,7 +547,7 @@ async def modify_lights(
         return f"Error modifying Lights objects for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_inspect_tool()
 async def inspect_electric_equipment(idf_path: str) -> str:
     """
     Inspect and list all ElectricEquipment objects in the EnergyPlus model
@@ -700,7 +846,7 @@ async def add_coating_outside(
         return f"Error adding exterior coating for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_inspect_tool()
 async def list_zones(idf_path: str) -> str:
     """
     List all zones in the EnergyPlus model
@@ -723,7 +869,7 @@ async def list_zones(idf_path: str) -> str:
         return f"Error listing zones for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_inspect_tool()
 async def get_surfaces(idf_path: str) -> str:
     """
     Get detailed surface information from the EnergyPlus model
@@ -745,7 +891,7 @@ async def get_surfaces(idf_path: str) -> str:
         logger.error(f"Error getting surfaces for {idf_path}: {str(e)}")
         return f"Error getting surfaces for {idf_path}: {str(e)}"
 
-@mcp.tool()
+@expose_inspect_tool()
 async def get_materials(idf_path: str) -> str:
     """
     Get material information from the EnergyPlus model
@@ -792,6 +938,56 @@ async def validate_idf(idf_path: str) -> str:
 
 
 @mcp.tool()
+async def get_outputs(
+    idf_path: str,
+    type: str = "variables",
+    discover_available: bool = False,
+    run_days: int = 1,
+) -> str:
+    """
+    Unified outputs accessor for variables/meters.
+
+    Args:
+        idf_path: Path to the IDF file.
+        type: One of "variables", "meters", or "both".
+        discover_available: If true, runs a short sim to discover available signals.
+        run_days: Number of days for discovery simulation (if enabled).
+
+    Returns:
+        JSON string with keys: {"variables": ..., "meters": ...} depending on `type`.
+    """
+    try:
+        logger.info(f"Getting outputs: {idf_path} (type={type}, discover_available={discover_available})")
+        kind = (type or "variables").lower()
+        if kind not in ("variables", "meters", "both"):
+            msg = "Invalid type. Use 'variables', 'meters', or 'both'."
+            logger.warning(msg)
+            return json.dumps({"error": msg, "allowed": ["variables", "meters", "both"]}, indent=2)
+
+        payload: Dict[str, Any] = {}
+        if kind in ("variables", "both"):
+            try:
+                payload["variables"] = ep_manager.get_output_variables(idf_path, discover_available, run_days)
+            except Exception as e:
+                logger.error(f"Variables retrieval failed: {e}")
+                payload.setdefault("errors", {})["variables"] = str(e)
+        if kind in ("meters", "both"):
+            try:
+                payload["meters"] = ep_manager.get_output_meters(idf_path, discover_available, run_days)
+            except Exception as e:
+                logger.error(f"Meters retrieval failed: {e}")
+                payload.setdefault("errors", {})["meters"] = str(e)
+
+        return json.dumps({"idf_path": idf_path, **payload}, indent=2)
+    except FileNotFoundError as e:
+        logger.warning(f"IDF file not found: {idf_path}")
+        return f"File not found: {str(e)}"
+    except Exception as e:
+        logger.error(f"Error getting outputs for {idf_path}: {str(e)}")
+        return f"Error getting outputs for {idf_path}: {str(e)}"
+
+
+@expose_output_tool()
 async def get_output_variables(idf_path: str, discover_available: bool = False, run_days: int = 1) -> str:
     """
     Get output variables from the model - either configured variables or discover all available ones
@@ -822,7 +1018,7 @@ async def get_output_variables(idf_path: str, discover_available: bool = False, 
         return f"Error getting output variables for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_output_tool()
 async def get_output_meters(idf_path: str, discover_available: bool = False, run_days: int = 1) -> str:
     """
     Get output meters from the model - either configured meters or discover all available ones
