@@ -221,54 +221,35 @@ uv run python -m energyplus_mcp_server.server
 
 ## Available Tools
 
-The server provides tools organized into categories. To reduce cognitive load for LLMs, use the aggregated inspection/output tools by default (wrappers can be re-exposed via env flags).
+Use the unified tools first; expose individual wrappers via env flags only when needed. Tree below shows unified → wrappers.
 
-### 🗂️ Model Config & Loading
-- `load_idf_model` - Load and validate IDF files
-- `validate_idf` - Comprehensive model validation
-- `file_utils` — File listing and copy
-  - `action: "list"` → Browse sample/example/weather files; filters: `extensions`, `contains`, `limit`
-  - `action: "copy"` → Resolve and copy files (supports `mode: "dry_run"|"apply"`)
-- `get_model_summary` - Extract basic model information
-- `check_simulation_settings` - Review simulation control settings
-- `modify_simulation_control` - Modify simulation parameters
-- `modify_run_period` - Adjust simulation time periods
-  
+### 🔍 Inspection
+- `inspect_model`
+  - Focus: `summary | zones | surfaces | materials | schedules | people | lights | electric_equipment | all`
+  - Includes `get_outputs` (type: `variables|meters|both`)
+  - Wrappers (optional): `get_model_summary`, `inspect_people`, `inspect_lights`, `inspect_electric_equipment`, `list_zones`, `get_surfaces`, `get_materials`, `get_output_variables`, `get_output_meters`
+- `hvac_loop_inspect`
+  - Actions: `discover | topology | visualize`
+  - Wrappers (optional): `discover_hvac_loops`, `get_loop_topology`, `visualize_loop_diagram`
 
-### 🔍 Model Inspection (Aggregated)
-- `inspect_model` — Unified inspector. Args: `idf_path`, `focus: list["summary"|"zones"|"surfaces"|"materials"|"schedules"|"people"|"lights"|"electric_equipment"|"all"]`, `detail`, `include_values` (schedules only).
-- `get_outputs` — Unified outputs accessor. Args: `idf_path`, `type: "variables"|"meters"|"both"`, `discover_available`, `run_days`.
+### ⚙️ Modification
+- `modify_basic_parameters`
+  - Ops: `people.update`, `lights.update`, `electric_equipment.update`, `simulation_control.update`, `run_period.update`, `infiltration.scale`, `envelope.add_window_film`, `envelope.add_coating`, `outputs.add_variables`, `outputs.add_meters`
+  - Wrappers (optional): `modify_people`, `modify_lights`, `modify_electric_equipment`, `modify_simulation_control`, `modify_run_period`, `change_infiltration_by_mult`, `add_window_film_outside`, `add_coating_outside`, `add_output_variables`, `add_output_meters`
 
-Wrappers like `inspect_people`, `inspect_lights`, `list_zones`, `get_surfaces`, `get_materials`, `get_output_variables`, `get_output_meters` are hidden by default but can be exposed by setting env flags (see below).
-
-### ⚙️ Model Modification (Aggregated)
-- `modify_basic_parameters` — Orchestrate non-HVAC edits by delegating to existing helpers. Supports ops:
-  - `people.update`, `lights.update`, `electric_equipment.update`
-  - `simulation_control.update`, `run_period.update`
-  - `infiltration.scale`, `envelope.add_window_film`, `envelope.add_coating`
-  - `outputs.add_variables`, `outputs.add_meters`
-  Args: `idf_path`, `operations: list[object]`, `mode: "dry_run"|"apply"` (default dry_run), `output_path?`, `capabilities?`, `detail?`.
-  - Capabilities: Call with `capabilities=true` (or `mode="dry_run"` and empty `operations`) to list supported ops, params, enums, and model hints without changing the file.
-  Returns: execution plan (dry-run/capabilities) or per-op results and final file (apply).
-
-Wrappers like `modify_people`, `modify_lights`, `modify_electric_equipment`, etc. are hidden by default and can be exposed via env flags.
-
-### 🚀 Simulation & Results
-- `run_energyplus_simulation` - Execute simulations
-- `create_interactive_plot` - Generate HTML visualizations
-- `hvac_loop_inspect` — Unified HVAC loop inspection.
-  - `action: "discover"` → List loops by type (`types: "plant"|"air"|"condenser"|"all"`)
-  - `action: "topology"` → Get detailed topology for `loop_name`
-  - Args: `idf_path`, `detail: "summary"|"detailed"` (controls verbosity)
-  - Legacy wrappers `discover_hvac_loops`/`get_loop_topology` can be re-exposed via `MCP_EXPOSE_HVAC_WRAPPERS=true`.
+### 🗂️ Files
+- `file_utils`
+  - Actions: `list` (sample/example/weather), `copy` (with dry_run/apply)
+  - Wrappers (optional): `list_available_files`, `copy_file`
 
 ### 🖥️ Server Management
-- `server_housekeeping` — Unified server ops.
-  - `action: "status"` → Server/system/paths/logs diagnostics (use `include_config: true` + `detail: "detailed"` to include config)
-  - `action: "logs"` → View logs with filters: `type: "server"|"error"|"both"`, `lines`, optional `contains`, `since`, `format`
-  - `action: "clear_logs"` → Safe rotation: `select: "server"|"error"|"both"`, `mode: "dry_run"|"apply"` (rotate only, no delete)
+- `server_housekeeping`
+  - Actions: `status` (optionally include_config), `logs` (server/error/both, filters), `clear_logs` (dry_run/apply)
+  - Wrappers (optional): `get_server_status`, `get_server_logs`, `get_error_logs`, `clear_logs`
 
-Legacy wrappers (`get_server_status`, `get_server_logs`, `get_error_logs`, `clear_logs`) can be re-exposed via `MCP_EXPOSE_SERVER_WRAPPERS=true`.
+### 🚀 Lifecycle & Results
+- `load_idf_model`, `validate_idf`
+- `run_energyplus_simulation`, `create_interactive_plot`
 
 ### Tool Exposure Flags
 
