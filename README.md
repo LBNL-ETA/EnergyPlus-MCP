@@ -234,8 +234,13 @@ Use the unified tools first; expose individual wrappers via env flags only when 
 
 ### ⚙️ Modification
 - `modify_basic_parameters`
-  - Ops: `people.update`, `lights.update`, `electric_equipment.update`, `simulation_control.update`, `run_period.update`, `infiltration.scale`, `envelope.add_window_film`, `envelope.add_coating`, `outputs.add_variables`, `outputs.add_meters`
-  - Wrappers (optional): `modify_people`, `modify_lights`, `modify_electric_equipment`, `modify_simulation_control`, `modify_run_period`, `change_infiltration_by_mult`, `add_window_film_outside`, `add_coating_outside`, `add_output_variables`, `add_output_meters`
+  - Ops: `people.update`, `lights.update`, `electric_equipment.update`, `infiltration.scale`, `envelope.add_window_film`, `envelope.add_coating`, `outputs.add_variables`, `outputs.add_meters`
+  - Wrappers (optional): `modify_people`, `modify_lights`, `modify_electric_equipment`, `change_infiltration_by_mult`, `add_window_film_outside`, `add_coating_outside`, `add_output_variables`, `add_output_meters`
+
+### 🚀 Simulation
+- `simulation_manager`
+  - Actions: `run | update_settings | update_run_period | status | capabilities`
+  - Wrappers (optional): `run_simulation`, `run_energyplus_simulation` (deprecated), `modify_simulation_control`, `modify_run_period`
 
 ### 🗂️ Files
 - `file_utils`
@@ -249,7 +254,7 @@ Use the unified tools first; expose individual wrappers via env flags only when 
 
 ### 🚀 Lifecycle & Results
 - `load_idf_model`, `validate_idf`
-- `run_energyplus_simulation`, `create_interactive_plot`
+- `create_interactive_plot`
 
 ### Tool Exposure Flags
 
@@ -260,8 +265,9 @@ Use the unified tools first; expose individual wrappers via env flags only when 
 - `MCP_EXPOSE_SERVER_WRAPPERS=true` — Expose legacy server wrappers (`get_server_status`, `get_server_logs`, `get_error_logs`, `clear_logs`).
 - `MCP_EXPOSE_HVAC_WRAPPERS=true` — Expose legacy HVAC wrappers (`discover_hvac_loops`, `get_loop_topology`).
 - `MCP_EXPOSE_FILE_WRAPPERS=true` — Expose legacy file wrappers (`list_available_files`, `copy_file`).
+- `MCP_EXPOSE_SIM_WRAPPERS=true` — Expose simulation wrappers (`run_simulation`, legacy `run_energyplus_simulation`, `modify_simulation_control`, `modify_run_period`).
 
-By default, only `inspect_model` and `get_outputs` are exposed for read-only inspection/output.
+By default, unified tools are exposed (`inspect_model`, `get_outputs`, `modify_basic_parameters`, `simulation_manager`, `server_housekeeping`, `hvac_loop_inspect`, `file_utils`, `create_interactive_plot`). Enable thin wrappers via the flags above as needed.
 
 ## Usage Examples
 
@@ -290,7 +296,7 @@ By default, only `inspect_model` and `get_outputs` are exposed for read-only ins
 3. **Run simulation**:
    ```json
    {
-     "tool": "run_energyplus_simulation",
+     "tool": "run_simulation",
      "arguments": {
        "idf_path": "sample_files/1ZoneUncontrolled.idf",
        "weather_file": "sample_files/USA_CA_San.Francisco.Intl.AP.724940_TMY3.epw",

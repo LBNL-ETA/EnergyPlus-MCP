@@ -33,6 +33,8 @@ EXPOSE_MODIFY_WRAPPERS = os.getenv("MCP_EXPOSE_MODIFY_WRAPPERS", "false").lower(
 EXPOSE_SERVER_WRAPPERS = os.getenv("MCP_EXPOSE_SERVER_WRAPPERS", "false").lower() in ("1", "true", "yes")
 EXPOSE_HVAC_WRAPPERS = os.getenv("MCP_EXPOSE_HVAC_WRAPPERS", "false").lower() in ("1", "true", "yes")
 EXPOSE_FILE_WRAPPERS = os.getenv("MCP_EXPOSE_FILE_WRAPPERS", "false").lower() in ("1", "true", "yes")
+# Simulation wrapper exposure (run/modify wrappers)
+EXPOSE_SIM_WRAPPERS = os.getenv("MCP_EXPOSE_SIM_WRAPPERS", "false").lower() in ("1", "true", "yes")
 
 def expose_inspect_tool():
     """Decorator factory: expose inspect wrappers only when enabled.
@@ -87,6 +89,14 @@ def expose_hvac_tool():
 def expose_file_tool():
     """Decorator factory: expose legacy file utils wrappers only when enabled."""
     if EXPOSE_FILE_WRAPPERS:
+        return mcp.tool()
+    def _noop(func):
+        return func
+    return _noop
+
+def expose_sim_tool():
+    """Decorator factory: expose simulation wrappers only when enabled."""
+    if EXPOSE_SIM_WRAPPERS:
         return mcp.tool()
     def _noop(func):
         return func
@@ -655,7 +665,6 @@ async def modify_basic_parameters(
         operations: List of operations with fields:
           - op: one of [
               "people.update", "lights.update", "electric_equipment.update",
-              "simulation_control.update", "run_period.update",
               "infiltration.scale", "envelope.add_window_film", "envelope.add_coating",
               "outputs.add_variables", "outputs.add_meters"
             ]
@@ -678,8 +687,6 @@ async def modify_basic_parameters(
         "people.update",
         "lights.update",
         "electric_equipment.update",
-        "simulation_control.update",
-        "run_period.update",
         "infiltration.scale",
         "envelope.add_window_film",
         "envelope.add_coating",
@@ -703,10 +710,7 @@ async def modify_basic_parameters(
              "params": {"modifications": "list of {target, field_updates}"}},
             {"op": "electric_equipment.update", "description": "Update ElectricEquipment by all/zone/name target.",
              "params": {"modifications": "list of {target, field_updates}"}},
-            {"op": "simulation_control.update", "description": "Update SimulationControl fields.",
-             "params": {"field_updates": "dict of SimulationControl fields"}},
-            {"op": "run_period.update", "description": "Update RunPeriod fields.",
-             "params": {"field_updates": "dict of RunPeriod fields", "run_period_index": 0}},
+            # Simulation settings updates moved to simulation_manager tool
             {"op": "infiltration.scale", "description": "Scale ZoneInfiltration:DesignFlowRate by factor.",
              "params": {"mult": 0.9}},
             {"op": "envelope.add_window_film", "description": "Apply exterior window film via SimpleGlazingSystem.",
@@ -821,24 +825,7 @@ async def modify_basic_parameters(
             elif op_name == "electric_equipment.update":
                 mods = params.get("modifications") or []
                 resp = ep_manager.modify_electric_equipment(current_path, mods, None)
-            elif op_name == "simulation_control.update":
-                fields = params.get("field_updates") or {}
-                resp = ep_manager.modify_simulation_settings(
-                    idf_path=current_path,
-                    object_type="SimulationControl",
-                    field_updates=fields,
-                    output_path=None,
-                )
-            elif op_name == "run_period.update":
-                fields = params.get("field_updates") or {}
-                run_idx = int(params.get("run_period_index", 0))
-                resp = ep_manager.modify_simulation_settings(
-                    idf_path=current_path,
-                    object_type="RunPeriod",
-                    field_updates=fields,
-                    run_period_index=run_idx,
-                    output_path=None,
-                )
+            # simulation_control.update and run_period.update are handled via simulation_manager
             elif op_name == "infiltration.scale":
                 mult = float(params.get("mult", 1.0))
                 resp = ep_manager.change_infiltration_by_mult(current_path, mult, None)
@@ -1355,7 +1342,7 @@ async def modify_electric_equipment(
         return f"Error modifying ElectricEquipment objects for {idf_path}: {str(e)}"
 
 
-@expose_modify_tool()
+@expose_sim_tool()
 async def modify_simulation_control(
     idf_path: str, 
     field_updates: Dict[str, Any],  # Changed from str to Dict[str, Any]
@@ -1373,16 +1360,13 @@ async def modify_simulation_control(
         JSON string with modification results
     """
     try:
-        logger.info(f"Modifying SimulationControl: {idf_path}")
-        
-        # No need to parse JSON since we're receiving a dict directly
-        result = ep_manager.modify_simulation_settings(
+        logger.info(f"Modifying SimulationControl (wrapper): {idf_path}")
+        result = await simulation_manager(
+            action="update_settings",
             idf_path=idf_path,
-            object_type="SimulationControl",
-            field_updates=field_updates,  # Pass the dict directly
-            output_path=output_path
+            settings=field_updates,
         )
-        return f"SimulationControl modification results:\n{result}"
+        return result
     except FileNotFoundError as e:
         logger.warning(f"IDF file not found: {idf_path}")
         return f"File not found: {str(e)}"
@@ -1391,7 +1375,7 @@ async def modify_simulation_control(
         return f"Error modifying SimulationControl for {idf_path}: {str(e)}"
 
 
-@expose_modify_tool()
+@expose_sim_tool()
 async def modify_run_period(
     idf_path: str, 
     field_updates: Dict[str, Any],  # Changed from str to Dict[str, Any]
@@ -1411,17 +1395,14 @@ async def modify_run_period(
         JSON string with modification results
     """
     try:
-        logger.info(f"Modifying RunPeriod: {idf_path}")
-        
-        # No need to parse JSON since we're receiving a dict directly
-        result = ep_manager.modify_simulation_settings(
+        logger.info(f"Modifying RunPeriod (wrapper): {idf_path}")
+        result = await simulation_manager(
+            action="update_run_period",
             idf_path=idf_path,
-            object_type="RunPeriod",
-            field_updates=field_updates,  # Pass the dict directly
+            run_period=field_updates,
             run_period_index=run_period_index,
-            output_path=output_path
         )
-        return f"RunPeriod modification results:\n{result}"
+        return result
     except FileNotFoundError as e:
         logger.warning(f"IDF file not found: {idf_path}")
         return f"File not found: {str(e)}"
@@ -2020,51 +2001,196 @@ async def visualize_loop_diagram(
 
 
 @mcp.tool()
-async def run_energyplus_simulation(
-    idf_path: str, 
+async def simulation_manager(
+    action: Literal["run", "update_settings", "update_run_period", "status", "capabilities"],
+    idf_path: Optional[str] = None,
+    # Run args
     weather_file: Optional[str] = None,
     output_directory: Optional[str] = None,
     annual: bool = True,
     design_day: bool = False,
     readvars: bool = True,
-    expandobjects: bool = True
+    expandobjects: bool = True,
+    # Update settings args
+    settings: Optional[Dict[str, Any]] = None,
+    # Update run period args
+    run_period: Optional[Dict[str, Any]] = None,
+    run_period_index: int = 0,
+    # Status/capabilities
+    run_id: Optional[str] = None,
+    detail: Literal["summary", "detailed"] = "summary",
 ) -> str:
     """
-    Run EnergyPlus simulation with specified IDF and weather file
-    
+    Manage simulation execution and configuration in one place.
+
     Args:
-        idf_path: Path to the IDF file (can be absolute, relative, or just filename for sample files)
-        weather_file: Path to weather file (.epw) or city name (e.g., 'San Francisco'). If None, simulation runs without weather file
-        output_directory: Directory for simulation outputs (if None, creates timestamped directory in outputs/)
-        annual: Run annual simulation (default: True)
-        design_day: Run design day only simulation (default: False) 
-        readvars: Run ReadVarsESO after simulation to process outputs (default: True)
-        expandobjects: Run ExpandObjects prior to simulation for HVAC templates (default: True)
-    
+        action: One of "run", "update_settings", "update_run_period", "status", "capabilities".
+        idf_path: Path to the IDF file (required for all except pure capabilities).
+
+        For action="run":
+          - weather_file: Path or city name, optional
+          - output_directory: Where to write results (auto if omitted)
+          - annual, design_day, readvars, expandobjects: Standard flags
+
+        For action="update_settings":
+          - settings: Dict of SimulationControl fields to update
+
+        For action="update_run_period":
+          - run_period: Dict of RunPeriod fields to update
+          - run_period_index: Which RunPeriod to modify (default 0)
+
+        For action="status":
+          - run_id: Optional placeholder for future async support
+
+        For action="capabilities":
+          - detail: "summary" or "detailed"
+
     Returns:
-        JSON string with simulation results, duration, and output file paths
+        JSON string describing result for the requested action.
     """
     try:
-        logger.info(f"Running EnergyPlus simulation: {idf_path}")
-        if weather_file:
-            logger.info(f"With weather file: {weather_file}")
-        
-        result = ep_manager.run_simulation(
-            idf_path=idf_path,
-            weather_file=weather_file,
-            output_directory=output_directory,
-            annual=annual,
-            design_day=design_day,
-            readvars=readvars,
-            expandobjects=expandobjects
-        )
-        return f"EnergyPlus simulation completed:\n{result}"
+        if action == "capabilities":
+            payload = {
+                "tool": "simulation_manager",
+                "actions": [
+                    {
+                        "name": "run",
+                        "required": ["idf_path"],
+                        "optional": [
+                            "weather_file", "output_directory", "annual",
+                            "design_day", "readvars", "expandobjects"
+                        ],
+                    },
+                    {
+                        "name": "update_settings",
+                        "required": ["idf_path", "settings"],
+                        "notes": "Updates SimulationControl fields",
+                    },
+                    {
+                        "name": "update_run_period",
+                        "required": ["idf_path", "run_period"],
+                        "optional": ["run_period_index"],
+                        "notes": "Updates RunPeriod fields",
+                    },
+                    {
+                        "name": "status",
+                        "optional": ["run_id"],
+                        "notes": "Synchronous server; returns static status for now",
+                    },
+                ],
+                "detail": detail,
+            }
+            return json.dumps(payload, indent=2)
+
+        if action == "run":
+            if not idf_path:
+                return "Missing required parameter: idf_path"
+            logger.info(f"simulation_manager.run: {idf_path}")
+            if weather_file:
+                logger.info(f"With weather file: {weather_file}")
+            result = ep_manager.run_simulation(
+                idf_path=idf_path,
+                weather_file=weather_file,
+                output_directory=output_directory,
+                annual=annual,
+                design_day=design_day,
+                readvars=readvars,
+                expandobjects=expandobjects,
+            )
+            return f"Simulation run complete:\n{result}"
+
+        if action == "update_settings":
+            if not idf_path:
+                return "Missing required parameter: idf_path"
+            if not isinstance(settings, dict) or not settings:
+                return "Missing required parameter: settings (dict)"
+            logger.info(f"simulation_manager.update_settings: {idf_path}")
+            result = ep_manager.modify_simulation_settings(
+                idf_path=idf_path,
+                object_type="SimulationControl",
+                field_updates=settings,
+                output_path=None,
+            )
+            return f"SimulationControl updated:\n{result}"
+
+        if action == "update_run_period":
+            if not idf_path:
+                return "Missing required parameter: idf_path"
+            if not isinstance(run_period, dict) or not run_period:
+                return "Missing required parameter: run_period (dict)"
+            logger.info(f"simulation_manager.update_run_period: {idf_path} idx={run_period_index}")
+            result = ep_manager.modify_simulation_settings(
+                idf_path=idf_path,
+                object_type="RunPeriod",
+                field_updates=run_period,
+                run_period_index=int(run_period_index or 0),
+                output_path=None,
+            )
+            return f"RunPeriod updated:\n{result}"
+
+        if action == "status":
+            payload = {
+                "run_id": run_id or None,
+                "mode": "synchronous",
+                "queueing": False,
+                "message": "Runs execute synchronously; inspect output_directory from 'run' result.",
+            }
+            return json.dumps(payload, indent=2)
+
+        return f"Unsupported action: {action}"
+
     except FileNotFoundError as e:
-        logger.warning(f"File not found for simulation: {str(e)}")
+        logger.warning(f"File not found in simulation_manager: {str(e)}")
         return f"File not found: {str(e)}"
     except Exception as e:
-        logger.error(f"Error running EnergyPlus simulation: {str(e)}")
-        return f"Error running simulation: {str(e)}"
+        logger.error(f"simulation_manager error: {str(e)}")
+        return f"Error in simulation_manager: {str(e)}"
+
+
+# --- Simulation wrappers (optional exposure) ---
+@expose_sim_tool()
+async def run_simulation(
+    idf_path: str,
+    weather_file: Optional[str] = None,
+    output_directory: Optional[str] = None,
+    annual: bool = True,
+    design_day: bool = False,
+    readvars: bool = True,
+    expandobjects: bool = True,
+) -> str:
+    """Thin wrapper around simulation_manager(action="run")."""
+    return await simulation_manager(
+        action="run",
+        idf_path=idf_path,
+        weather_file=weather_file,
+        output_directory=output_directory,
+        annual=annual,
+        design_day=design_day,
+        readvars=readvars,
+        expandobjects=expandobjects,
+    )
+
+
+@expose_sim_tool()
+async def run_energyplus_simulation(
+    idf_path: str,
+    weather_file: Optional[str] = None,
+    output_directory: Optional[str] = None,
+    annual: bool = True,
+    design_day: bool = False,
+    readvars: bool = True,
+    expandobjects: bool = True,
+) -> str:
+    """Deprecated wrapper. Prefer run_simulation or simulation_manager."""
+    return await run_simulation(
+        idf_path=idf_path,
+        weather_file=weather_file,
+        output_directory=output_directory,
+        annual=annual,
+        design_day=design_day,
+        readvars=readvars,
+        expandobjects=expandobjects,
+    )
 
 
 @mcp.tool()
