@@ -31,6 +31,8 @@ EXPOSE_OUTPUT_WRAPPERS = os.getenv("MCP_EXPOSE_OUTPUT_WRAPPERS", "false").lower(
 EXPOSE_SUMMARY_WRAPPER = os.getenv("MCP_EXPOSE_SUMMARY_WRAPPER", "false").lower() in ("1", "true", "yes")
 EXPOSE_MODIFY_WRAPPERS = os.getenv("MCP_EXPOSE_MODIFY_WRAPPERS", "false").lower() in ("1", "true", "yes")
 EXPOSE_SERVER_WRAPPERS = os.getenv("MCP_EXPOSE_SERVER_WRAPPERS", "false").lower() in ("1", "true", "yes")
+EXPOSE_HVAC_WRAPPERS = os.getenv("MCP_EXPOSE_HVAC_WRAPPERS", "false").lower() in ("1", "true", "yes")
+EXPOSE_FILE_WRAPPERS = os.getenv("MCP_EXPOSE_FILE_WRAPPERS", "false").lower() in ("1", "true", "yes")
 
 def expose_inspect_tool():
     """Decorator factory: expose inspect wrappers only when enabled.
@@ -69,6 +71,22 @@ def expose_modify_tool():
 def expose_server_tool():
     """Decorator factory: expose legacy server wrappers only when enabled."""
     if EXPOSE_SERVER_WRAPPERS:
+        return mcp.tool()
+    def _noop(func):
+        return func
+    return _noop
+
+def expose_hvac_tool():
+    """Decorator factory: expose legacy HVAC loop wrappers only when enabled."""
+    if EXPOSE_HVAC_WRAPPERS:
+        return mcp.tool()
+    def _noop(func):
+        return func
+    return _noop
+
+def expose_file_tool():
+    """Decorator factory: expose legacy file utils wrappers only when enabled."""
+    if EXPOSE_FILE_WRAPPERS:
         return mcp.tool()
     def _noop(func):
         return func
@@ -199,7 +217,7 @@ async def inspect_model(
     logger.info("inspect_model complete")
     return json.dumps(payload, indent=2)
 
-@mcp.tool()
+@expose_file_tool()
 async def copy_file(source_path: str, target_path: str, overwrite: bool = False, file_types: Optional[List[str]] = None) -> str:
     """
     Copy a file from source to target location with intelligent path resolution
@@ -415,6 +433,210 @@ async def server_housekeeping(
             return f"Error clearing logs: {str(e)}"
 
     return json.dumps({"error": f"Unknown action '{action}'"}, indent=2)
+
+
+@mcp.tool()
+async def hvac_loop_inspect(
+    idf_path: str,
+    action: Literal["discover", "topology", "visualize"],
+    types: Literal["plant", "air", "condenser", "all"] = "all",
+    loop_name: Optional[str] = None,
+    detail: Literal["summary", "detailed"] = "summary",
+    topology_format: Literal["json", "graph"] = "json",
+    image_format: Literal["png", "jpg", "pdf", "svg"] = "png",
+    show_legend: bool = True,
+    output_path: Optional[str] = None,
+) -> str:
+    """
+    Unified HVAC loop inspection tool.
+
+    - action="discover": List HVAC loops by type (plant/air/condenser or all)
+    - action="topology": Get detailed topology for a specific loop
+    - action (future): "visualize" handled via legacy wrapper for now; reserved parameters included
+
+    Args:
+      idf_path: Path to the IDF file.
+      types: Loop types to include when discovering (ignored for topology).
+      loop_name: Target loop for topology view (required for topology).
+      detail: Controls verbosity of returned payload.
+      format: Reserved for future graph outputs (currently returns JSON structures).
+    """
+    timestamp = datetime.utcnow().isoformat()
+    try:
+        if action == "discover":
+            loops_json = ep_manager.discover_hvac_loops(idf_path)
+            try:
+                loops_data = json.loads(loops_json)
+            except Exception:
+                loops_data = {"raw": loops_json}
+
+            if isinstance(loops_data, dict) and types != "all":
+                filtered: Dict[str, Any] = {}
+                # Keep only requested type key if present
+                key_map = {"plant": "PlantLoops", "air": "AirLoops", "condenser": "CondenserLoops"}
+                sel_key = key_map.get(types)
+                if sel_key and sel_key in loops_data:
+                    filtered[sel_key] = loops_data.get(sel_key)
+                else:
+                    filtered = loops_data  # fallback
+                data = filtered
+            else:
+                data = loops_data
+
+            payload = {"meta": {"action": action, "idf_path": idf_path, "types": types, "detail": detail, "timestamp": timestamp},
+                       "data": data}
+            return json.dumps(payload, indent=2)
+
+        if action == "topology":
+            if not loop_name:
+                return json.dumps({"error": "loop_name is required for action='topology'"}, indent=2)
+            topo_json = ep_manager.get_loop_topology(idf_path, loop_name)
+            try:
+                topo = json.loads(topo_json)
+            except Exception:
+                topo = {"raw": topo_json}
+            payload = {"meta": {"action": action, "idf_path": idf_path, "loop_name": loop_name, "detail": detail, "timestamp": timestamp},
+                       "data": topo}
+            return json.dumps(payload, indent=2)
+
+        if action == "visualize":
+            viz_json = ep_manager.visualize_loop_diagram(
+                idf_path=idf_path,
+                loop_name=loop_name,
+                output_path=output_path,
+                format=image_format,
+                show_legend=show_legend,
+            )
+            try:
+                viz = json.loads(viz_json)
+            except Exception:
+                viz = {"raw": viz_json}
+            payload = {"meta": {"action": action, "idf_path": idf_path, "loop_name": loop_name, "image_format": image_format, "timestamp": timestamp},
+                       "data": viz}
+            return json.dumps(payload, indent=2)
+
+        return json.dumps({"error": f"Unknown action '{action}'"}, indent=2)
+    except ValueError as e:
+        # Try to assist by returning available loops
+        assist = None
+        try:
+            assist = json.loads(ep_manager.discover_hvac_loops(idf_path))
+        except Exception:
+            assist = None
+        return json.dumps({
+            "error": str(e),
+            "hints": {"available_loops": assist} if assist else {"note": "Could not discover available loops"}
+        }, indent=2)
+    except FileNotFoundError as e:
+        return f"File not found: {str(e)}"
+    except Exception as e:
+        logger.error(f"hvac_loop_inspect error: {e}")
+        return f"Error inspecting HVAC loops: {str(e)}"
+
+
+@mcp.tool()
+async def file_utils(
+    action: Literal["list", "copy"],
+    # list options
+    include_example_files: bool = False,
+    include_weather_data: bool = False,
+    extensions: Optional[List[str]] = None,
+    contains: Optional[str] = None,
+    limit: int = 200,
+    # copy options
+    source_path: Optional[str] = None,
+    target_path: Optional[str] = None,
+    overwrite: bool = False,
+    file_types: Optional[List[str]] = None,
+    mode: Literal["dry_run", "apply"] = "dry_run",
+) -> str:
+    """
+    Unified file utilities: list available files and copy files with path resolution.
+
+    - action="list": returns files from sample/example/weather directories.
+      Filters: extensions, contains (substring), limit per category.
+    - action="copy": resolves paths (dry_run) or performs copy (apply) via ep_manager.
+    """
+    try:
+        if action == "list":
+            raw = ep_manager.list_available_files(include_example_files, include_weather_data)
+            try:
+                data = json.loads(raw)
+            except Exception:
+                return raw
+            # Apply filters
+            def _filter_list(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                out = []
+                for it in items:
+                    name = it.get("name", "")
+                    if contains and contains not in name:
+                        continue
+                    if extensions:
+                        if not any(name.lower().endswith(ext.lower()) for ext in extensions):
+                            continue
+                    out.append(it)
+                    if len(out) >= max(1, limit):
+                        break
+                return out
+
+            for key in list(data.keys()):
+                section = data[key]
+                for cat in ("IDF files", "Weather files", "Other files"):
+                    if cat in section and isinstance(section[cat], list):
+                        section[cat] = _filter_list(section[cat])
+
+            return json.dumps({
+                "meta": {
+                    "action": action,
+                    "include_example_files": include_example_files,
+                    "include_weather_data": include_weather_data,
+                    "extensions": extensions,
+                    "contains": contains,
+                    "limit": limit,
+                },
+                "data": data,
+            }, indent=2)
+
+        if action == "copy":
+            if not source_path or not target_path:
+                return json.dumps({"error": "source_path and target_path are required for copy"}, indent=2)
+            if mode == "apply":
+                return await copy_file(source_path=source_path, target_path=target_path, overwrite=overwrite, file_types=file_types)
+            # dry_run: resolve paths without writing
+            try:
+                from energyplus_mcp_server.utils.path_utils import resolve_path
+                file_description = "file"
+                if file_types:
+                    if ".idf" in file_types:
+                        file_description = "IDF file"
+                    elif ".epw" in file_types:
+                        file_description = "weather file"
+                enable_fuzzy = file_types and ".epw" in file_types
+                resolved_source = resolve_path(config, source_path, file_types, file_description, must_exist=True, enable_fuzzy_weather_matching=enable_fuzzy)
+                resolved_target = resolve_path(config, target_path, must_exist=False, description="target file")
+                will_overwrite = os.path.exists(resolved_target)
+                return json.dumps({
+                    "meta": {"action": action, "mode": mode},
+                    "plan": {
+                        "source_path": source_path,
+                        "resolved_source": resolved_source,
+                        "target_path": target_path,
+                        "resolved_target": resolved_target,
+                        "will_overwrite": will_overwrite,
+                        "overwrite": overwrite,
+                        "file_types": file_types,
+                    }
+                }, indent=2)
+            except Exception as e:
+                return json.dumps({"error": f"Path resolution failed: {str(e)}"}, indent=2)
+
+        return json.dumps({"error": f"Unknown action '{action}'"}, indent=2)
+    except Exception as e:
+        logger.error(f"file_utils error: {e}")
+        return f"Error in file_utils: {str(e)}"
+
+
+@mcp.tool()
 async def modify_basic_parameters(
     idf_path: str,
     operations: List[Dict[str, Any]],
@@ -701,6 +923,7 @@ async def modify_basic_parameters(
     }
     logger.info("modify_basic_parameters complete")
     return json.dumps(payload, indent=2)
+
 
 @mcp.tool()
 async def load_idf_model(idf_path: str) -> str:
@@ -1657,7 +1880,7 @@ async def add_output_meters(
         return f"Error adding output meters: {str(e)}"
 
 
-@mcp.tool()
+@expose_file_tool()
 async def list_available_files(
     include_example_files: bool = False,
     include_weather_data: bool = False
@@ -1673,9 +1896,8 @@ async def list_available_files(
         JSON string with available files organized by source and type. Always includes sample_files directory.
     """
     try:
-        logger.info(f"Listing available files (example_files={include_example_files}, weather_data={include_weather_data})")
-        files = ep_manager.list_available_files(include_example_files, include_weather_data)
-        return f"Available files:\n{files}"
+        logger.info(f"Listing available files (legacy wrapper)")
+        return await file_utils(action="list", include_example_files=include_example_files, include_weather_data=include_weather_data)
     except Exception as e:
         logger.error(f"Error listing available files: {str(e)}")
         return f"Error listing available files: {str(e)}"
@@ -1714,7 +1936,7 @@ async def get_server_status() -> str:
         return f"Error getting server status: {str(e)}"
 
 
-@mcp.tool()
+@expose_hvac_tool()
 async def discover_hvac_loops(idf_path: str) -> str:
     """
     Discover all HVAC loops (Plant, Condenser, Air) in the EnergyPlus model
@@ -1726,9 +1948,8 @@ async def discover_hvac_loops(idf_path: str) -> str:
         JSON string with all HVAC loops found, organized by type
     """
     try:
-        logger.info(f"Discovering HVAC loops: {idf_path}")
-        loops = ep_manager.discover_hvac_loops(idf_path)
-        return f"HVAC loops discovered in {idf_path}:\n{loops}"
+        logger.info(f"Discovering HVAC loops (wrapper): {idf_path}")
+        return await hvac_loop_inspect(idf_path=idf_path, action="discover", types="all")
     except FileNotFoundError as e:
         logger.warning(f"IDF file not found: {idf_path}")
         return f"File not found: {str(e)}"
@@ -1737,7 +1958,7 @@ async def discover_hvac_loops(idf_path: str) -> str:
         return f"Error discovering HVAC loops for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_hvac_tool()
 async def get_loop_topology(idf_path: str, loop_name: str) -> str:
     """
     Get detailed topology information for a specific HVAC loop
@@ -1750,9 +1971,8 @@ async def get_loop_topology(idf_path: str, loop_name: str) -> str:
         JSON string with detailed loop topology including supply/demand sides, branches, and components
     """
     try:
-        logger.info(f"Getting loop topology for '{loop_name}': {idf_path}")
-        topology = ep_manager.get_loop_topology(idf_path, loop_name)
-        return f"Loop topology for '{loop_name}' in {idf_path}:\n{topology}"
+        logger.info(f"Getting loop topology (wrapper) for '{loop_name}': {idf_path}")
+        return await hvac_loop_inspect(idf_path=idf_path, action="topology", loop_name=loop_name)
     except FileNotFoundError as e:
         logger.warning(f"IDF file not found: {idf_path}")
         return f"File not found: {str(e)}"
@@ -1764,7 +1984,7 @@ async def get_loop_topology(idf_path: str, loop_name: str) -> str:
         return f"Error getting loop topology for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_hvac_tool()
 async def visualize_loop_diagram(
     idf_path: str, 
     loop_name: Optional[str] = None,
@@ -1786,7 +2006,9 @@ async def visualize_loop_diagram(
         JSON string with diagram generation results and file path
     """
     try:
-        logger.info(f"Creating loop diagram for '{loop_name or 'all loops'}': {idf_path} (show_legend={show_legend})")
+        logger.info(f"Creating loop diagram (wrapper) for '{loop_name or 'all loops'}': {idf_path} (show_legend={show_legend})")
+        # Delegate to unified tool for consistency
+        # Here we call the manager directly to preserve return shape, but keep wrapper gated
         result = ep_manager.visualize_loop_diagram(idf_path, loop_name, output_path, format, show_legend)
         return f"Loop diagram created:\n{result}"
     except FileNotFoundError as e:

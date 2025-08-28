@@ -226,8 +226,9 @@ The server provides tools organized into categories. To reduce cognitive load fo
 ### 🗂️ Model Config & Loading
 - `load_idf_model` - Load and validate IDF files
 - `validate_idf` - Comprehensive model validation
-- `list_available_files` - Browse sample files and weather data
-- `copy_file` - Intelligent file copying with path resolution
+- `file_utils` — File listing and copy
+  - `action: "list"` → Browse sample/example/weather files; filters: `extensions`, `contains`, `limit`
+  - `action: "copy"` → Resolve and copy files (supports `mode: "dry_run"|"apply"`)
 - `get_model_summary` - Extract basic model information
 - `check_simulation_settings` - Review simulation control settings
 - `modify_simulation_control` - Modify simulation parameters
@@ -252,11 +253,14 @@ Wrappers like `inspect_people`, `inspect_lights`, `list_zones`, `get_surfaces`, 
 
 Wrappers like `modify_people`, `modify_lights`, `modify_electric_equipment`, etc. are hidden by default and can be exposed via env flags.
 
-### 🚀 Simulation & Results (4 tools)
+### 🚀 Simulation & Results
 - `run_energyplus_simulation` - Execute simulations
 - `create_interactive_plot` - Generate HTML visualizations
-- `discover_hvac_loops` - Find all HVAC loops
-- `get_loop_topology` - Get HVAC loop details
+- `hvac_loop_inspect` — Unified HVAC loop inspection.
+  - `action: "discover"` → List loops by type (`types: "plant"|"air"|"condenser"|"all"`)
+  - `action: "topology"` → Get detailed topology for `loop_name`
+  - Args: `idf_path`, `detail: "summary"|"detailed"` (controls verbosity)
+  - Legacy wrappers `discover_hvac_loops`/`get_loop_topology` can be re-exposed via `MCP_EXPOSE_HVAC_WRAPPERS=true`.
 
 ### 🖥️ Server Management
 - `server_housekeeping` — Unified server ops.
@@ -273,6 +277,8 @@ Legacy wrappers (`get_server_status`, `get_server_logs`, `get_error_logs`, `clea
 - `MCP_EXPOSE_SUMMARY_WRAPPER=true` — Expose `get_model_summary` wrapper.
 - `MCP_EXPOSE_MODIFY_WRAPPERS=true` — Expose legacy modify wrappers (`modify_people`, `modify_lights`, etc.).
 - `MCP_EXPOSE_SERVER_WRAPPERS=true` — Expose legacy server wrappers (`get_server_status`, `get_server_logs`, `get_error_logs`, `clear_logs`).
+- `MCP_EXPOSE_HVAC_WRAPPERS=true` — Expose legacy HVAC wrappers (`discover_hvac_loops`, `get_loop_topology`).
+- `MCP_EXPOSE_FILE_WRAPPERS=true` — Expose legacy file wrappers (`list_available_files`, `copy_file`).
 
 By default, only `inspect_model` and `get_outputs` are exposed for read-only inspection/output.
 
@@ -325,24 +331,26 @@ By default, only `inspect_model` and `get_outputs` are exposed for read-only ins
 
 ### Advanced Features
 
-**HVAC System Analysis**:
+**HVAC System Analysis (discover + visualize)**:
 ```json
 {
-  "tool": "discover_hvac_loops",
+  "tool": "hvac_loop_inspect",
   "arguments": {
-    "idf_path": "sample_files/5ZoneAirCooled.idf"
+    "action": "discover",
+    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "types": "all"
   }
 }
 ```
 
-**Generate HVAC Diagram**:
 ```json
 {
-  "tool": "visualize_loop_diagram",
+  "tool": "hvac_loop_inspect",
   "arguments": {
+    "action": "visualize",
     "idf_path": "sample_files/5ZoneAirCooled.idf",
     "loop_name": "VAV Sys 1",
-    "format": "png"
+    "image_format": "png"
   }
 }
 ```
@@ -356,6 +364,34 @@ By default, only `inspect_model` and `get_outputs` are exposed for read-only ins
     "type": "both",
     "discover_available": true,
     "run_days": 1
+  }
+}
+```
+
+**File Utilities: List**
+```json
+{
+  "tool": "file_utils",
+  "arguments": {
+    "action": "list",
+    "include_example_files": false,
+    "include_weather_data": true,
+    "extensions": [".idf", ".epw"],
+    "limit": 50
+  }
+}
+```
+
+**File Utilities: Copy (dry-run)**
+```json
+{
+  "tool": "file_utils",
+  "arguments": {
+    "action": "copy",
+    "source_path": "5ZoneAirCooled.idf",
+    "target_path": "outputs/5ZoneAirCooled_copy.idf",
+    "file_types": [".idf"],
+    "mode": "dry_run"
   }
 }
 ```
@@ -428,6 +464,31 @@ Test tools interactively:
 ```bash
 cd energyplus-mcp-server
 uv run mcp-inspector energyplus_mcp_server.server
+```
+
+**HVAC Loops: Discover**
+```json
+{
+  "tool": "hvac_loop_inspect",
+  "arguments": {
+    "action": "discover",
+    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "types": "all"
+  }
+}
+```
+
+**HVAC Loops: Topology**
+```json
+{
+  "tool": "hvac_loop_inspect",
+  "arguments": {
+    "action": "topology",
+    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "loop_name": "VAV Sys 1",
+    "detail": "detailed"
+  }
+}
 ```
 
 ## Architecture
