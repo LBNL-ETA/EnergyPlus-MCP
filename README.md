@@ -237,6 +237,11 @@ Use the unified tools first; expose individual wrappers via env flags only when 
   - Ops: `people.update`, `lights.update`, `electric_equipment.update`, `infiltration.scale`, `envelope.add_window_film`, `envelope.add_coating`, `outputs.add_variables`, `outputs.add_meters`
   - Wrappers (optional): `modify_people`, `modify_lights`, `modify_electric_equipment`, `change_infiltration_by_mult`, `add_window_film_outside`, `add_coating_outside`, `add_output_variables`, `add_output_meters`
 
+### ✅ Preflight
+- `model_preflight`
+  - Actions: `load | validate | info | resolve_paths | readiness | capabilities`
+  - Wrappers (optional): `load_idf_model`, `validate_idf`
+
 ### 🚀 Simulation
 - `simulation_manager`
   - Actions: `run | update_settings | update_run_period | status | capabilities`
@@ -266,6 +271,7 @@ Use the unified tools first; expose individual wrappers via env flags only when 
 - `MCP_EXPOSE_HVAC_WRAPPERS=true` — Expose legacy HVAC wrappers (`discover_hvac_loops`, `get_loop_topology`).
 - `MCP_EXPOSE_FILE_WRAPPERS=true` — Expose legacy file wrappers (`list_available_files`, `copy_file`).
 - `MCP_EXPOSE_SIM_WRAPPERS=true` — Expose simulation wrappers (`run_simulation`, legacy `run_energyplus_simulation`, `modify_simulation_control`, `modify_run_period`).
+- `MCP_EXPOSE_MODEL_WRAPPERS=true` — Expose model preflight wrappers (`load_idf_model`, `validate_idf`).
 
 By default, unified tools are exposed (`inspect_model`, `get_outputs`, `modify_basic_parameters`, `simulation_manager`, `server_housekeeping`, `hvac_loop_inspect`, `file_utils`, `create_interactive_plot`). Enable thin wrappers via the flags above as needed.
 
@@ -273,11 +279,12 @@ By default, unified tools are exposed (`inspect_model`, `get_outputs`, `modify_b
 
 ### Basic Workflow
 
-1. **Load a model**:
+1. **Preflight: Load a model**:
    ```json
    {
-     "tool": "load_idf_model",
+     "tool": "model_preflight",
      "arguments": {
+       "action": "load",
        "idf_path": "sample_files/1ZoneUncontrolled.idf"
      }
    }
@@ -338,6 +345,18 @@ By default, unified tools are exposed (`inspect_model`, `get_outputs`, `modify_b
     "idf_path": "sample_files/5ZoneAirCooled.idf",
     "loop_name": "VAV Sys 1",
     "image_format": "png"
+  }
+}
+```
+
+**Preflight: Readiness check**
+```json
+{
+  "tool": "model_preflight",
+  "arguments": {
+    "action": "readiness",
+    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "weather_file": "sample_files/USA_CA_San.Francisco.Intl.AP.724940_TMY3.epw"
   }
 }
 ```

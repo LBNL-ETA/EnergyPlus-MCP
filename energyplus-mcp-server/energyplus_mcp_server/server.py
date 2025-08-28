@@ -33,6 +33,8 @@ EXPOSE_MODIFY_WRAPPERS = os.getenv("MCP_EXPOSE_MODIFY_WRAPPERS", "false").lower(
 EXPOSE_SERVER_WRAPPERS = os.getenv("MCP_EXPOSE_SERVER_WRAPPERS", "false").lower() in ("1", "true", "yes")
 EXPOSE_HVAC_WRAPPERS = os.getenv("MCP_EXPOSE_HVAC_WRAPPERS", "false").lower() in ("1", "true", "yes")
 EXPOSE_FILE_WRAPPERS = os.getenv("MCP_EXPOSE_FILE_WRAPPERS", "false").lower() in ("1", "true", "yes")
+# Model wrapper exposure (load/validate wrappers)
+EXPOSE_MODEL_WRAPPERS = os.getenv("MCP_EXPOSE_MODEL_WRAPPERS", "false").lower() in ("1", "true", "yes")
 # Simulation wrapper exposure (run/modify wrappers)
 EXPOSE_SIM_WRAPPERS = os.getenv("MCP_EXPOSE_SIM_WRAPPERS", "false").lower() in ("1", "true", "yes")
 
@@ -97,6 +99,14 @@ def expose_file_tool():
 def expose_sim_tool():
     """Decorator factory: expose simulation wrappers only when enabled."""
     if EXPOSE_SIM_WRAPPERS:
+        return mcp.tool()
+    def _noop(func):
+        return func
+    return _noop
+
+def expose_model_tool():
+    """Decorator factory: expose model preflight wrappers only when enabled."""
+    if EXPOSE_MODEL_WRAPPERS:
         return mcp.tool()
     def _noop(func):
         return func
@@ -923,19 +933,8 @@ async def load_idf_model(idf_path: str) -> str:
     Returns:
         JSON string with model information and loading status
     """
-    try:
-        logger.info(f"Loading IDF model: {idf_path}")
-        result = ep_manager.load_idf(idf_path)
-        return f"Successfully loaded IDF: {result['original_path']}\nModel info: {result}"
-    except FileNotFoundError as e:
-        logger.warning(f"IDF file not found: {idf_path}")
-        return f"File not found: {str(e)}"
-    except ValueError as e:
-        logger.warning(f"Invalid input for load_idf_model: {str(e)}")
-        return f"Invalid input: {str(e)}"
-    except Exception as e:
-        logger.error(f"Unexpected error loading IDF {idf_path}: {str(e)}")
-        return f"Error loading IDF {idf_path}: {str(e)}"
+    # Deprecated direct tool; use model_preflight(action="load"). Kept for compatibility.
+    return await model_preflight(action="load", idf_path=idf_path)
 
 
 @expose_summary_tool()
@@ -962,6 +961,141 @@ async def get_model_summary(idf_path: str) -> str:
 
 
 @mcp.tool()
+async def model_preflight(
+    action: Literal["load", "validate", "info", "resolve_paths", "readiness", "capabilities"],
+    idf_path: Optional[str] = None,
+    weather_file: Optional[str] = None,
+    detail: Literal["summary", "detailed"] = "summary",
+) -> str:
+    """
+    Read-only model preflight: load, validate, info, path resolution, readiness.
+
+    - load: basic open + counts
+    - validate: errors/warnings from ep_manager.validate_idf
+    - info: model basics (Building, Site, SimulationControl, Version)
+    - resolve_paths: resolve idf/weather paths using server config
+    - readiness: quick verdict with issues list (idd, idf, optional weather)
+    - capabilities: enumerate actions + params
+    """
+    try:
+        if action == "capabilities":
+            payload = {
+                "tool": "model_preflight",
+                "actions": [
+                    {"name": "load", "required": ["idf_path"]},
+                    {"name": "validate", "required": ["idf_path"]},
+                    {"name": "info", "required": ["idf_path"]},
+                    {"name": "resolve_paths", "required": ["idf_path"], "optional": ["weather_file"]},
+                    {"name": "readiness", "required": ["idf_path"], "optional": ["weather_file"]},
+                ],
+                "detail": detail,
+            }
+            return json.dumps(payload, indent=2)
+
+        if not idf_path and action != "capabilities":
+            return "Missing required parameter: idf_path"
+
+        if action == "load":
+            logger.info(f"model_preflight.load: {idf_path}")
+            result = ep_manager.load_idf(idf_path)
+            return json.dumps(result, indent=2)
+
+        if action == "validate":
+            logger.info(f"model_preflight.validate: {idf_path}")
+            result = ep_manager.validate_idf(idf_path)
+            return f"Validation results for {idf_path}:\n{result}"
+
+        if action == "info":
+            logger.info(f"model_preflight.info: {idf_path}")
+            result = ep_manager.get_model_basics(idf_path)
+            return f"Model basics for {idf_path}:\n{result}"
+
+        if action == "resolve_paths":
+            logger.info(f"model_preflight.resolve_paths: idf={idf_path}, weather={weather_file}")
+            idf_resolved = ep_manager._resolve_idf_path(idf_path)  # Uses config + search paths
+            weather_resolved = None
+            weather_error = None
+            if weather_file:
+                try:
+                    weather_resolved = ep_manager._resolve_weather_file_path(weather_file)
+                except Exception as e:
+                    weather_error = str(e)
+            payload = {
+                "idf": {"input": idf_path, "resolved": idf_resolved, "exists": os.path.exists(idf_resolved)},
+                "weather": {
+                    "input": weather_file,
+                    "resolved": weather_resolved,
+                    "exists": bool(weather_resolved and os.path.exists(weather_resolved)),
+                    "error": weather_error,
+                },
+            }
+            return json.dumps(payload, indent=2)
+
+        if action == "readiness":
+            logger.info(f"model_preflight.readiness: idf={idf_path}, weather={weather_file}")
+            issues = []
+            verdict = True
+
+            # IDD availability
+            idd_path = config.energyplus.idd_path
+            idd_ok = bool(idd_path and os.path.exists(idd_path))
+            if not idd_ok:
+                issues.append(f"IDD not found at configured path: {idd_path}")
+                verdict = False
+
+            # IDF resolution
+            try:
+                idf_resolved = ep_manager._resolve_idf_path(idf_path)
+                if not os.path.exists(idf_resolved):
+                    issues.append(f"Resolved IDF does not exist: {idf_resolved}")
+                    verdict = False
+            except Exception as e:
+                issues.append(f"Failed to resolve IDF: {str(e)}")
+                verdict = False
+                idf_resolved = None
+
+            # Weather optional check
+            weather_resolved = None
+            if weather_file:
+                try:
+                    weather_resolved = ep_manager._resolve_weather_file_path(weather_file)
+                    if not os.path.exists(weather_resolved):
+                        issues.append(f"Resolved weather does not exist: {weather_resolved}")
+                        verdict = False
+                except Exception as e:
+                    issues.append(f"Failed to resolve weather file: {str(e)}")
+                    verdict = False
+
+            # Validation quick pass
+            try:
+                validation = ep_manager.validate_idf(idf_path)
+                # validation is JSON string from manager; keep as-is but detect error count if present
+                validation_obj = json.loads(validation) if isinstance(validation, str) else validation
+                err_cnt = validation_obj.get("errors_count") if isinstance(validation_obj, dict) else None
+                if isinstance(err_cnt, int) and err_cnt > 0:
+                    issues.append(f"Validation errors: {err_cnt}")
+                    verdict = False
+            except Exception as e:
+                issues.append(f"Validation failed: {str(e)}")
+                verdict = False
+
+            payload = {
+                "verdict": verdict,
+                "idf": {"input": idf_path, "resolved": idf_resolved},
+                "weather": {"input": weather_file, "resolved": weather_resolved},
+                "idd": {"path": idd_path, "exists": idd_ok},
+                "issues": issues,
+            }
+            return json.dumps(payload, indent=2)
+
+        return f"Unsupported action: {action}"
+
+    except FileNotFoundError as e:
+        logger.warning(f"File not found in model_preflight: {str(e)}")
+        return f"File not found: {str(e)}"
+    except Exception as e:
+        logger.error(f"model_preflight error: {str(e)}")
+        return f"Error in model_preflight: {str(e)}"
 async def check_simulation_settings(idf_path: str) -> str:
     """
     Check SimulationControl and RunPeriod settings with information about modifiable fields
@@ -1595,7 +1729,7 @@ async def get_materials(idf_path: str) -> str:
         return f"Error getting materials for {idf_path}: {str(e)}"
 
 
-@mcp.tool()
+@expose_model_tool()
 async def validate_idf(idf_path: str) -> str:
     """
     Validate an EnergyPlus IDF file and return validation results
@@ -1606,16 +1740,8 @@ async def validate_idf(idf_path: str) -> str:
     Returns:
         JSON string with validation results, warnings, and errors
     """
-    try:
-        logger.info(f"Validating IDF: {idf_path}")
-        validation_result = ep_manager.validate_idf(idf_path)
-        return f"Validation results for {idf_path}:\n{validation_result}"
-    except FileNotFoundError as e:
-        logger.warning(f"IDF file not found: {idf_path}")
-        return f"File not found: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error validating IDF {idf_path}: {str(e)}")
-        return f"Error validating IDF {idf_path}: {str(e)}"
+    # Thin wrapper -> model_preflight(action="validate")
+    return await model_preflight(action="validate", idf_path=idf_path)
 
 
 @mcp.tool()
