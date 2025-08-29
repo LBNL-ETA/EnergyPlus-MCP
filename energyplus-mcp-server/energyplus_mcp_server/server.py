@@ -100,13 +100,31 @@ else:
 
 if EXPOSE_MASTERS:
     register_master_tools(mcp, ep_manager, config)
-    # Provide STARTUP_TIME to tools.server for uptime reporting
-    try:
-        from energyplus_mcp_server.tools import server as tools_server
-        tools_server.STARTUP_TIME = STARTUP_TIME
-    except Exception:
-        pass
     logger.info("Master tools registered via tools/ submodules")
+
+# Always register the server management tool regardless of mode
+try:
+    from energyplus_mcp_server.tools import server as tools_server
+    tools_server.register(mcp, ep_manager, config)
+    # Provide STARTUP_TIME to tools.server for uptime reporting
+    tools_server.STARTUP_TIME = STARTUP_TIME
+    logger.info("Server management tool registered (always-on)")
+except Exception as e:
+    logger.error(f"Failed to register server management tool: {e}")
+
+# Always register core functional tools regardless of mode
+for _mod_name, _label in (
+    ("preflight", "model_preflight"),
+    ("simulation", "simulation_manager"),
+    ("files", "file_utils"),
+    ("post", "post_processing"),
+):
+    try:
+        _mod = __import__(f"energyplus_mcp_server.tools.{_mod_name}", fromlist=["register"])  # type: ignore
+        _mod.register(mcp, ep_manager, config)  # type: ignore
+        logger.info(f"Core tool registered (always-on): {_label}")
+    except Exception as e:
+        logger.error(f"Failed to register core tool '{_label}': {e}")
 
 
 if __name__ == "__main__":
@@ -123,4 +141,3 @@ if __name__ == "__main__":
         raise
     finally:
         logger.info("Server stopped")
-

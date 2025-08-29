@@ -275,3 +275,70 @@ def get_file_info(file_path: str) -> dict:
         "is_writable": os.access(file_path, os.W_OK),
         "extension": os.path.splitext(file_path)[1].lower()
     }
+
+
+def _normalize_extensions(extensions: List[str]) -> List[str]:
+    """Normalize extensions to lower-case with leading dot."""
+    norm: List[str] = []
+    for ext in extensions or []:
+        e = ext.strip().lower()
+        if not e:
+            continue
+        if not e.startswith('.'):
+            e = '.' + e
+        norm.append(e)
+    return norm
+
+
+def list_files(config: Config,
+               include_example_files: bool = False,
+               include_weather_data: bool = False,
+               extensions: Optional[List[str]] = None,
+               limit: int = 100) -> List[dict]:
+    """
+    List files from sample_files and optionally EnergyPlus ExampleFiles and WeatherData.
+
+    Returns a list of file info dicts (see get_file_info), each with an extra 'source' key.
+    """
+    roots: List[tuple[str, str]] = []
+    # Always include repo sample files if configured
+    if getattr(config.paths, 'sample_files_path', None):
+        roots.append((config.paths.sample_files_path, 'sample'))
+    if include_example_files and getattr(config.energyplus, 'example_files_path', None):
+        roots.append((config.energyplus.example_files_path, 'example'))
+    if include_weather_data and getattr(config.energyplus, 'weather_data_path', None):
+        roots.append((config.energyplus.weather_data_path, 'weather'))
+
+    exts = _normalize_extensions(extensions or [])
+    results: List[dict] = []
+    seen: set[str] = set()
+
+    for root, source in roots:
+        try:
+            if not root or not os.path.exists(root):
+                continue
+            for dirpath, _, filenames in os.walk(root):
+                for fname in filenames:
+                    fpath = os.path.join(dirpath, fname)
+                    if exts and os.path.splitext(fname)[1].lower() not in exts:
+                        continue
+                    key = os.path.abspath(fpath)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    info = get_file_info(fpath)
+                    info['source'] = source
+                    results.append(info)
+                    if limit and len(results) >= limit:
+                        break
+                if limit and len(results) >= limit:
+                    break
+            if limit and len(results) >= limit:
+                break
+        except Exception:
+            # Skip any inaccessible roots
+            continue
+
+    # Sort for stable output: by source then name
+    results.sort(key=lambda x: (x.get('source', ''), x.get('name', '')))
+    return results

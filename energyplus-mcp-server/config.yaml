@@ -1,6 +1,6 @@
 tool_surface:
   # One of: masters | domains | hybrid
-  mode: masters
+  mode: domains
 
   # If set to true/false, overrides all wrapper exposure env flags
   enable_wrappers: false
@@ -10,5 +10,5 @@ tool_surface:
     envelope: true
     internal_loads: true
     hvac: true
-    outputs: false
+    outputs: true
 

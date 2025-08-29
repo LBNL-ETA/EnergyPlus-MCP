@@ -224,11 +224,18 @@ uv run python -m energyplus_mcp_server.server
 
 ## Available Tools
 
-Note on tool surface modes: By default, tools are grouped by function (masters). You can also organize them by domain (envelope/internal loads/HVAC/outputs) or expose both. Configure this via `config.yaml` → `tool_surface.mode: masters | domains | hybrid`. MCP clients enumerate only the tools that are registered at startup. See: [Tool Surface Profiles (config.yaml)](#tool-surface-profiles-configyaml).
+Note on tool surface modes: Tools can be grouped by function (masters) or by domain (envelope/internal loads/HVAC/outputs), or both. Configure via `config.yaml` → `tool_surface.mode: masters | domains | hybrid`. Some core tools are always registered regardless of mode. MCP clients enumerate only the tools that are registered at startup. See: [Tool Surface Profiles (config.yaml)](#tool-surface-profiles-configyaml).
+
+### Core (Always On)
+- `model_preflight` — Load, validate, info, resolve_paths, readiness (preflight)
+- `simulation_manager` — Run/update simulations, status
+- `file_utils` — List and copy sample/weather files
+- `post_processing` — Interactive plots
+- `server_manager` — Status, logs, clear logs
 
 Use the unified tools first; expose individual wrappers via env flags only when needed. Tree below shows unified → wrappers.
 
-### 🔍 Inspection
+### 🔍 Inspection (Masters)
 - `inspect_model`
   - Focus: `summary | zones | surfaces | materials | schedules | people | lights | electric_equipment | all`
   - Includes `get_outputs` (type: `variables|meters|both`)
@@ -237,23 +244,23 @@ Use the unified tools first; expose individual wrappers via env flags only when 
   - Actions: `discover | topology | visualize`
   - Wrappers (optional): `discover_hvac_loops`, `get_loop_topology`, `visualize_loop_diagram`
 
-### ⚙️ Modification
+### ⚙️ Modification (Masters)
 - `modify_basic_parameters`
   - Ops: `people.update`, `lights.update`, `electric_equipment.update`, `infiltration.scale`, `envelope.add_window_film`, `envelope.add_coating`, `outputs.add_variables`, `outputs.add_meters`
   - Wrappers (optional): `modify_people`, `modify_lights`, `modify_electric_equipment`, `change_infiltration_by_mult`, `add_window_film_outside`, `add_coating_outside`, `add_output_variables`, `add_output_meters`
 
-### ✅ Preflight
-- `model_preflight`
+### ✅ Preflight (Core)
+- `model_preflight` (always on)
   - Actions: `load | validate | info | resolve_paths | readiness | capabilities`
   - Wrappers (optional): `load_idf_model`, `validate_idf`
 
-### 🚀 Simulation
-- `simulation_manager`
+### 🚀 Simulation (Core)
+- `simulation_manager` (always on)
   - Actions: `run | update_settings | update_run_period | status | capabilities`
   - Wrappers (optional): `run_simulation`, `run_energyplus_simulation` (deprecated), `modify_simulation_control`, `modify_run_period`
 
-### 📊 Post-Processing
-- `post_processing`
+### 📊 Post-Processing (Core)
+- `post_processing` (always on)
   - Actions: `interactive_plot | capabilities`
   - Wrappers (optional): `create_interactive_plot`
 
@@ -264,13 +271,13 @@ Use the unified tools first; expose individual wrappers via env flags only when 
 - `outputs_manager` — List or add output variables/meters (with discovery)
 Enable these via `config.yaml` by setting `tool_surface.mode: domains` (or `hybrid`), and optionally toggle per-domain under `tool_surface.domains.*`.
 
-### 🗂️ Files
-- `file_utils`
+### 🗂️ Files (Core)
+- `file_utils` (always on)
   - Actions: `list` (sample/example/weather), `copy` (with dry_run/apply)
   - Wrappers (optional): `list_available_files`, `copy_file`
 
-### 🖥️ Server Management
-- `server_manager`
+### 🖥️ Server Management (Core)
+- `server_manager` (always on)
   - Actions: `status` (optionally include_config), `logs` (server/error/both, filters), `clear_logs` (dry_run/apply)
   - Wrappers (optional): `get_server_status`, `get_server_logs`, `get_error_logs`, `clear_logs`
 
@@ -289,7 +296,7 @@ Enable these via `config.yaml` by setting `tool_surface.mode: domains` (or `hybr
 - `MCP_EXPOSE_DOMAIN_MANAGERS=true` — Expose domain manager tools (`envelope_manager`, `internal_load_manager`, `hvac_manager`).
   - Controlled via YAML too: `tool_surface.mode: domains|hybrid`; per-domain toggles under `tool_surface.domains.*`.
 
-By default, unified tools are exposed (`inspect_model`, `get_outputs`, `model_preflight`, `modify_basic_parameters`, `simulation_manager`, `server_manager`, `hvac_loop_inspect`, `file_utils`, `post_processing`). Enable thin wrappers via the flags above as needed. MCP clients only see the tools registered at startup (as configured via `config.yaml` or env flags).
+By default, master tools are exposed when `mode: masters` (or `hybrid`): `inspect_model`, `get_outputs`, `modify_basic_parameters`, `hvac_loop_inspect`. Core tools are always available in all modes: `model_preflight`, `simulation_manager`, `file_utils`, `post_processing`, `server_manager`. Enable thin wrappers via the flags above if/when implemented. MCP clients only see the tools registered at startup (as configured via `config.yaml` or env flags).
 
 ## Usage Examples
 
