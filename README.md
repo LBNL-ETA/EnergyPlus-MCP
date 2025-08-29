@@ -20,7 +20,8 @@ A Model Context Protocol (MCP) server that provides **35 comprehensive tools** f
       - [VS Code Dev Container](#vs-code-dev-container)
       - [Docker Setup](#docker-setup)
       - [Local Development](#local-development)
-  - [Available Tools](#available-tools)
+- [Available Tools](#available-tools)
+    - [Tool Surface Profiles (config.yaml)](#tool-surface-profiles-configyaml)
     - [🔍 Inspection](#-inspection)
     - [⚙️ Modification](#️-modification)
     - [✅ Preflight](#-preflight)
@@ -223,6 +224,8 @@ uv run python -m energyplus_mcp_server.server
 
 ## Available Tools
 
+Note on tool surface modes: By default, tools are grouped by function (masters). You can also organize them by domain (envelope/internal loads/HVAC/outputs) or expose both. Configure this via `config.yaml` → `tool_surface.mode: masters | domains | hybrid`. MCP clients enumerate only the tools that are registered at startup. See: [Tool Surface Profiles (config.yaml)](#tool-surface-profiles-configyaml).
+
 Use the unified tools first; expose individual wrappers via env flags only when needed. Tree below shows unified → wrappers.
 
 ### 🔍 Inspection
@@ -259,6 +262,7 @@ Use the unified tools first; expose individual wrappers via env flags only when 
 - `internal_load_manager` — Inspect/modify people/lights/electric equipment
 - `hvac_manager` — Discover/topology/visualize HVAC loops
 - `outputs_manager` — List or add output variables/meters (with discovery)
+Enable these via `config.yaml` by setting `tool_surface.mode: domains` (or `hybrid`), and optionally toggle per-domain under `tool_surface.domains.*`.
 
 ### 🗂️ Files
 - `file_utils`
@@ -285,7 +289,7 @@ Use the unified tools first; expose individual wrappers via env flags only when 
 - `MCP_EXPOSE_DOMAIN_MANAGERS=true` — Expose domain manager tools (`envelope_manager`, `internal_load_manager`, `hvac_manager`).
   - Controlled via YAML too: `tool_surface.mode: domains|hybrid`; per-domain toggles under `tool_surface.domains.*`.
 
-By default, unified tools are exposed (`inspect_model`, `get_outputs`, `model_preflight`, `modify_basic_parameters`, `simulation_manager`, `server_manager`, `hvac_loop_inspect`, `file_utils`, `post_processing`). Enable thin wrappers via the flags above as needed.
+By default, unified tools are exposed (`inspect_model`, `get_outputs`, `model_preflight`, `modify_basic_parameters`, `simulation_manager`, `server_manager`, `hvac_loop_inspect`, `file_utils`, `post_processing`). Enable thin wrappers via the flags above as needed. MCP clients only see the tools registered at startup (as configured via `config.yaml` or env flags).
 
 ## Usage Examples
 
