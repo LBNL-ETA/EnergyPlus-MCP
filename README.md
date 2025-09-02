@@ -261,8 +261,8 @@ Use the unified tools first; expose individual wrappers via env flags only when 
 
 ### 📊 Post-Processing (Core)
 - `post_processing` (always on)
-  - Actions: `interactive_plot | capabilities`
-  - Wrappers (optional): `create_interactive_plot`
+  - Actions: `interactive_plot | parse_errors | capabilities`
+  - Wrappers (optional): `create_interactive_plot`, `parse_simulation_errors`
 
 ### 🧩 Domain Managers (optional)
 - `envelope_manager` — Inspect/modify envelope (surfaces, materials; infiltration.scale, window film, coating)
@@ -346,6 +346,18 @@ By default, master tools are exposed when `mode: masters` (or `hybrid`): `inspec
      }
    }
    ```
+
+5. **Parse simulation errors** (if simulation fails):
+   ```json
+   {
+     "tool": "post_processing",
+     "arguments": {
+       "action": "parse_errors",
+       "err_file_path": "outputs/1ZoneUncontrolled/1ZoneUncontrolled.err"
+     }
+   }
+   ```
+   Returns structured error analysis with severity levels, affected objects, and root cause analysis.
 
 ### Advanced Features
 

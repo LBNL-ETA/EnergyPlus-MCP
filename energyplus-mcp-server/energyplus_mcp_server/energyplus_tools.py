@@ -35,6 +35,7 @@ from .utils.output_meters import OutputMeterManager
 from .utils.people_utils import PeopleManager
 from .utils.lights_utils import LightsManager
 from .utils.electric_equipment_utils import ElectricEquipmentManager
+from .utils.error_parser import ErrorParser
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class EnergyPlusManager:
         self.people_manager = PeopleManager()
         self.lights_manager = LightsManager()
         self.electric_equipment_manager = ElectricEquipmentManager()
+        self.error_parser = ErrorParser()
         
         logger.info(f"EnergyPlus Manager initialized with IDD: {self.config.energyplus.idd_path}")
     
@@ -2798,6 +2800,26 @@ class EnergyPlusManager:
         return output_files
 
     # ------------------------ Post-Processing and Visualization ------------------------
+    def parse_simulation_errors(self, err_file_path: str) -> Dict[str, Any]:
+        """
+        Parse EnergyPlus error file and analyze errors
+        
+        Args:
+            err_file_path: Path to the .err file
+            
+        Returns:
+            Dictionary with parsed errors and analysis
+        """
+        # Parse the error file
+        parsed_errors = self.error_parser.parse_error_file(err_file_path)
+        
+        # Add root cause analysis if errors exist
+        if parsed_errors.get("exists") and not parsed_errors.get("error"):
+            analysis = self.error_parser.analyze_root_cause(parsed_errors)
+            parsed_errors["analysis"] = analysis
+        
+        return parsed_errors
+    
     def create_interactive_plot(self, output_directory: str, idf_name: str = None, 
                                 file_type: str = "auto", custom_title: str = None) -> str:
         """
