@@ -417,7 +417,7 @@ The server auto-detects EnergyPlus installation and uses sensible defaults. Conf
 
 EnergyPlus Model Context Protocol Server (EnergyPlus-MCP) Copyright (c) 2025, The Regents of the University of California, through Lawrence Berkeley National Laboratory (subject to receipt of any required approvals from the U.S. Dept. of Energy). All rights reserved.
 
-This software is distributed under a modified BSD license. See [License.txt](License.txt) for full license text.
+This software is distributed under a modified BSD license. See [License.txt](License.txt) for full license text and [Copyright.txt](Copyright.txt) for the copyright notice.
 
 If you have questions about your rights to use or distribute this software, please contact Berkeley Lab's Intellectual Property Office at IPO@lbl.gov.
 
