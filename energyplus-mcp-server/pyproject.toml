@@ -18,20 +18,20 @@ dependencies = [
     "plotly",
     "graphviz"
 ]
-license = {text = "MIT"}
+license = {text = "BSD-3-Clause-LBNL"}
 keywords = ["EnergyPlus", "MCP", "server"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
 ]
 
 [project.urls]
-homepage = "https://github.com/tsbyq/EnergyPlus_MCP"
-repository = "https://github.com/tsbyq/EnergyPlus_MCP"
+homepage = "https://github.com/LBNL-ETA/EnergyPlus-MCP"
+repository = "https://github.com/LBNL-ETA/EnergyPlus-MCP"
 
 [tool.setuptools.packages.find]
 where = ["."]
