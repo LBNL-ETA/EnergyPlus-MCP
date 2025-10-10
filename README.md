@@ -224,64 +224,38 @@ uv run python -m energyplus_mcp_server.server
 
 ## Available Tools
 
-Note on tool surface modes: Tools can be grouped by function (masters) or by domain (envelope/internal loads/HVAC/outputs), or both. Configure via `config.yaml` → `tool_surface.mode: masters | domains | hybrid`. Some core tools are always registered regardless of mode. MCP clients enumerate only the tools that are registered at startup. See: [Tool Surface Profiles (config.yaml)](#tool-surface-profiles-configyaml).
+### Tool Registration Modes
 
-### Core (Always On)
+The `mode` field in `config.yaml` controls how tools are organized and registered at startup:
+
+- **`domains`** (default): Tools organized by building domain - separate managers for envelope, internal loads, HVAC, and outputs. Best for domain-specific workflows.
+- **`masters`**: Unified tools that combine multiple operations - fewer tools with action/focus parameters. Best for reducing tool clutter.
+- **`hybrid`**: Both approaches available simultaneously.
+
+**Important:** MCP clients only see tools registered at startup. Change the mode in `config.yaml` before starting the server.
+
+### Core Tools (Always Available)
 - `model_preflight` — Load, validate, info, resolve_paths, readiness (preflight)
 - `simulation_manager` — Run/update simulations, status
 - `file_utils` — List and copy sample/weather files
 - `post_processing` — Interactive plots
 - `server_manager` — Status, logs, clear logs
 
-Use the unified tools first; expose individual wrappers via env flags only when needed. Tree below shows unified → wrappers.
+### Mode-Specific Tools
 
-### 🔍 Inspection (Masters)
-- `inspect_model`
-  - Focus: `summary | zones | surfaces | materials | schedules | people | lights | electric_equipment | all`
-  - Includes `get_outputs` (type: `variables|meters|both`)
-  - Wrappers (optional): `get_model_summary`, `inspect_people`, `inspect_lights`, `inspect_electric_equipment`, `list_zones`, `get_surfaces`, `get_materials`, `get_output_variables`, `get_output_meters`
-- `hvac_loop_inspect`
-  - Actions: `discover | topology | visualize`
-  - Wrappers (optional): `discover_hvac_loops`, `get_loop_topology`, `visualize_loop_diagram`
+#### When `mode: masters` - Unified Tools
+- `inspect_model` - Inspect model with focus parameter (zones, surfaces, materials, people, lights, etc.)
+- `modify_basic_parameters` - Modify various parameters through a single tool
+- `hvac_loop_inspect` - HVAC analysis with actions (discover, topology, visualize)
+- `get_outputs` - Get output variables and meters
 
-### ⚙️ Modification (Masters)
-- `modify_basic_parameters`
-  - Ops: `people.update`, `lights.update`, `electric_equipment.update`, `infiltration.scale`, `envelope.add_window_film`, `envelope.add_coating`, `outputs.add_variables`, `outputs.add_meters`
-  - Wrappers (optional): `modify_people`, `modify_lights`, `modify_electric_equipment`, `change_infiltration_by_mult`, `add_window_film_outside`, `add_coating_outside`, `add_output_variables`, `add_output_meters`
+#### When `mode: domains` (default) - Domain-Specific Managers
+- `envelope_manager` — Inspect/modify envelope (surfaces, materials, infiltration, window films, coatings)
+- `internal_load_manager` — Inspect/modify people, lights, and electric equipment
+- `hvac_manager` — Discover, analyze topology, and visualize HVAC loops
+- `outputs_manager` — List or add output variables/meters with discovery
 
-### ✅ Preflight (Core)
-- `model_preflight` (always on)
-  - Actions: `load | validate | info | resolve_paths | readiness | capabilities`
-  - Wrappers (optional): `load_idf_model`, `validate_idf`
-
-### 🚀 Simulation (Core)
-- `simulation_manager` (always on)
-  - Actions: `run | update_settings | update_run_period | status | capabilities`
-  - Wrappers (optional): `run_simulation`, `run_energyplus_simulation` (deprecated), `modify_simulation_control`, `modify_run_period`
-
-### 📊 Post-Processing (Core)
-- `post_processing` (always on)
-  - Actions: `interactive_plot | parse_errors | capabilities`
-  - Wrappers (optional): `create_interactive_plot`, `parse_simulation_errors`
-
-### 🧩 Domain Managers (optional)
-- `envelope_manager` — Inspect/modify envelope (surfaces, materials; infiltration.scale, window film, coating)
-- `internal_load_manager` — Inspect/modify people/lights/electric equipment
-- `hvac_manager` — Discover/topology/visualize HVAC loops
-- `outputs_manager` — List or add output variables/meters (with discovery)
-Enable these via `config.yaml` by setting `tool_surface.mode: domains` (or `hybrid`), and optionally toggle per-domain under `tool_surface.domains.*`.
-
-### 🗂️ Files (Core)
-- `file_utils` (always on)
-  - Actions: `list` (sample/example/weather), `copy` (with dry_run/apply)
-  - Wrappers (optional): `list_available_files`, `copy_file`
-
-### 🖥️ Server Management (Core)
-- `server_manager` (always on)
-  - Actions: `status` (optionally include_config), `logs` (server/error/both, filters), `clear_logs` (dry_run/apply)
-  - Wrappers (optional): `get_server_status`, `get_server_logs`, `get_error_logs`, `clear_logs`
-
-### Tool Exposure Flags
+### Optional Wrapper Tools
 
 - `MCP_EXPOSE_INSPECT_WRAPPERS=true` — Expose individual inspection wrappers (`inspect_people`, `inspect_lights`, `list_zones`, etc.).
 - `MCP_EXPOSE_OUTPUT_WRAPPERS=true` — Expose legacy output wrappers (`get_output_variables`, `get_output_meters`).
