@@ -3145,3 +3145,188 @@ class EnergyPlusManager:
                 return connector_info
         
         return None
+
+
+    def extract_geometry(self, idf_path: str, output_format: str = "json", pretty: bool = True) -> str:
+        """
+        Extract complete building geometry from IDF file.
+        
+        Args:
+            idf_path: Path to the IDF file
+            output_format: Output format ("json", "summary", or "threejs")
+            pretty: Whether to format JSON with indentation
+            
+        Returns:
+            JSON string with geometry data or error message
+        """
+        from .utils.geometry_utils import extract_building_geometry, geometry_to_json, get_geometry_summary
+        
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Extracting geometry from: {resolved_path}")
+            idf = IDF(resolved_path)
+            
+            # Extract geometry
+            geometry = extract_building_geometry(idf)
+            
+            # Format output
+            if output_format.lower() == "summary":
+                return get_geometry_summary(geometry)
+            elif output_format.lower() == "threejs":
+                from .utils.geometry_threejs import geometry_to_threejs_json
+                return geometry_to_threejs_json(geometry, pretty=pretty)
+            else:
+                return geometry_to_json(geometry, pretty=pretty)
+                
+        except FileNotFoundError:
+            error_msg = f"IDF file not found: {resolved_path}"
+            logger.error(error_msg)
+            return json.dumps({"error": error_msg})
+        except Exception as e:
+            error_msg = f"Error extracting geometry: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return json.dumps({"error": error_msg})
+
+
+    def get_geometry_summary(self, idf_path: str) -> str:
+        """
+        Get a human-readable summary of building geometry.
+        
+        Args:
+            idf_path: Path to the IDF file
+            
+        Returns:
+            Formatted summary string or error message
+        """
+        from .utils.geometry_utils import extract_building_geometry, get_geometry_summary
+        
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Getting geometry summary from: {resolved_path}")
+            idf = IDF(resolved_path)
+            
+            # Extract and summarize geometry
+            geometry = extract_building_geometry(idf)
+            return get_geometry_summary(geometry)
+                
+        except FileNotFoundError:
+            error_msg = f"IDF file not found: {resolved_path}"
+            logger.error(error_msg)
+            return error_msg
+        except Exception as e:
+            error_msg = f"Error getting geometry summary: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return error_msg
+
+
+    def generate_geometry_html(self, idf_path: str) -> str:
+        """
+        Generate HTML viewer as a string (no file writing).
+        
+        Args:
+            idf_path: Path to the IDF file
+            
+        Returns:
+            HTML string with embedded geometry data
+        """
+        from .utils.geometry_utils import extract_building_geometry
+        from .utils.geometry_threejs import create_enhanced_html_viewer
+        
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Generating geometry HTML for: {resolved_path}")
+            
+            # Extract geometry
+            idf = IDF(resolved_path)
+            geometry = extract_building_geometry(idf)
+            
+            # Generate HTML with enhanced template
+            building_name = geometry.get("building", {}).get("name", "Building")
+            html_content = create_enhanced_html_viewer(
+                geometry_data=geometry,
+                title=f"{building_name} - Geometry Viewer"
+            )
+            
+            logger.info(f"Generated HTML viewer for: {building_name}")
+            return html_content
+            
+        except FileNotFoundError:
+            error_msg = f"IDF file not found: {resolved_path}"
+            logger.error(error_msg)
+            return f"<html><body><h1>Error</h1><p>{error_msg}</p></body></html>"
+        except Exception as e:
+            error_msg = f"Error generating geometry HTML: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return f"<html><body><h1>Error</h1><p>{error_msg}</p></body></html>"
+
+
+    def create_geometry_viewer(self, idf_path: str, output_path: Optional[str] = None) -> str:
+        """
+        Create an HTML viewer for building geometry visualization (writes files).
+        
+        Args:
+            idf_path: Path to the IDF file
+            output_path: Optional output path for HTML file (defaults to same directory as IDF)
+            
+        Returns:
+            JSON string with status and file paths
+        """
+        from .utils.geometry_utils import extract_building_geometry
+        from .utils.geometry_threejs import create_enhanced_html_viewer
+        
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Creating geometry viewer for: {resolved_path}")
+            
+            # Determine output paths
+            path_obj = Path(resolved_path)
+            base_name = path_obj.stem
+            
+            if output_path is None:
+                output_dir = path_obj.parent
+            else:
+                output_dir = Path(output_path).parent
+                if Path(output_path).suffix == '.html':
+                    base_name = Path(output_path).stem
+            
+            html_path = output_dir / f"{base_name}_viewer.html"
+            
+            # Extract geometry
+            idf = IDF(resolved_path)
+            geometry = extract_building_geometry(idf)
+            
+            # Generate HTML with enhanced template
+            building_name = geometry.get("building", {}).get("name", "Building")
+            html_content = create_enhanced_html_viewer(
+                geometry_data=geometry,
+                title=f"{building_name} - Geometry Viewer"
+            )
+            
+            # Write HTML file
+            with open(html_path, 'w') as f:
+                f.write(html_content)
+            
+            result = {
+                "success": True,
+                "message": "Geometry viewer created successfully",
+                "files": {
+                    "html": str(html_path)
+                },
+                "building_name": building_name
+            }
+            
+            logger.info(f"Viewer created: {html_path}")
+            return json.dumps(result, indent=2)
+            
+        except FileNotFoundError:
+            error_msg = f"IDF file not found: {resolved_path}"
+            logger.error(error_msg)
+            return json.dumps({"success": False, "error": error_msg})
+        except Exception as e:
+            error_msg = f"Error creating geometry viewer: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return json.dumps({"success": False, "error": error_msg})

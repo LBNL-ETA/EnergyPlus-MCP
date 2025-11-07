@@ -11,4 +11,5 @@ tool_surface:
     internal_loads: true
     hvac: true
     outputs: true
+    geometry: true
 

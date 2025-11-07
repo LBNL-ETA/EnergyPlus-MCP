@@ -93,6 +93,7 @@ if EXPOSE_DOMAIN_MANAGERS:
         internal_loads=True if doms.get("internal_loads") is None else bool(doms.get("internal_loads")),
         hvac=True if doms.get("hvac") is None else bool(doms.get("hvac")),
         outputs=True if doms.get("outputs") else False,
+        geometry=True if doms.get("geometry") is None else bool(doms.get("geometry")),
     )
     logger.info("Domain manager tools registered")
 else:

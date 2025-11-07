@@ -14,8 +14,10 @@ def register_all(mcp: Any, ep_manager: Any, config: Any,
                  envelope: bool = True,
                  internal_loads: bool = True,
                  hvac: bool = True,
-                 outputs: bool = False) -> None:
-    logger.info("Registering domain managers: envelope=%s, internal_loads=%s, hvac=%s", envelope, internal_loads, hvac)
+                 outputs: bool = False,
+                 geometry: bool = True) -> None:
+    logger.info("Registering domain managers: envelope=%s, internal_loads=%s, hvac=%s, geometry=%s", 
+                envelope, internal_loads, hvac, geometry)
     if envelope:
         from . import envelope as _env
         _env.register(mcp, ep_manager, config)
@@ -32,3 +34,7 @@ def register_all(mcp: Any, ep_manager: Any, config: Any,
         from . import outputs as _out
         _out.register(mcp, ep_manager, config)
         logger.info("Registered outputs_manager tool")
+    if geometry:
+        from . import geometry as _geom
+        _geom.register(mcp, ep_manager, config)
+        logger.info("Registered geometry_manager tool")
