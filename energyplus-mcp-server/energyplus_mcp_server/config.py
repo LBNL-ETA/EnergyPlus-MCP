@@ -31,6 +31,13 @@ class PathConfig:
     
     def __post_init__(self):
         """Set default paths after initialization"""
+        # Override workspace_root from environment if set
+        workspace_env = os.getenv('WORKSPACE_ROOT')
+        if workspace_env:
+            self.workspace_root = workspace_env
+            # Update output_dir to use the new workspace_root
+            self.output_dir = os.path.join(self.workspace_root, "outputs")
+        
         if not self.sample_files_path:
             self.sample_files_path = os.path.join(self.workspace_root, "sample_files")
 
@@ -150,7 +157,7 @@ class Config:
         
         # Create logs directory
         log_dir = Path(self.paths.workspace_root) / "logs"
-        log_dir.mkdir(exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
         
         # Configure root logger
         root_logger = logging.getLogger()

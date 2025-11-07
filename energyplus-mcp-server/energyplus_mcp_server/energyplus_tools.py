@@ -3189,36 +3189,47 @@ class EnergyPlusManager:
             return json.dumps({"error": error_msg})
 
 
-    def get_geometry_summary(self, idf_path: str) -> str:
+    def extract_geometry_with_summary(self, idf_path: str, pretty: bool = True) -> str:
         """
-        Get a human-readable summary of building geometry.
+        Extract building geometry with summary in a single JSON response.
         
         Args:
             idf_path: Path to the IDF file
+            pretty: Whether to format JSON with indentation
             
         Returns:
-            Formatted summary string or error message
+            JSON string with both geometry data and summary
         """
-        from .utils.geometry_utils import extract_building_geometry, get_geometry_summary
+        from .utils.geometry_utils import extract_building_geometry, get_brief_summary
         
         resolved_path = self._resolve_idf_path(idf_path)
         
         try:
-            logger.info(f"Getting geometry summary from: {resolved_path}")
+            logger.info(f"Extracting geometry with summary from: {resolved_path}")
             idf = IDF(resolved_path)
             
-            # Extract and summarize geometry
+            # Extract geometry
             geometry = extract_building_geometry(idf)
-            return get_geometry_summary(geometry)
+            
+            # Create brief summary
+            summary = get_brief_summary(geometry)
+            
+            # Combine into single response
+            result = {
+                "summary": summary,
+                "geometry": geometry
+            }
+            
+            return json.dumps(result, indent=2 if pretty else None)
                 
         except FileNotFoundError:
             error_msg = f"IDF file not found: {resolved_path}"
             logger.error(error_msg)
-            return error_msg
+            return json.dumps({"error": error_msg})
         except Exception as e:
-            error_msg = f"Error getting geometry summary: {str(e)}"
+            error_msg = f"Error extracting geometry with summary: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            return error_msg
+            return json.dumps({"error": error_msg})
 
 
     def generate_geometry_html(self, idf_path: str) -> str:

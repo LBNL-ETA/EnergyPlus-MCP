@@ -748,39 +748,104 @@ def create_enhanced_html_viewer(
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0xffffff);
             
-            // Setup camera
+            // STEP 1: Calculate building bounds in EnergyPlus space (for centering)
+            let minX = Infinity, maxX = -Infinity;
+            let minY = Infinity, maxY = -Infinity;
+            let minZ_EP = Infinity, maxZ_EP = -Infinity;  // Z in EnergyPlus space
+            
+            geometryData.surfaces.forEach(surface => {{
+                surface.vertices.forEach(v => {{
+                    minX = Math.min(minX, v[0]);
+                    maxX = Math.max(maxX, v[0]);
+                    minY = Math.min(minY, v[1]);
+                    maxY = Math.max(maxY, v[1]);
+                    minZ_EP = Math.min(minZ_EP, v[2]);  // Height in EnergyPlus
+                    maxZ_EP = Math.max(maxZ_EP, v[2]);
+                }});
+            }});
+            
+            // STEP 2: Calculate center offsets
+            const centerOffsetX = (minX + maxX) / 2;
+            const centerOffsetY = (minY + maxY) / 2;
+            
+            // STEP 3: Calculate building dimensions in Three.js space (after transformation)
+            const buildingWidth = maxX - minX;      // X stays X
+            const buildingDepth = maxY - minY;      // Y becomes -Z, but dimension is same
+            const buildingHeight = maxZ_EP - minZ_EP;  // Z becomes Y
+            const buildingSize = Math.max(buildingWidth, buildingDepth, buildingHeight);
+            
+            // Building center in Three.js space is now at (0, buildingHeight/2, 0)
+            const centerHeight = buildingHeight / 2;
+            
+            // STEP 4: Setup camera to view the centered building
+            const cameraDistance = buildingSize * 1.5;
             camera = new THREE.PerspectiveCamera(
                 50,
                 window.innerWidth / window.innerHeight,
                 0.1,
-                1000
+                buildingSize * 10
             );
-            camera.position.set(10, 8, 10);
-            camera.lookAt(0, 2, 0);
+            camera.position.set(
+                cameraDistance * 0.7,     // To the right
+                cameraDistance * 0.6,     // Above
+                cameraDistance * 0.7      // In front
+            );
+            camera.lookAt(0, centerHeight, 0);  // Look at building center
 
             // Setup renderer
             const container = document.getElementById('canvas-container');
             renderer = new THREE.WebGLRenderer({{ antialias: true }});
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
             container.appendChild(renderer.domElement);
 
             // Setup controls
             controls = new OrbitControls(camera, renderer.domElement);
-            controls.target.set(0, 2, 0);
+            controls.target.set(0, centerHeight, 0);  // Orbit around building center
             controls.update();
-
-            // Add lights
+            
+            // STEP 5: Setup lights OUTSIDE and ABOVE the building
+            // Light is positioned in Three.js space relative to centered building
+            const lightDistance = buildingSize * 2;
+            const lightHeight = maxZ_EP + buildingSize * 0.5;  // Above the building top
+            
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
             scene.add(ambientLight);
 
+            // Main directional light (like sun)
             const directionalLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
-            directionalLight1.position.set(10, 20, 10);
+            directionalLight1.position.set(
+                buildingWidth * 0.8,        // To the right of building
+                lightHeight,                // Well above building
+                buildingDepth * 0.8         // In front of building (positive Z in Three.js)
+            );
             directionalLight1.castShadow = true;
+            directionalLight1.target.position.set(0, 0, 0);  // Point at origin (building center)
+            scene.add(directionalLight1.target);
+            
+            // Configure shadow camera to cover the entire building AND its shadow
+            // Make it 3x building size to ensure shadow doesn't get clipped
+            const shadowCameraSize = buildingSize * 3;
+            directionalLight1.shadow.camera.left = -shadowCameraSize;
+            directionalLight1.shadow.camera.right = shadowCameraSize;
+            directionalLight1.shadow.camera.top = shadowCameraSize;
+            directionalLight1.shadow.camera.bottom = -shadowCameraSize;
+            directionalLight1.shadow.camera.near = 0.5;
+            directionalLight1.shadow.camera.far = lightHeight * 3;
+            directionalLight1.shadow.mapSize.width = 2048;
+            directionalLight1.shadow.mapSize.height = 2048;
+            directionalLight1.shadow.bias = -0.0001;
+            
             scene.add(directionalLight1);
 
-            const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.4);
-            directionalLight2.position.set(-10, 10, -10);
+            // Fill light from opposite side (no shadows)
+            const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.3);
+            directionalLight2.position.set(
+                -buildingWidth * 0.5,
+                buildingHeight * 0.8,
+                -buildingDepth * 0.5
+            );
             scene.add(directionalLight2);
 
             // Create materials
@@ -837,23 +902,7 @@ def create_enhanced_html_viewer(
                 }})
             }};
 
-            // Calculate building center for offset
-            let minX = Infinity, maxX = -Infinity;
-            let minY = Infinity, maxY = -Infinity;
-            
-            geometryData.surfaces.forEach(surface => {{
-                surface.vertices.forEach(v => {{
-                    minX = Math.min(minX, v[0]);
-                    maxX = Math.max(maxX, v[0]);
-                    minY = Math.min(minY, v[1]);
-                    maxY = Math.max(maxY, v[1]);
-                }});
-            }});
-            
-            const centerOffsetX = (minX + maxX) / 2;
-            const centerOffsetY = (minY + maxY) / 2;
-
-            // Helper function to create a quad
+            // Helper function to create a quad (centerOffsetX/Y already calculated above)
             function createQuad(vertices, material, offset = 0) {{
                 const geometry = new THREE.BufferGeometry();
                 
@@ -890,8 +939,10 @@ def create_enhanced_html_viewer(
                 geometry.computeVertexNormals();
                 
                 const mesh = new THREE.Mesh(geometry, material);
+                // Building surfaces cast shadows (onto ground) but DON'T receive them
+                // This prevents unrealistic self-shadowing (roof shadow on walls, etc.)
                 mesh.castShadow = true;
-                mesh.receiveShadow = true;
+                mesh.receiveShadow = false;  // Building doesn't shadow itself
                 
                 return mesh;
             }}

@@ -275,6 +275,55 @@ def geometry_to_json(geometry: Dict[str, Any], pretty: bool = True) -> str:
     return json.dumps(geometry)
 
 
+def get_brief_summary(geometry: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Generate a brief structured summary of the geometry.
+    
+    Args:
+        geometry: Dictionary containing geometry data
+        
+    Returns:
+        Dictionary with concise summary information
+    """
+    # Count surface types
+    surface_types = {}
+    for surface in geometry['surfaces']:
+        stype = surface.get('surface_type', 'Unknown')
+        surface_types[stype] = surface_types.get(stype, 0) + 1
+    
+    # Count subsurface types
+    subsurface_types = {}
+    for subsurface in geometry['subsurfaces']:
+        stype = subsurface.get('surface_type', 'Unknown')
+        subsurface_types[stype] = subsurface_types.get(stype, 0) + 1
+    
+    # Calculate total floor area and volume
+    total_floor_area = sum(zone.get('floor_area', 0) for zone in geometry['zones'])
+    total_volume = sum(zone.get('volume', 0) for zone in geometry['zones'])
+    
+    summary = {
+        "building": {
+            "name": geometry['building'].get('name', 'Unknown'),
+            "north_axis": geometry['building'].get('north_axis', 0),
+            "terrain": geometry['building'].get('terrain', 'Unknown')
+        },
+        "counts": {
+            "zones": len(geometry['zones']),
+            "surfaces": len(geometry['surfaces']),
+            "subsurfaces": len(geometry['subsurfaces']),
+            "shading_surfaces": len(geometry['shading_surfaces'])
+        },
+        "surface_types": surface_types,
+        "subsurface_types": subsurface_types,
+        "totals": {
+            "floor_area_m2": round(total_floor_area, 2),
+            "volume_m3": round(total_volume, 2)
+        }
+    }
+    
+    return summary
+
+
 def get_geometry_summary(geometry: Dict[str, Any]) -> str:
     """
     Generate a human-readable summary of the geometry.
