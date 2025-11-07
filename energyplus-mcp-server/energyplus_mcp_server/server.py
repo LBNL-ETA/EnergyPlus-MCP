@@ -32,7 +32,7 @@ def _load_tool_surface_config() -> Dict[str, Any]:
     cfg: Dict[str, Any] = {
         "mode": None,
         "enable_wrappers": None,
-        "domains": {"envelope": None, "internal_loads": None, "hvac": None, "outputs": None},
+        "domains": {"envelope": None, "internal_loads": None, "hvac": None, "outputs": None, "retrofit": None},
     }
     path = os.getenv("MCP_CONFIG_PATH") or str(Path(config.paths.workspace_root) / "config.yaml")
     try:
@@ -94,6 +94,7 @@ if EXPOSE_DOMAIN_MANAGERS:
         hvac=True if doms.get("hvac") is None else bool(doms.get("hvac")),
         outputs=True if doms.get("outputs") else False,
         geometry=True if doms.get("geometry") is None else bool(doms.get("geometry")),
+        retrofit=True if doms.get("retrofit") is None else bool(doms.get("retrofit")),
     )
     logger.info("Domain manager tools registered")
 else:
