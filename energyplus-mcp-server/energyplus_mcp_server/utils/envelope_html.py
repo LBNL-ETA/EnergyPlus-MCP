@@ -187,8 +187,8 @@ def create_envelope_html_viewer(building_name: str, envelope_data: Dict[str, Any
                                 {{isExpanded ? '▼' : '▶'}}
                             </span>
                         )}}
-                        <span style={{{{ marginRight: '8px' }}}}>{icon}</span>
-                        <span style={{{{ fontWeight: '500', color: color, flex: 1 }}}}>{label}</span>
+                        <span style={{{{ marginRight: '8px' }}}}{{icon}}</span>
+                        <span style={{{{ fontWeight: '500', color: color, flex: 1 }}}}{{label}}</span>
                         {{count !== undefined && (
                             <span style={{{{
                                 background: warning ? '#f59e0b' : '#e2e8f0',
@@ -198,13 +198,13 @@ def create_envelope_html_viewer(building_name: str, envelope_data: Dict[str, Any
                                 fontSize: '12px',
                                 fontWeight: '600'
                             }}}}>
-                                {count}
+                                {{count}}
                             </span>
                         )}}
                     </div>
                     {{isExpanded && children && (
                         <div style={{{{ marginLeft: '12px' }}}}>
-                            {children}
+                            {{children}}
                         </div>
                     )}}
                 </div>
@@ -235,7 +235,7 @@ def create_envelope_html_viewer(building_name: str, envelope_data: Dict[str, Any
                         Interactive visualization of building envelope relationships
                     </p>
 
-                    {/* Summary Stats */}
+                    {{/* Summary Stats */}}
                     <div style={{{{
                         display: 'grid',
                         gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
@@ -267,7 +267,7 @@ def create_envelope_html_viewer(building_name: str, envelope_data: Dict[str, Any
 
                     {warning_message}
 
-                    {/* View Toggle */}
+                    {{/* View Toggle */}}
                     <div style={{{{ marginBottom: '20px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}}}>
                         <button
                             onClick={{() => setView('zones')}}
@@ -316,7 +316,7 @@ def create_envelope_html_viewer(building_name: str, envelope_data: Dict[str, Any
                         </button>
                     </div>
 
-                    {/* Content */}
+                    {{/* Content */}}
                     <div style={{{{ marginTop: '20px' }}}}>
                         {{view === 'zones' && (
                             <div>
@@ -467,7 +467,7 @@ def create_envelope_html_viewer(building_name: str, envelope_data: Dict[str, Any
 
                         {{view === 'orphaned' && (
                             <div>
-                                {/* Orphaned Constructions */}
+                                {{/* Orphaned Constructions */}}
                                 <div style={{{{
                                     padding: '15px',
                                     background: envelopeData.orphanedConstructions.length > 0 ? '#fef3c7' : '#f0fdf4',
@@ -531,7 +531,7 @@ def create_envelope_html_viewer(building_name: str, envelope_data: Dict[str, Any
                                     </TreeNode>
                                 )}}
 
-                                {/* Orphaned Materials */}
+                                {{/* Orphaned Materials */}}
                                 <div style={{{{ marginTop: '30px' }}}}>
                                     <div style={{{{
                                         padding: '15px',
@@ -593,7 +593,7 @@ def create_envelope_html_viewer(building_name: str, envelope_data: Dict[str, Any
                         )}}
                     </div>
 
-                    {/* Footer */}
+                    {{/* Footer */}}
                     <div style={{{{
                         marginTop: '30px',
                         padding: '15px',

@@ -797,6 +797,499 @@ class EnergyPlusManager:
             raise RuntimeError(f"Error getting materials: {str(e)}")
     
 
+    def get_constructions(self, idf_path: str) -> str:
+        """Get construction information with layers"""
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.debug(f"Getting constructions for: {resolved_path}")
+            idf = IDF(resolved_path)
+            
+            constructions = []
+            
+            # Get Construction objects
+            construction_objs = idf.idfobjects.get("Construction", [])
+            for construction in construction_objs:
+                # Extract layers - first layer is "Outside_Layer", then "Layer_2", "Layer_3", etc.
+                layers = []
+                
+                # Get first layer (Outside_Layer)
+                first_layer = getattr(construction, 'Outside_Layer', None)
+                if first_layer:
+                    layers.append({"position": 1, "material": first_layer})
+                
+                # Get remaining layers (Layer_2, Layer_3, etc.)
+                layer_index = 2
+                while True:
+                    layer_field = f"Layer_{layer_index}"
+                    layer_name = getattr(construction, layer_field, None)
+                    if not layer_name:
+                        break
+                    layers.append({"position": layer_index, "material": layer_name})
+                    layer_index += 1
+                
+                construction_data = {
+                    "Type": "Construction",
+                    "Name": getattr(construction, 'Name', 'Unknown'),
+                    "Layers": layers,
+                    "Layer_Count": len(layers)
+                }
+                constructions.append(construction_data)
+            
+            logger.debug(f"Found {len(constructions)} constructions")
+            return json.dumps(constructions, indent=2)
+            
+        except Exception as e:
+            logger.error(f"Error getting constructions for {resolved_path}: {e}")
+            raise RuntimeError(f"Error getting constructions: {str(e)}")
+
+
+    def inspect_envelope_comprehensive(self, idf_path: str) -> str:
+        """Get comprehensive envelope inspection with surfaces, constructions, materials, and relationships"""
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Performing comprehensive envelope inspection for: {resolved_path}")
+            idf = IDF(resolved_path)
+            
+            # Get all materials with usage tracking
+            materials_dict = {}
+            material_to_constructions = {}  # Track which constructions use each material
+            
+            # Collect all material types
+            for mat_type in ["Material", "Material:NoMass", "WindowMaterial:SimpleGlazingSystem", 
+                           "WindowMaterial:Glazing", "WindowMaterial:Gas", "Material:AirGap"]:
+                for material in idf.idfobjects.get(mat_type, []):
+                    name = getattr(material, 'Name', 'Unknown')
+                    material_to_constructions[name] = []
+                    
+                    # Build material data based on type
+                    if mat_type == "Material":
+                        mat_data = {
+                            "name": name,
+                            "type": mat_type,
+                            "Roughness": getattr(material, 'Roughness', None),
+                            "Thickness": getattr(material, 'Thickness', None),
+                            "Conductivity": getattr(material, 'Conductivity', None),
+                            "Density": getattr(material, 'Density', None),
+                            "Specific_Heat": getattr(material, 'Specific_Heat', None),
+                            "Thermal_Absorptance": getattr(material, 'Thermal_Absorptance', None),
+                            "Solar_Absorptance": getattr(material, 'Solar_Absorptance', None),
+                            "Visible_Absorptance": getattr(material, 'Visible_Absorptance', None)
+                        }
+                    elif mat_type == "Material:NoMass":
+                        mat_data = {
+                            "name": name,
+                            "type": mat_type,
+                            "Roughness": getattr(material, 'Roughness', None),
+                            "Thermal_Resistance": getattr(material, 'Thermal_Resistance', None),
+                            "Thermal_Absorptance": getattr(material, 'Thermal_Absorptance', None),
+                            "Solar_Absorptance": getattr(material, 'Solar_Absorptance', None),
+                            "Visible_Absorptance": getattr(material, 'Visible_Absorptance', None)
+                        }
+                    elif mat_type == "WindowMaterial:SimpleGlazingSystem":
+                        mat_data = {
+                            "name": name,
+                            "type": mat_type,
+                            "UFactor": getattr(material, 'UFactor', None),
+                            "Solar_Heat_Gain_Coefficient": getattr(material, 'Solar_Heat_Gain_Coefficient', None),
+                            "Visible_Transmittance": getattr(material, 'Visible_Transmittance', None)
+                        }
+                    elif mat_type == "WindowMaterial:Glazing":
+                        mat_data = {
+                            "name": name,
+                            "type": mat_type,
+                            "Thickness": getattr(material, 'Thickness', None),
+                            "Solar_Transmittance": getattr(material, 'Solar_Transmittance_at_Normal_Incidence', None),
+                            "Front_Solar_Reflectance": getattr(material, 'Front_Side_Solar_Reflectance_at_Normal_Incidence', None),
+                            "Visible_Transmittance": getattr(material, 'Visible_Transmittance_at_Normal_Incidence', None),
+                            "Conductivity": getattr(material, 'Conductivity', None)
+                        }
+                    elif mat_type == "WindowMaterial:Gas":
+                        mat_data = {
+                            "name": name,
+                            "type": mat_type,
+                            "Gas_Type": getattr(material, 'Gas_Type', None),
+                            "Thickness": getattr(material, 'Thickness', None)
+                        }
+                    elif mat_type == "Material:AirGap":
+                        mat_data = {
+                            "name": name,
+                            "type": mat_type,
+                            "Thermal_Resistance": getattr(material, 'Thermal_Resistance', None)
+                        }
+                    else:
+                        mat_data = {"name": name, "type": mat_type}
+                    
+                    materials_dict[name] = mat_data
+            
+            # Get all constructions with layer details
+            constructions_list = []
+            construction_to_surfaces = {}  # Track which surfaces use each construction
+            
+            for construction in idf.idfobjects.get("Construction", []):
+                name = getattr(construction, 'Name', 'Unknown')
+                construction_to_surfaces[name] = []
+                
+                # Extract layers - first layer is "Outside_Layer", then "Layer_2", "Layer_3", etc.
+                layers = []
+                
+                # Get first layer (Outside_Layer)
+                first_layer = getattr(construction, 'Outside_Layer', None)
+                if first_layer:
+                    layers.append({
+                        "position": 1,
+                        "material": first_layer
+                    })
+                    # Track material usage
+                    if first_layer in material_to_constructions:
+                        material_to_constructions[first_layer].append(name)
+                
+                # Get remaining layers (Layer_2, Layer_3, etc.)
+                layer_index = 2
+                while True:
+                    layer_field = f"Layer_{layer_index}"
+                    layer_name = getattr(construction, layer_field, None)
+                    if not layer_name:
+                        break
+                    layers.append({
+                        "position": layer_index,
+                        "material": layer_name
+                    })
+                    # Track material usage
+                    if layer_name in material_to_constructions:
+                        material_to_constructions[layer_name].append(name)
+                    layer_index += 1
+                
+                constructions_list.append({
+                    "name": name,
+                    "layers": layers,
+                    "layer_count": len(layers),
+                    "materials_stack": [layer["material"] for layer in layers]
+                })
+            
+            # Get all surfaces
+            surfaces_list = []
+            exterior_count = 0
+            interior_count = 0
+            
+            for surface in idf.idfobjects.get("BuildingSurface:Detailed", []):
+                name = getattr(surface, 'Name', 'Unknown')
+                surface_type = getattr(surface, 'Surface_Type', 'Unknown')
+                construction = getattr(surface, 'Construction_Name', 'Unknown')
+                zone = getattr(surface, 'Zone_Name', 'Unknown')
+                boundary_condition = getattr(surface, 'Outside_Boundary_Condition', 'Unknown')
+                
+                # Track surface count for construction
+                if construction in construction_to_surfaces:
+                    construction_to_surfaces[construction].append(name)
+                
+                # Count exterior/interior
+                if boundary_condition in ["Outdoors", "Ground"]:
+                    exterior_count += 1
+                else:
+                    interior_count += 1
+                
+                # Find materials stack for this surface
+                materials_stack = []
+                for const in constructions_list:
+                    if const["name"] == construction:
+                        materials_stack = const["materials_stack"]
+                        break
+                
+                surfaces_list.append({
+                    "name": name,
+                    "surface_type": surface_type,
+                    "construction_name": construction,
+                    "zone_name": zone,
+                    "outside_boundary_condition": boundary_condition,
+                    "sun_exposure": getattr(surface, 'Sun_Exposure', 'Unknown'),
+                    "wind_exposure": getattr(surface, 'Wind_Exposure', 'Unknown'),
+                    "materials_stack": materials_stack
+                })
+            
+            # Add usage counts to constructions
+            for const in constructions_list:
+                const["used_by_surfaces"] = construction_to_surfaces.get(const["name"], [])
+                const["surface_count"] = len(const["used_by_surfaces"])
+            
+            # Add usage counts to materials
+            materials_list = []
+            for name, mat_data in materials_dict.items():
+                mat_data["used_in_constructions"] = material_to_constructions.get(name, [])
+                mat_data["construction_count"] = len(mat_data["used_in_constructions"])
+                # Count surfaces indirectly
+                surface_count = 0
+                for const_name in mat_data["used_in_constructions"]:
+                    surface_count += len(construction_to_surfaces.get(const_name, []))
+                mat_data["surface_count"] = surface_count
+                materials_list.append(mat_data)
+            
+            # Identify relationships and issues
+            relationships = {
+                "orphaned_constructions": [],
+                "orphaned_materials": [],
+                "missing_references": []
+            }
+            
+            # Find orphaned constructions (not used by any surface)
+            for const in constructions_list:
+                if const["surface_count"] == 0:
+                    relationships["orphaned_constructions"].append(const["name"])
+            
+            # Find orphaned materials (not used by any construction)
+            for mat in materials_list:
+                if mat["construction_count"] == 0:
+                    relationships["orphaned_materials"].append(mat["name"])
+            
+            # Find missing construction references
+            for surface in surfaces_list:
+                if surface["construction_name"] not in construction_to_surfaces:
+                    relationships["missing_references"].append({
+                        "surface": surface["name"],
+                        "missing_construction": surface["construction_name"]
+                    })
+            
+            # Count used constructions
+            used_constructions = len([c for c in constructions_list if c["surface_count"] > 0])
+            
+            # Compile comprehensive result
+            result = {
+                "file_path": resolved_path,
+                "summary": {
+                    "total_surfaces": len(surfaces_list),
+                    "exterior_surfaces": exterior_count,
+                    "interior_surfaces": interior_count,
+                    "total_constructions": len(constructions_list),
+                    "used_constructions": used_constructions,
+                    "total_materials": len(materials_list),
+                    "orphaned_constructions": len(relationships["orphaned_constructions"]),
+                    "orphaned_materials": len(relationships["orphaned_materials"]),
+                    "missing_references": len(relationships["missing_references"])
+                },
+                "constructions": constructions_list,
+                "materials": materials_list,
+                "surfaces": surfaces_list,
+                "relationships": relationships
+            }
+            
+            logger.info(f"Comprehensive envelope inspection complete: {len(surfaces_list)} surfaces, "
+                       f"{len(constructions_list)} constructions, {len(materials_list)} materials")
+            return json.dumps(result, indent=2)
+            
+        except Exception as e:
+            logger.error(f"Error in comprehensive envelope inspection for {resolved_path}: {e}")
+            raise RuntimeError(f"Error in comprehensive envelope inspection: {str(e)}")
+
+
+    def edit_material(self, idf_path: str, material_name: str, properties: Dict[str, Any], 
+                     output_path: Optional[str] = None) -> str:
+        """Edit material properties"""
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Editing material '{material_name}' in: {resolved_path}")
+            idf = IDF(resolved_path)
+            
+            # Find the material across all material types
+            material_obj = None
+            material_type = None
+            
+            for mat_type in ["Material", "Material:NoMass", "WindowMaterial:SimpleGlazingSystem",
+                           "WindowMaterial:Glazing", "WindowMaterial:Gas", "Material:AirGap"]:
+                objs = idf.idfobjects.get(mat_type, [])
+                for obj in objs:
+                    if getattr(obj, 'Name', None) == material_name:
+                        material_obj = obj
+                        material_type = mat_type
+                        break
+                if material_obj:
+                    break
+            
+            if not material_obj:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Material '{material_name}' not found in model"
+                })
+            
+            # Track changes
+            changes = []
+            
+            # Apply property updates
+            for prop_name, new_value in properties.items():
+                # Convert property name to IDF field name (e.g., "conductivity" -> "Conductivity")
+                field_name = prop_name.replace('_', ' ').title().replace(' ', '_')
+                
+                # Get old value
+                old_value = getattr(material_obj, field_name, None)
+                
+                # Set new value
+                try:
+                    setattr(material_obj, field_name, new_value)
+                    changes.append({
+                        "field": field_name,
+                        "old_value": old_value,
+                        "new_value": new_value
+                    })
+                except Exception as e:
+                    logger.warning(f"Could not set {field_name} on {material_name}: {e}")
+            
+            # Determine output path
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+            
+            # Save modified IDF
+            idf.save(output_path)
+            
+            result = {
+                "success": True,
+                "material_name": material_name,
+                "material_type": material_type,
+                "changes_applied": len(changes),
+                "changes": changes,
+                "input_file": resolved_path,
+                "output_file": output_path
+            }
+            
+            logger.info(f"Successfully modified material '{material_name}' with {len(changes)} changes")
+            return json.dumps(result, indent=2)
+            
+        except Exception as e:
+            logger.error(f"Error editing material for {resolved_path}: {e}")
+            return json.dumps({
+                "success": False,
+                "error": str(e),
+                "material_name": material_name
+            })
+
+
+    def edit_construction(self, idf_path: str, construction_name: str, layers: List[str],
+                         output_path: Optional[str] = None) -> str:
+        """Edit construction layers"""
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Editing construction '{construction_name}' in: {resolved_path}")
+            idf = IDF(resolved_path)
+            
+            # Find the construction
+            construction_obj = None
+            for const in idf.idfobjects.get("Construction", []):
+                if getattr(const, 'Name', None) == construction_name:
+                    construction_obj = const
+                    break
+            
+            if not construction_obj:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Construction '{construction_name}' not found in model"
+                })
+            
+            # Get old layers - first layer is "Outside_Layer", then "Layer_2", "Layer_3", etc.
+            old_layers = []
+            first_layer = getattr(construction_obj, 'Outside_Layer', None)
+            if first_layer:
+                old_layers.append(first_layer)
+            
+            layer_index = 2
+            while True:
+                layer_field = f"Layer_{layer_index}"
+                layer_name = getattr(construction_obj, layer_field, None)
+                if not layer_name:
+                    break
+                old_layers.append(layer_name)
+                layer_index += 1
+            
+            # Set new layers - first layer is "Outside_Layer", then "Layer_2", "Layer_3", etc.
+            if len(layers) > 0:
+                setattr(construction_obj, 'Outside_Layer', layers[0])
+            else:
+                setattr(construction_obj, 'Outside_Layer', "")
+            
+            # Set remaining layers (Layer_2, Layer_3, etc.)
+            for i, layer_material in enumerate(layers[1:], start=2):
+                layer_field = f"Layer_{i}"
+                setattr(construction_obj, layer_field, layer_material)
+            
+            # Clear any remaining old layers
+            for i in range(len(layers) + 1, len(old_layers) + 2):
+                if i == 1:
+                    continue  # Already handled Outside_Layer
+                layer_field = f"Layer_{i}"
+                if hasattr(construction_obj, layer_field):
+                    setattr(construction_obj, layer_field, "")
+            
+            # Determine output path
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+            
+            # Save modified IDF
+            idf.save(output_path)
+            
+            result = {
+                "success": True,
+                "construction_name": construction_name,
+                "old_layers": old_layers,
+                "new_layers": layers,
+                "layers_added": len(layers) - len(old_layers) if len(layers) > len(old_layers) else 0,
+                "layers_removed": len(old_layers) - len(layers) if len(old_layers) > len(layers) else 0,
+                "input_file": resolved_path,
+                "output_file": output_path
+            }
+            
+            logger.info(f"Successfully modified construction '{construction_name}'")
+            return json.dumps(result, indent=2)
+            
+        except Exception as e:
+            logger.error(f"Error editing construction for {resolved_path}: {e}")
+            return json.dumps({
+                "success": False,
+                "error": str(e),
+                "construction_name": construction_name
+            })
+
+
+    def generate_envelope_html(self, idf_path: str) -> str:
+        """
+        Generate an interactive HTML visualization of the building envelope.
+        Returns the HTML as a string.
+        
+        Args:
+            idf_path: Path to the IDF file
+            
+        Returns:
+            HTML string containing the interactive envelope viewer
+        """
+        from .utils.envelope_html import transform_envelope_data_for_viz, create_envelope_html_viewer
+        
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.debug(f"Generating envelope HTML for: {resolved_path}")
+            
+            # Get comprehensive envelope data
+            envelope_json = self.inspect_envelope_comprehensive(resolved_path)
+            envelope_data = json.loads(envelope_json)
+            
+            # Extract building name from path
+            building_name = Path(resolved_path).stem
+            
+            # Transform data for the visualization
+            viz_data = transform_envelope_data_for_viz(envelope_data)
+            
+            # Generate HTML
+            html = create_envelope_html_viewer(building_name, viz_data)
+            
+            logger.debug(f"Successfully generated envelope HTML for {building_name}")
+            return html
+            
+        except Exception as e:
+            logger.error(f"Error generating envelope HTML for {resolved_path}: {e}")
+            raise RuntimeError(f"Error generating envelope HTML: {str(e)}")
+
+
     def inspect_people(self, idf_path: str) -> str:
         """
         Inspect and list all People objects in the EnergyPlus model
