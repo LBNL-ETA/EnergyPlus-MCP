@@ -597,20 +597,20 @@ class EnergyPlusManager:
     
 
     def check_simulation_settings(self, idf_path: str) -> str:
-        """Check SimulationControl and RunPeriod settings with modifiable fields info"""
+        """Check SimulationControl, RunPeriod, and Timestep settings with modifiable fields info"""
         resolved_path = self._resolve_idf_path(idf_path)
-        
+
         try:
             logger.debug(f"Checking simulation settings for: {resolved_path}")
             idf = IDF(resolved_path)
-            
+
             settings_info = {
                 "file_path": resolved_path,
                 "SimulationControl": {
                     "current_values": {},
                     "modifiable_fields": {
                         "Do_Zone_Sizing_Calculation": "Yes/No - Controls zone sizing calculations",
-                        "Do_System_Sizing_Calculation": "Yes/No - Controls system sizing calculations", 
+                        "Do_System_Sizing_Calculation": "Yes/No - Controls system sizing calculations",
                         "Do_Plant_Sizing_Calculation": "Yes/No - Controls plant sizing calculations",
                         "Run_Simulation_for_Sizing_Periods": "Yes/No - Run design day simulations",
                         "Run_Simulation_for_Weather_File_Run_Periods": "Yes/No - Run annual weather file simulation",
@@ -623,7 +623,7 @@ class EnergyPlusManager:
                     "modifiable_fields": {
                         "Name": "String - Name of the run period",
                         "Begin_Month": "Integer 1-12 - Starting month",
-                        "Begin_Day_of_Month": "Integer 1-31 - Starting day", 
+                        "Begin_Day_of_Month": "Integer 1-31 - Starting day",
                         "Begin_Year": "Integer - Starting year (optional)",
                         "End_Month": "Integer 1-12 - Ending month",
                         "End_Day_of_Month": "Integer 1-31 - Ending day",
@@ -634,6 +634,12 @@ class EnergyPlusManager:
                         "Apply_Weekend_Holiday_Rule": "Yes/No",
                         "Use_Weather_File_Rain_Indicators": "Yes/No",
                         "Use_Weather_File_Snow_Indicators": "Yes/No"
+                    }
+                },
+                "Timestep": {
+                    "current_values": {},
+                    "modifiable_fields": {
+                        "Number_of_Timesteps_per_Hour": "Integer 1-60 - Number of zone timesteps per hour (default: 4, common values: 4, 6, 10, 12, 15, 20, 30, 60)"
                     }
                 }
             }
@@ -677,8 +683,18 @@ class EnergyPlusManager:
             
             if not run_objs:
                 settings_info["RunPeriod"]["error"] = "No RunPeriod objects found"
-            
-            logger.debug(f"Found {len(sim_objs)} SimulationControl and {len(run_objs)} RunPeriod objects")
+
+            # Get current Timestep values
+            timestep_objs = idf.idfobjects.get("Timestep", [])
+            if timestep_objs:
+                timestep = timestep_objs[0]
+                settings_info["Timestep"]["current_values"] = {
+                    "Number_of_Timesteps_per_Hour": getattr(timestep, 'Number_of_Timesteps_per_Hour', 'Unknown')
+                }
+            else:
+                settings_info["Timestep"]["error"] = "No Timestep object found (EnergyPlus will use default: 4 timesteps/hour)"
+
+            logger.debug(f"Found {len(sim_objs)} SimulationControl, {len(run_objs)} RunPeriod, and {len(timestep_objs)} Timestep objects")
             return json.dumps(settings_info, indent=2)
             
         except Exception as e:

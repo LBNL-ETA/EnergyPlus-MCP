@@ -14,16 +14,27 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         weather_file: Optional[str] = None,
         detail: Literal["summary", "detailed"] = "summary",
     ) -> str:
+        """Perform preflight checks and inspections on EnergyPlus IDF models.
+
+        Actions:
+        - load: Load and parse IDF file
+        - validate: Validate IDF file structure and objects
+        - info: Get comprehensive model information including building basics,
+                simulation settings (SimulationControl, RunPeriod, Timestep)
+        - resolve_paths: Resolve and verify IDF and weather file paths
+        - readiness: Check if model is ready for simulation
+        - capabilities: Show available actions and parameters
+        """
         try:
             if action == "capabilities":
                 return json.dumps({
                     "tool": "model_preflight",
                     "actions": [
-                        {"name": "load", "required": ["idf_path"]},
-                        {"name": "validate", "required": ["idf_path"]},
-                        {"name": "info", "required": ["idf_path"]},
-                        {"name": "resolve_paths", "required": ["idf_path"], "optional": ["weather_file"]},
-                        {"name": "readiness", "required": ["idf_path"], "optional": ["weather_file"]},
+                        {"name": "load", "required": ["idf_path"], "description": "Load and parse IDF file"},
+                        {"name": "validate", "required": ["idf_path"], "description": "Validate IDF file structure and objects"},
+                        {"name": "info", "required": ["idf_path"], "description": "Get comprehensive model information including building basics, simulation settings, run periods, and timestep configuration"},
+                        {"name": "resolve_paths", "required": ["idf_path"], "optional": ["weather_file"], "description": "Resolve and verify file paths"},
+                        {"name": "readiness", "required": ["idf_path"], "optional": ["weather_file"], "description": "Check simulation readiness (IDF, weather, IDD availability)"},
                     ],
                     "detail": detail,
                 }, indent=2)
@@ -40,8 +51,20 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 return f"Validation results for {idf_path}:\n{result}"
 
             if action == "info":
-                result = ep_manager.get_model_basics(idf_path)
-                return f"Model basics for {idf_path}:\n{result}"
+                basics = ep_manager.get_model_basics(idf_path)
+                settings = ep_manager.check_simulation_settings(idf_path)
+
+                # Combine both results
+                basics_dict = json.loads(basics) if isinstance(basics, str) else basics
+                settings_dict = json.loads(settings) if isinstance(settings, str) else settings
+
+                combined = {
+                    "file_path": idf_path,
+                    "model_basics": basics_dict,
+                    "simulation_settings": settings_dict
+                }
+
+                return json.dumps(combined, indent=2)
 
             if action == "resolve_paths":
                 idf_resolved = ep_manager._resolve_idf_path(idf_path)
