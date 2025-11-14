@@ -4043,6 +4043,277 @@ class EnergyPlusManager:
             logger.error(f"Error querying SQL tabular data: {e}")
             raise RuntimeError(f"Error querying SQL tabular data: {str(e)}")
 
+    def _generate_uplot_html(self, data_dict: Dict[str, Any], title: str) -> str:
+        """Generate standalone HTML file with uPlot visualization.
+
+        Args:
+            data_dict: Dictionary with 'timestamps', 'series_data', 'series_labels'
+            title: Plot title
+
+        Returns:
+            HTML string with embedded uPlot chart
+        """
+        html_template = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.24/dist/uPlot.min.css">
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
+        }}
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        h1 {{
+            margin: 0 0 20px 0;
+            font-size: 24px;
+            font-weight: 600;
+            color: #333;
+        }}
+        .chart-wrapper {{
+            width: 100%;
+            height: 600px;
+        }}
+        .legend {{
+            margin-top: 20px;
+            font-size: 13px;
+        }}
+        .legend-item {{
+            display: inline-block;
+            margin-right: 20px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }}
+        .legend-item:hover {{
+            background: #f0f0f0;
+        }}
+        .legend-item.disabled {{
+            opacity: 0.4;
+        }}
+        .legend-color {{
+            display: inline-block;
+            width: 20px;
+            height: 3px;
+            margin-right: 6px;
+            vertical-align: middle;
+        }}
+        /* Tooltip styling */
+        .uplot-tooltip {{
+            position: absolute;
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 1000;
+            white-space: nowrap;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }}
+        .uplot-tooltip-time {{
+            font-weight: 600;
+            margin-bottom: 6px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid rgba(255,255,255,0.3);
+        }}
+        .uplot-tooltip-series {{
+            display: flex;
+            align-items: center;
+            margin: 3px 0;
+        }}
+        .uplot-tooltip-marker {{
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>{title}</h1>
+        <div id="chart" class="chart-wrapper"></div>
+        <div id="legend" class="legend"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.24/dist/uPlot.iife.min.js"></script>
+    <script>
+        // Data from Python
+        const data = {data_json};
+
+        // Color palette
+        const colors = [
+            '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+        ];
+
+        // Configure series
+        const series = [
+            {{
+                label: "Time",
+                value: (u, v) => v == null ? '-' : new Date(v * 1000).toLocaleString()
+            }}
+        ];
+
+        data.series_labels.forEach((label, idx) => {{
+            series.push({{
+                label: label,
+                stroke: colors[idx % colors.length],
+                width: 2,
+                points: {{ show: false }},
+                value: (u, v) => v == null ? '-' : v.toFixed(2)
+            }});
+        }});
+
+        // uPlot options
+        const opts = {{
+            width: document.getElementById('chart').offsetWidth,
+            height: 600,
+            series: series,
+            axes: [
+                {{
+                    stroke: "#333",
+                    grid: {{ stroke: "#e0e0e0", width: 1 }},
+                    ticks: {{ stroke: "#999", width: 1 }},
+                    size: 90,  // Increased space for rotated labels
+                    rotate: -45,  // Rotate labels 45 degrees
+                    values: (u, vals) => vals.map(v => {{
+                        const d = new Date(v * 1000);
+                        const year = d.getFullYear();
+                        const month = String(d.getMonth() + 1).padStart(2, '0');
+                        const day = String(d.getDate()).padStart(2, '0');
+                        const hour = String(d.getHours()).padStart(2, '0');
+                        // Format: YYYY-MM-DD HH
+                        return `${{year}}-${{month}}-${{day}} ${{hour}}h`;
+                    }}),
+                    // Reduce number of ticks to prevent crowding
+                    space: 100  // Minimum pixels between ticks (increased for year)
+                }},
+                {{
+                    stroke: "#333",
+                    grid: {{ stroke: "#e0e0e0", width: 1 }},
+                    ticks: {{ stroke: "#999", width: 1 }},
+                    values: (u, vals) => vals.map(v => v.toFixed(2))
+                }}
+            ],
+            cursor: {{
+                drag: {{
+                    x: true,
+                    y: false
+                }},
+                sync: {{
+                    key: 'sync',
+                }}
+            }},
+            legend: {{
+                show: false  // We'll use custom legend
+            }}
+        }};
+
+        // Create tooltip element
+        const tooltip = document.createElement('div');
+        tooltip.className = 'uplot-tooltip';
+        tooltip.style.display = 'none';
+        document.body.appendChild(tooltip);
+
+        // Add tooltip plugin
+        opts.hooks = {{
+            setCursor: [
+                u => {{
+                    const {{ left, top, idx }} = u.cursor;
+
+                    if (idx === null || idx === undefined) {{
+                        tooltip.style.display = 'none';
+                        return;
+                    }}
+
+                    // Get timestamp
+                    const timestamp = data.data[0][idx];
+                    const d = new Date(timestamp * 1000);
+                    const dateStr = d.toLocaleString();
+
+                    // Build tooltip content
+                    let content = `<div class="uplot-tooltip-time">${{dateStr}}</div>`;
+
+                    // Add each series value
+                    data.series_labels.forEach((label, i) => {{
+                        const seriesIdx = i + 1;  // +1 because data[0] is timestamps
+                        const value = data.data[seriesIdx][idx];
+
+                        if (value !== null && value !== undefined && u.series[seriesIdx].show !== false) {{
+                            const color = colors[i % colors.length];
+                            content += `
+                                <div class="uplot-tooltip-series">
+                                    <span class="uplot-tooltip-marker" style="background: ${{color}}"></span>
+                                    <span>${{label}}: ${{value.toFixed(2)}}</span>
+                                </div>
+                            `;
+                        }}
+                    }});
+
+                    tooltip.innerHTML = content;
+
+                    // Position tooltip
+                    const chartRect = u.root.querySelector('.u-over').getBoundingClientRect();
+                    tooltip.style.display = 'block';
+                    tooltip.style.left = (chartRect.left + left + 10) + 'px';
+                    tooltip.style.top = (chartRect.top + top - tooltip.offsetHeight / 2) + 'px';
+                }}
+            ]
+        }};
+
+        // Create chart
+        const chart = new uPlot(opts, data.data, document.getElementById('chart'));
+
+        // Create custom legend with toggle
+        const legendDiv = document.getElementById('legend');
+        data.series_labels.forEach((label, idx) => {{
+            const item = document.createElement('div');
+            item.className = 'legend-item';
+            item.innerHTML = `<span class="legend-color" style="background: ${{colors[idx % colors.length]}}"></span>${{label}}`;
+            item.onclick = () => {{
+                const seriesIdx = idx + 1;  // +1 because series[0] is time axis
+                chart.setSeries(seriesIdx, {{ show: !chart.series[seriesIdx].show }});
+                item.classList.toggle('disabled');
+            }};
+            legendDiv.appendChild(item);
+        }});
+
+        // Hide tooltip when mouse leaves chart
+        chart.root.addEventListener('mouseleave', () => {{
+            tooltip.style.display = 'none';
+        }});
+
+        // Handle window resize
+        window.addEventListener('resize', () => {{
+            chart.setSize({{
+                width: document.getElementById('chart').offsetWidth,
+                height: 600
+            }});
+        }});
+    </script>
+</body>
+</html>"""
+
+        return html_template.format(
+            title=title,
+            data_json=json.dumps(data_dict)
+        )
+
     def visualize_output(
         self,
         sql_path: str,
@@ -4122,67 +4393,67 @@ class EnergyPlusManager:
                 logger.warning(f"Failed to add datetime column, falling back to TimeIndex: {e}")
                 use_datetime = False
 
-            # Create interactive plot
-            fig = go.Figure()
+            # Prepare data for uPlot
+            # uPlot expects: [[timestamps], [series1_values], [series2_values], ...]
 
-            # Determine x-axis data
-            x_data = df['datetime'] if use_datetime else df.index
-            x_title = "Date/Time" if use_datetime else "Time Index"
+            # Get timestamps as Unix timestamps (seconds since epoch)
+            if use_datetime:
+                timestamps = df['datetime'].apply(lambda x: x.timestamp() if pd.notna(x) else None).tolist()
+            else:
+                # Fallback: use TimeIndex as seconds (scaled for visualization)
+                timestamps = df.index.tolist()
+
+            # Prepare series data and labels
+            series_data = [timestamps]  # First array is timestamps
+            series_labels = []
 
             for var_id, meta in zip(variable_ids, metadata_list):
                 if var_id in df.columns:
-                    trace_name = f"{meta['Name']} ({meta['KeyValue']})"
+                    # Series label
+                    label = f"{meta['Name']} ({meta['KeyValue']})"
                     if meta['Units']:
-                        trace_name += f" [{meta['Units']}]"
+                        label += f" [{meta['Units']}]"
+                    series_labels.append(label)
 
-                    fig.add_trace(go.Scatter(
-                        x=x_data,
-                        y=df[var_id],
-                        mode='lines',
-                        name=trace_name,
-                        hovertemplate='%{y:.2f}<br>%{x}<extra></extra>'
-                    ))
+                    # Series values (convert to list, handle NaN)
+                    values = df[var_id].tolist()
+                    series_data.append(values)
 
-            # Update layout
+            # Create data dictionary for uPlot
+            data_dict = {
+                "data": series_data,
+                "series_labels": series_labels
+            }
+
+            # Generate HTML with uPlot
             title = custom_title or "EnergyPlus Time-Series Data"
-            fig.update_layout(
-                title=dict(text=title, x=0.5),
-                xaxis_title=x_title,
-                yaxis_title="Value",
-                hovermode='x unified',
-                template='plotly_white',
-                legend=dict(
-                    orientation="v",
-                    yanchor="top",
-                    y=1,
-                    xanchor="left",
-                    x=1.02
-                )
-            )
+            html_content = self._generate_uplot_html(data_dict, title)
 
             # Determine output path
             if output_path is None:
                 db_path = Path(resolved_path)
-                output_path = db_path.parent / f"{db_path.stem}_sql_plot.html"
+                output_file = db_path.parent / f"{db_path.stem}_uplot.html"
             else:
-                output_path = Path(output_path)
+                output_file = Path(output_path)
 
             # Save HTML
-            fig.write_html(str(output_path))
+            with open(str(output_file), 'w', encoding='utf-8') as f:
+                f.write(html_content)
 
             result = {
                 "success": True,
                 "database_path": resolved_path,
-                "output_file": str(output_path),
+                "output_file": str(output_file),
                 "variables_plotted": [
                     {"id": meta['ReportDataDictionaryIndex'], "name": meta['Name'], "key": meta['KeyValue']}
                     for meta in metadata_list
                 ],
                 "data_points": len(df),
-                "title": title
+                "title": title,
+                "library": "uPlot"
             }
 
-            logger.info(f"SQL plot created: {output_path}")
+            logger.info(f"uPlot visualization created: {output_file}")
             return json.dumps(result, indent=2)
 
         except Exception as e:
