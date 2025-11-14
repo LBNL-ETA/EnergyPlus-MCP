@@ -3837,6 +3837,344 @@ class EnergyPlusManager:
             logger.error(f"Error creating interactive plot: {e}")
             raise RuntimeError(f"Error creating interactive plot: {str(e)}")
 
+    # ==================== SQLite Query Methods ====================
+
+    def query_sql_variables(
+        self,
+        sql_path: str,
+        frequency: Optional[str] = None,
+        is_meter: Optional[bool] = None,
+        name_filter: Optional[str] = None,
+        include_summary: bool = True
+    ) -> str:
+        """Query available variables/meters in SQLite output database.
+
+        Args:
+            sql_path: Path to SQLite database file
+            frequency: Filter by reporting frequency (e.g., 'Hourly', 'Zone Timestep')
+            is_meter: True for meters only, False for variables only, None for both
+            name_filter: SQL LIKE pattern for filtering names (e.g., '%Temperature%')
+            include_summary: Include database summary statistics
+
+        Returns:
+            JSON string with variables list and optional summary
+        """
+        from .utils.sqlite_query import SQLiteQueryManager
+
+        try:
+            # Resolve path
+            from .utils.path_utils import resolve_path
+            resolved_path = resolve_path(
+                self.config,
+                sql_path,
+                file_types=['.sql'],
+                description="SQLite output database"
+            )
+
+            manager = SQLiteQueryManager(resolved_path)
+
+            # Get variables
+            df = manager.list_available_variables(
+                frequency=frequency,
+                is_meter=is_meter,
+                name_filter=name_filter
+            )
+
+            result = {
+                "database_path": resolved_path,
+                "filters": {
+                    "frequency": frequency,
+                    "is_meter": is_meter,
+                    "name_filter": name_filter
+                },
+                "variables_count": len(df),
+                "variables": df.to_dict('records')
+            }
+
+            # Add summary if requested
+            if include_summary:
+                summary = manager.get_database_summary()
+                result["database_summary"] = summary
+
+            logger.info(f"Found {len(df)} variables in {resolved_path}")
+            return json.dumps(result, indent=2)
+
+        except Exception as e:
+            logger.error(f"Error querying SQL variables: {e}")
+            raise RuntimeError(f"Error querying SQL variables: {str(e)}")
+
+    def query_sql_timeseries(
+        self,
+        sql_path: str,
+        variable_name: Optional[str] = None,
+        variable_id: Optional[int] = None,
+        key_value: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        output_format: str = "json"
+    ) -> str:
+        """Query time-series data from SQLite output database.
+
+        Args:
+            sql_path: Path to SQLite database file
+            variable_name: Variable name to query (alternative to variable_id)
+            variable_id: Variable ID (ReportDataDictionaryIndex) to query
+            key_value: Key value for disambiguation (zone, surface, etc.)
+            start_date: Start date filter (format: 'YYYY-MM-DD')
+            end_date: End date filter (format: 'YYYY-MM-DD')
+            output_format: 'json' or 'csv'
+
+        Returns:
+            JSON string with time-series data or CSV data
+        """
+        from .utils.sqlite_query import SQLiteQueryManager
+
+        try:
+            # Resolve path
+            from .utils.path_utils import resolve_path
+            resolved_path = resolve_path(
+                self.config,
+                sql_path,
+                file_types=['.sql'],
+                description="SQLite output database"
+            )
+
+            manager = SQLiteQueryManager(resolved_path)
+
+            # Get variable metadata if using name
+            metadata = None
+            if variable_id is None and variable_name:
+                var_id = manager.find_variable_id(variable_name, key_value)
+                if var_id is None:
+                    # List possible matches
+                    possible = manager.list_available_variables(name_filter=f"%{variable_name}%")
+                    return json.dumps({
+                        "error": f"Variable '{variable_name}' not found or ambiguous",
+                        "possible_matches": possible.to_dict('records')
+                    }, indent=2)
+                variable_id = var_id
+                metadata = manager.get_variable_metadata(variable_id)
+            elif variable_id:
+                metadata = manager.get_variable_metadata(variable_id)
+
+            # Get time series
+            df = manager.get_time_series(
+                variable_id=variable_id,
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            if output_format == "csv":
+                # Return CSV string
+                return df.to_csv(index=False)
+
+            # Return JSON
+            result = {
+                "database_path": resolved_path,
+                "variable_metadata": metadata,
+                "filters": {
+                    "start_date": start_date,
+                    "end_date": end_date
+                },
+                "data_points": len(df),
+                "time_series": df.to_dict('records')
+            }
+
+            logger.info(f"Retrieved {len(df)} time-series records for variable_id {variable_id}")
+            return json.dumps(result, indent=2)
+
+        except Exception as e:
+            logger.error(f"Error querying SQL time series: {e}")
+            raise RuntimeError(f"Error querying SQL time series: {str(e)}")
+
+    def query_sql_tabular(
+        self,
+        sql_path: str,
+        report_name: Optional[str] = None,
+        list_reports: bool = False
+    ) -> str:
+        """Query tabular reports from SQLite output database.
+
+        Args:
+            sql_path: Path to SQLite database file
+            report_name: Specific report name to retrieve
+            list_reports: If True, only list available reports
+
+        Returns:
+            JSON string with tabular data or list of reports
+        """
+        from .utils.sqlite_query import SQLiteQueryManager
+
+        try:
+            # Resolve path
+            from .utils.path_utils import resolve_path
+            resolved_path = resolve_path(
+                self.config,
+                sql_path,
+                file_types=['.sql'],
+                description="SQLite output database"
+            )
+
+            manager = SQLiteQueryManager(resolved_path)
+
+            # List reports if requested
+            if list_reports:
+                reports = manager.get_tabular_reports()
+                return json.dumps({
+                    "database_path": resolved_path,
+                    "reports_count": len(reports),
+                    "available_reports": reports
+                }, indent=2)
+
+            # Get tabular data
+            df = manager.get_tabular_report_data(report_name=report_name)
+
+            result = {
+                "database_path": resolved_path,
+                "report_name": report_name or "All reports",
+                "records_count": len(df),
+                "tabular_data": df.to_dict('records')
+            }
+
+            logger.info(f"Retrieved {len(df)} tabular data records")
+            return json.dumps(result, indent=2)
+
+        except Exception as e:
+            logger.error(f"Error querying SQL tabular data: {e}")
+            raise RuntimeError(f"Error querying SQL tabular data: {str(e)}")
+
+    def create_sql_plot(
+        self,
+        sql_path: str,
+        variable_ids: Optional[List[int]] = None,
+        variable_names: Optional[List[str]] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        custom_title: Optional[str] = None,
+        output_path: Optional[str] = None
+    ) -> str:
+        """Create interactive plot from SQLite database time-series data.
+
+        Args:
+            sql_path: Path to SQLite database file
+            variable_ids: List of variable IDs to plot
+            variable_names: List of variable names to plot (alternative to variable_ids)
+            start_date: Start date filter (format: 'YYYY-MM-DD')
+            end_date: End date filter (format: 'YYYY-MM-DD')
+            custom_title: Custom plot title
+            output_path: Optional output path for HTML file
+
+        Returns:
+            JSON string with plot creation results
+        """
+        from .utils.sqlite_query import SQLiteQueryManager
+
+        try:
+            # Resolve path
+            from .utils.path_utils import resolve_path
+            resolved_path = resolve_path(
+                self.config,
+                sql_path,
+                file_types=['.sql'],
+                description="SQLite output database"
+            )
+
+            manager = SQLiteQueryManager(resolved_path)
+
+            # Resolve variable names to IDs if needed
+            if variable_ids is None and variable_names:
+                variable_ids = []
+                for name in variable_names:
+                    var_id = manager.find_variable_id(name)
+                    if var_id is None:
+                        raise ValueError(f"Could not find variable: {name}")
+                    variable_ids.append(var_id)
+
+            if not variable_ids:
+                raise ValueError("Must provide either variable_ids or variable_names")
+
+            # Get metadata for all variables
+            metadata_list = []
+            for var_id in variable_ids:
+                meta = manager.get_variable_metadata(var_id)
+                if meta:
+                    metadata_list.append(meta)
+
+            # Get time series data
+            df = manager.get_multiple_time_series(
+                variable_ids=variable_ids,
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            if df.empty:
+                raise ValueError("No data found for specified variables and date range")
+
+            # Create interactive plot
+            fig = go.Figure()
+
+            for var_id, meta in zip(variable_ids, metadata_list):
+                if var_id in df.columns:
+                    trace_name = f"{meta['Name']} ({meta['KeyValue']})"
+                    if meta['Units']:
+                        trace_name += f" [{meta['Units']}]"
+
+                    fig.add_trace(go.Scatter(
+                        x=df.index,
+                        y=df[var_id],
+                        mode='lines',
+                        name=trace_name,
+                        hovertemplate='%{y:.2f}<extra></extra>'
+                    ))
+
+            # Update layout
+            title = custom_title or "EnergyPlus Time-Series Data"
+            fig.update_layout(
+                title=dict(text=title, x=0.5),
+                xaxis_title="Time Index",
+                yaxis_title="Value",
+                hovermode='x unified',
+                template='plotly_white',
+                legend=dict(
+                    orientation="v",
+                    yanchor="top",
+                    y=1,
+                    xanchor="left",
+                    x=1.02
+                )
+            )
+
+            # Determine output path
+            if output_path is None:
+                db_path = Path(resolved_path)
+                output_path = db_path.parent / f"{db_path.stem}_sql_plot.html"
+            else:
+                output_path = Path(output_path)
+
+            # Save HTML
+            fig.write_html(str(output_path))
+
+            result = {
+                "success": True,
+                "database_path": resolved_path,
+                "output_file": str(output_path),
+                "variables_plotted": [
+                    {"id": meta['ReportDataDictionaryIndex'], "name": meta['Name'], "key": meta['KeyValue']}
+                    for meta in metadata_list
+                ],
+                "data_points": len(df),
+                "title": title
+            }
+
+            logger.info(f"SQL plot created: {output_path}")
+            return json.dumps(result, indent=2)
+
+        except Exception as e:
+            logger.error(f"Error creating SQL plot: {e}")
+            raise RuntimeError(f"Error creating SQL plot: {str(e)}")
+
+    # ==================== End SQLite Query Methods ====================
+
     def _get_branches_from_list(self, idf, branch_list_name: str) -> List[Dict[str, Any]]:
         """Helper method to get branch information from a branch list"""
         branches = []
