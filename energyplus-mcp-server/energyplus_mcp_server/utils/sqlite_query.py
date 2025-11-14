@@ -318,6 +318,7 @@ class SQLiteQueryManager:
             rd.TimeIndex,
             rd.ReportDataDictionaryIndex,
             rd.Value,
+            t.Year,
             t.Month,
             t.Day,
             t.Hour,
@@ -351,7 +352,7 @@ class SQLiteQueryManager:
             )
 
             # Add time columns back
-            time_cols = df[['TimeIndex', 'Month', 'Day', 'Hour', 'Minute', 'SimulationDays']].drop_duplicates()
+            time_cols = df[['TimeIndex', 'Year', 'Month', 'Day', 'Hour', 'Minute', 'SimulationDays']].drop_duplicates()
             df_wide = df_wide.merge(time_cols, left_index=True, right_on='TimeIndex')
             df_wide = df_wide.set_index('TimeIndex')
 
@@ -483,3 +484,55 @@ class SQLiteQueryManager:
             }
         finally:
             conn.close()
+
+    @staticmethod
+    def add_datetime_column(df: pd.DataFrame, use_year: bool = True) -> pd.DataFrame:
+        """Add a datetime column to the DataFrame based on time components.
+
+        Constructs a proper datetime column from Year, Month, Day, Hour, and Minute
+        fields returned by the time-series queries. This enables meaningful time-series
+        visualization with actual dates instead of TimeIndex.
+
+        Args:
+            df: DataFrame with Year, Month, Day, Hour, Minute columns
+            use_year: If True, use Year from data; if False, use reference year (2024)
+
+        Returns:
+            DataFrame with additional 'datetime' column
+
+        Raises:
+            KeyError: If required time columns are missing from DataFrame
+        """
+        required_cols = ['Month', 'Day', 'Hour', 'Minute']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise KeyError(f"Missing required time columns: {missing_cols}")
+
+        try:
+            if use_year and 'Year' in df.columns:
+                # Use Year from the database
+                df['datetime'] = pd.to_datetime(
+                    df[['Year', 'Month', 'Day', 'Hour', 'Minute']].rename(
+                        columns={'Year': 'year', 'Month': 'month', 'Day': 'day',
+                                'Hour': 'hour', 'Minute': 'minute'}
+                    )
+                )
+            else:
+                # Use reference year (first year in data or fixed year 2024)
+                ref_year = df['Year'].iloc[0] if 'Year' in df.columns and len(df) > 0 else 2024
+                df['datetime'] = pd.to_datetime(
+                    df.apply(
+                        lambda row: f"{int(ref_year)}-{int(row['Month']):02d}-{int(row['Day']):02d} "
+                                   f"{int(row['Hour']):02d}:{int(row['Minute']):02d}:00",
+                        axis=1
+                    ),
+                    errors='coerce'
+                )
+
+            logger.info(f"Added datetime column to DataFrame with {len(df)} records")
+        except Exception as e:
+            logger.warning(f"Failed to construct datetime column: {e}")
+            # Add a None column if construction fails
+            df['datetime'] = None
+
+        return df

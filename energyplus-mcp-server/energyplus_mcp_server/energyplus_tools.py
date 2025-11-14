@@ -4043,7 +4043,7 @@ class EnergyPlusManager:
             logger.error(f"Error querying SQL tabular data: {e}")
             raise RuntimeError(f"Error querying SQL tabular data: {str(e)}")
 
-    def create_sql_plot(
+    def visualize_output(
         self,
         sql_path: str,
         variable_ids: Optional[List[int]] = None,
@@ -4054,6 +4054,10 @@ class EnergyPlusManager:
         output_path: Optional[str] = None
     ) -> str:
         """Create interactive plot from SQLite database time-series data.
+
+        This is the primary visualization tool for EnergyPlus simulation outputs.
+        It creates interactive HTML plots with proper datetime x-axis from SQLite
+        database files.
 
         Args:
             sql_path: Path to SQLite database file
@@ -4110,8 +4114,20 @@ class EnergyPlusManager:
             if df.empty:
                 raise ValueError("No data found for specified variables and date range")
 
+            # Add datetime column for proper time-series visualization
+            try:
+                df = SQLiteQueryManager.add_datetime_column(df, use_year=True)
+                use_datetime = df['datetime'].notna().any()
+            except Exception as e:
+                logger.warning(f"Failed to add datetime column, falling back to TimeIndex: {e}")
+                use_datetime = False
+
             # Create interactive plot
             fig = go.Figure()
+
+            # Determine x-axis data
+            x_data = df['datetime'] if use_datetime else df.index
+            x_title = "Date/Time" if use_datetime else "Time Index"
 
             for var_id, meta in zip(variable_ids, metadata_list):
                 if var_id in df.columns:
@@ -4120,18 +4136,18 @@ class EnergyPlusManager:
                         trace_name += f" [{meta['Units']}]"
 
                     fig.add_trace(go.Scatter(
-                        x=df.index,
+                        x=x_data,
                         y=df[var_id],
                         mode='lines',
                         name=trace_name,
-                        hovertemplate='%{y:.2f}<extra></extra>'
+                        hovertemplate='%{y:.2f}<br>%{x}<extra></extra>'
                     ))
 
             # Update layout
             title = custom_title or "EnergyPlus Time-Series Data"
             fig.update_layout(
                 title=dict(text=title, x=0.5),
-                xaxis_title="Time Index",
+                xaxis_title=x_title,
                 yaxis_title="Value",
                 hovermode='x unified',
                 template='plotly_white',
