@@ -3133,11 +3133,31 @@ class EnergyPlusManager:
             raise RuntimeError(f"Error modifying infiltration rate: {str(e)}")
     
     
+    def _ensure_output_sqlite(self, idf: IDF, option_type: str = "SimpleAndTabular") -> None:
+        """Ensure Output:SQLite object exists with the requested option type."""
+        sqlite_objects = []
+        for key in ("Output:SQLite", "OUTPUT:SQLITE"):
+            try:
+                sqlite_objects = list(idf.idfobjects[key])
+                break
+            except KeyError:
+                continue
+
+        if sqlite_objects:
+            primary = sqlite_objects[0]
+            primary.Option_Type = option_type
+            for extra in sqlite_objects[1:]:
+                idf.removeidfobject(extra)
+            logger.debug("Updated Output:SQLite Option_Type=%s", option_type)
+        else:
+            idf.newidfobject("Output:SQLite", Option_Type=option_type)
+            logger.debug("Added Output:SQLite Option_Type=%s", option_type)
+
     # ------------------------ Simulation Execution ------------------------
     def run_simulation(self, idf_path: str, weather_file: str = None, 
                        output_directory: str = None, annual: bool = True,
                        design_day: bool = False, readvars: bool = True,
-                       expandobjects: bool = True) -> str:
+                       expandobjects: bool = True, include_sqlite_output: bool = True) -> str:
             """
             Run EnergyPlus simulation with specified IDF and weather file
             
@@ -3149,6 +3169,7 @@ class EnergyPlusManager:
                 design_day: Run design day only simulation (default: False)
                 readvars: Run ReadVarsESO after simulation (default: True)
                 expandobjects: Run ExpandObjects prior to simulation (default: True)
+                include_sqlite_output: If True, ensure Output:SQLite SimpleAndTabular output is enabled
             
             Returns:
                 JSON string with simulation results and output file paths
@@ -3195,10 +3216,14 @@ class EnergyPlusManager:
                 # Add weather file to options if provided
                 if resolved_weather_path:
                     simulation_options['weather'] = resolved_weather_path
-                
+
+                # Ensure Output:SQLite if requested (don't add to simulation_options as eppy doesn't accept it)
+                if include_sqlite_output:
+                    self._ensure_output_sqlite(idf)
+
                 logger.info("Starting EnergyPlus simulation...")
                 start_time = datetime.now()
-                
+
                 # Run the simulation
                 try:
                     result = idf.run(**simulation_options)
@@ -3215,6 +3240,7 @@ class EnergyPlusManager:
                         "output_directory": output_directory,
                         "simulation_duration": str(duration),
                         "simulation_options": simulation_options,
+                        "include_sqlite_output": include_sqlite_output,
                         "output_files": output_files,
                         "energyplus_result": str(result) if result else "Simulation completed",
                         "timestamp": end_time.isoformat()
@@ -3328,8 +3354,289 @@ class EnergyPlusManager:
             parsed_errors["analysis"] = analysis
         
         return parsed_errors
-    
-    def create_interactive_plot(self, output_directory: str, idf_name: str = None, 
+
+    def list_output_files(self, output_directory: str, idf_name: str = None) -> str:
+        """
+        List and analyze all EnergyPlus output files in a directory
+
+        Args:
+            output_directory: Directory containing simulation output files
+            idf_name: Name of the IDF file (without extension). If None, tries to detect from directory
+
+        Returns:
+            JSON string with detailed information about all output files
+        """
+        try:
+            logger.info(f"Listing output files in: {output_directory}")
+
+            output_dir = Path(output_directory)
+            if not output_dir.exists():
+                raise FileNotFoundError(f"Output directory not found: {output_directory}")
+
+            # Auto-detect IDF name if not provided
+            if not idf_name:
+                csv_files = list(output_dir.glob("*.csv"))
+                for csv_file in csv_files:
+                    if csv_file.name.endswith("Meter.csv"):
+                        idf_name = csv_file.name[:-9]
+                        break
+                    elif not csv_file.name.endswith("Table.csv"):
+                        idf_name = csv_file.stem
+                        break
+
+                if not idf_name:
+                    # Try to find any output file with common extensions
+                    for ext in ['.err', '.eio', '.eso', '.end']:
+                        matches = list(output_dir.glob(f"*{ext}"))
+                        if matches:
+                            idf_name = matches[0].stem
+                            break
+
+            # Define file type metadata
+            file_types = {
+                '.err': {
+                    'type': 'Error/Warning File',
+                    'description': 'Error messages and warnings - check this first',
+                    'priority': 'critical',
+                    'category': 'diagnostic'
+                },
+                '.end': {
+                    'type': 'Completion Status',
+                    'description': 'Final simulation status with error counts and elapsed time',
+                    'priority': 'critical',
+                    'category': 'diagnostic'
+                },
+                '.csv': {
+                    'type': 'Time Series Data (Variables)',
+                    'description': 'Hourly/timestep output variables in CSV format',
+                    'priority': 'high',
+                    'category': 'timeseries'
+                },
+                'Meter.csv': {
+                    'type': 'Time Series Data (Meters)',
+                    'description': 'Hourly/timestep meter data (energy consumption by category)',
+                    'priority': 'high',
+                    'category': 'timeseries'
+                },
+                'Table.htm': {
+                    'type': 'HTML Summary Report',
+                    'description': 'Comprehensive tabular summary reports (annual energy, end uses, HVAC sizing)',
+                    'priority': 'high',
+                    'category': 'summary'
+                },
+                'Table.tab': {
+                    'type': 'Tab-Delimited Summary Report',
+                    'description': 'Same as HTML report but in tab-delimited format for spreadsheets',
+                    'priority': 'medium',
+                    'category': 'summary'
+                },
+                '.rdd': {
+                    'type': 'Report Data Dictionary',
+                    'description': 'Lists ALL available Output:Variable options for this simulation',
+                    'priority': 'high',
+                    'category': 'reference'
+                },
+                '.mdd': {
+                    'type': 'Meter Data Dictionary',
+                    'description': 'Lists ALL available Output:Meter options for this simulation',
+                    'priority': 'high',
+                    'category': 'reference'
+                },
+                '.eio': {
+                    'type': 'Invariant Output',
+                    'description': 'Static simulation information (location, timesteps, surface details, sizing results)',
+                    'priority': 'medium',
+                    'category': 'reference'
+                },
+                '.eso': {
+                    'type': 'Standard Output (Raw)',
+                    'description': 'Raw time-varying output data (use CSV version instead)',
+                    'priority': 'low',
+                    'category': 'timeseries'
+                },
+                '.mtr': {
+                    'type': 'Meter Output (Raw)',
+                    'description': 'Raw meter data (use Meter.csv version instead)',
+                    'priority': 'low',
+                    'category': 'timeseries'
+                },
+                '.mtd': {
+                    'type': 'Meter Details',
+                    'description': 'Shows which variables feed into which meters',
+                    'priority': 'low',
+                    'category': 'reference'
+                },
+                '.bnd': {
+                    'type': 'Branch Node Details',
+                    'description': 'HVAC system flow connections and topology',
+                    'priority': 'low',
+                    'category': 'hvac'
+                },
+                '.dxf': {
+                    'type': 'AutoCAD Geometry',
+                    'description': '3D visualization of building geometry in AutoCAD format',
+                    'priority': 'low',
+                    'category': 'geometry'
+                },
+                '.shd': {
+                    'type': 'Shading Details',
+                    'description': 'Shading calculation details',
+                    'priority': 'low',
+                    'category': 'geometry'
+                },
+                '.audit': {
+                    'type': 'Audit File',
+                    'description': 'Echoes IDD and IDF with syntax error flagging',
+                    'priority': 'low',
+                    'category': 'diagnostic'
+                },
+                '.rvaudit': {
+                    'type': 'ReadVarsESO Audit',
+                    'description': 'Audit trail for ESO to CSV conversion',
+                    'priority': 'low',
+                    'category': 'diagnostic'
+                }
+            }
+
+            files_info = []
+            all_files = sorted(output_dir.iterdir())
+
+            for file_path in all_files:
+                if not file_path.is_file():
+                    continue
+
+                # Determine file type
+                file_ext = file_path.suffix
+                file_name = file_path.name
+
+                # Special handling for specific patterns
+                if file_name.endswith('Meter.csv'):
+                    type_key = 'Meter.csv'
+                elif file_name.endswith('Table.htm'):
+                    type_key = 'Table.htm'
+                elif file_name.endswith('Table.tab'):
+                    type_key = 'Table.tab'
+                else:
+                    type_key = file_ext
+
+                metadata = file_types.get(type_key, {
+                    'type': 'Unknown',
+                    'description': f'{file_ext} file',
+                    'priority': 'low',
+                    'category': 'other'
+                })
+
+                file_size = file_path.stat().st_size
+
+                file_info = {
+                    'name': file_name,
+                    'type': metadata['type'],
+                    'description': metadata['description'],
+                    'priority': metadata['priority'],
+                    'category': metadata['category'],
+                    'size_bytes': file_size,
+                    'size_human': self._format_file_size(file_size)
+                }
+
+                # Add extra details for specific file types
+                try:
+                    if file_ext == '.csv' or file_name.endswith('.csv'):
+                        line_count = sum(1 for _ in open(file_path, 'r', encoding='utf-8', errors='ignore'))
+                        file_info['line_count'] = line_count
+                        if line_count > 1:
+                            file_info['timesteps'] = line_count - 1  # Subtract header
+
+                            # Count variables (columns)
+                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                header = f.readline()
+                                var_count = len(header.split(',')) - 1  # Subtract datetime column
+                                file_info['variables_count'] = var_count
+
+                    elif file_name.endswith('Table.htm'):
+                        # Extract report names from HTML
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            import re
+                            reports = re.findall(r'Report:<b>\s*([^<]+)</b>', content)
+                            if reports:
+                                file_info['reports'] = reports[:10]  # Limit to first 10
+                                file_info['total_reports'] = len(reports)
+
+                    elif file_ext in ['.err', '.eio', '.rdd', '.mdd', '.bnd', '.mtd', '.shd', '.audit']:
+                        line_count = sum(1 for _ in open(file_path, 'r', encoding='utf-8', errors='ignore'))
+                        file_info['line_count'] = line_count
+
+                    # Special handling for .end file
+                    if file_ext == '.end':
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            status = f.read().strip()
+                            file_info['status'] = status
+
+                except Exception as e:
+                    logger.warning(f"Could not extract details for {file_name}: {e}")
+
+                files_info.append(file_info)
+
+            # Generate recommendations
+            recommendations = {
+                'start_here': [],
+                'for_time_series': [],
+                'for_summary_reports': [],
+                'for_discovering_outputs': [],
+                'for_hvac_systems': [],
+                'for_geometry': []
+            }
+
+            for file_info in files_info:
+                name = file_info['name']
+                if file_info['type'] == 'Error/Warning File':
+                    recommendations['start_here'].append(name)
+                elif file_info['type'] == 'Completion Status':
+                    recommendations['start_here'].append(name)
+                elif file_info['type'] in ['HTML Summary Report', 'Tab-Delimited Summary Report']:
+                    recommendations['for_summary_reports'].append(name)
+                elif 'Time Series Data' in file_info['type']:
+                    recommendations['for_time_series'].append(name)
+                elif 'Dictionary' in file_info['type']:
+                    recommendations['for_discovering_outputs'].append(name)
+                elif file_info['category'] == 'hvac':
+                    recommendations['for_hvac_systems'].append(name)
+                elif file_info['category'] == 'geometry':
+                    recommendations['for_geometry'].append(name)
+
+            result = {
+                'output_directory': str(output_dir),
+                'idf_name': idf_name or 'Unknown',
+                'total_files': len(files_info),
+                'files': files_info,
+                'recommendations': recommendations,
+                'categories': self._group_files_by_category(files_info)
+            }
+
+            logger.info(f"Listed {len(files_info)} output files")
+            return json.dumps(result, indent=2)
+
+        except Exception as e:
+            logger.error(f"Error listing output files: {e}")
+            raise RuntimeError(f"Error listing output files: {str(e)}")
+
+    def _format_file_size(self, size_bytes: int) -> str:
+        """Format file size in human-readable format"""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.1f}{unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.1f}TB"
+
+    def _group_files_by_category(self, files_info: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Group files by category and count them"""
+        categories = {}
+        for file_info in files_info:
+            cat = file_info.get('category', 'other')
+            categories[cat] = categories.get(cat, 0) + 1
+        return categories
+
+    def create_interactive_plot(self, output_directory: str, idf_name: str = None,
                                 file_type: str = "auto", custom_title: str = None) -> str:
         """
         Create interactive HTML plot from EnergyPlus output files (meter or variable outputs)
