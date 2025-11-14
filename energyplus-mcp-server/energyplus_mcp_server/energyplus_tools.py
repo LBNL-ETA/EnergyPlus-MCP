@@ -3495,6 +3495,12 @@ class EnergyPlusManager:
                     'description': 'Audit trail for ESO to CSV conversion',
                     'priority': 'low',
                     'category': 'diagnostic'
+                },
+                '.sql': {
+                    'type': 'SQLite Database',
+                    'description': 'Comprehensive simulation results in SQLite database format (queryable with SQL)',
+                    'priority': 'high',
+                    'category': 'database'
                 }
             }
 
@@ -3583,6 +3589,7 @@ class EnergyPlusManager:
                 'for_time_series': [],
                 'for_summary_reports': [],
                 'for_discovering_outputs': [],
+                'for_sql_analysis': [],
                 'for_hvac_systems': [],
                 'for_geometry': []
             }
@@ -3599,6 +3606,8 @@ class EnergyPlusManager:
                     recommendations['for_time_series'].append(name)
                 elif 'Dictionary' in file_info['type']:
                     recommendations['for_discovering_outputs'].append(name)
+                elif file_info['category'] == 'database':
+                    recommendations['for_sql_analysis'].append(name)
                 elif file_info['category'] == 'hvac':
                     recommendations['for_hvac_systems'].append(name)
                 elif file_info['category'] == 'geometry':
