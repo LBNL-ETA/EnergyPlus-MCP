@@ -11,8 +11,10 @@ def register_all(mcp: Any, ep_manager: Any, config: Any) -> None:
     from . import outputs as _outputs
     from . import modify as _modify
     from . import hvac_loop as _hvac_loop
+    from . import idf_modification as _idf_modification
 
     _inspect.register(mcp, ep_manager, config)
     _outputs.register(mcp, ep_manager, config)
     _modify.register(mcp, ep_manager, config)
     _hvac_loop.register(mcp, ep_manager, config)
+    _idf_modification.register(mcp, ep_manager, config)

@@ -120,6 +120,7 @@ for _mod_name, _label in (
     ("simulation", "simulation_manager"),
     ("files", "file_utils"),
     ("post", "post_processing"),
+    ("idf_modification", "idf_modification"),
 ):
     try:
         _mod = __import__(f"energyplus_mcp_server.tools.{_mod_name}", fromlist=["register"])  # type: ignore

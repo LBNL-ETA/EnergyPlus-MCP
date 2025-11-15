@@ -7,19 +7,21 @@ import logging
 from typing import Dict, List, Any, Optional
 from eppy.modeleditor import IDF
 
+from energyplus_mcp_server.utils.idf_modifier import IDFModifier
+
 logger = logging.getLogger(__name__)
 
 
 class LightsManager:
     """Manager for EnergyPlus Lights objects"""
-    
+
     # Valid calculation methods for Lighting Level
     VALID_CALCULATION_METHODS = {
         "LightingLevel": "Lighting level (W)",
-        "Watts/Area": "Lighting power density (W/m2)", 
+        "Watts/Area": "Lighting power density (W/m2)",
         "Watts/Person": "Lighting power per person (W/person)"
     }
-    
+
     # Common lighting power densities (W/m2) - from ASHRAE 90.1
     COMMON_LIGHTING_DENSITIES = {
         "Office": 11.0,
@@ -31,10 +33,11 @@ class LightsManager:
         "Storage": 8.1,
         "Workshop": 14.0
     }
-    
+
     def __init__(self):
         """Initialize the Lights manager"""
-        pass
+        self.idf_modifier = IDFModifier()
+        self.object_type = "Lights"
     
     def get_lights_objects(self, idf_path: str) -> Dict[str, Any]:
         """
@@ -155,74 +158,89 @@ class LightsManager:
         
         return None
     
-    def modify_lights_objects(self, idf_path: str, modifications: List[Dict[str, Any]], 
+    def modify_lights_objects(self, idf_path: str, modifications: List[Dict[str, Any]],
                              output_path: str) -> Dict[str, Any]:
         """
         Modify Lights objects in the IDF file
-        
+
         Args:
             idf_path: Path to the input IDF file
             modifications: List of modification specifications
             output_path: Path for the output IDF file
-            
+
         Returns:
             Dictionary with modification results
         """
         try:
-            idf = IDF(idf_path)
-            lights_objects = idf.idfobjects.get("Lights", [])
-            
-            result = {
-                "success": True,
-                "input_file": idf_path,
-                "output_file": output_path,
-                "modifications_requested": len(modifications),
-                "modifications_applied": [],
-                "errors": []
-            }
-            
+            # Pre-process modifications: Apply business logic validation
+            processed_mods = []
+            errors = []
+
             for mod_spec in modifications:
-                try:
-                    # Apply modification based on target
-                    target = mod_spec.get("target", "all")
-                    field_updates = mod_spec.get("field_updates", {})
-                    
-                    if target == "all":
-                        # Apply to all Lights objects
-                        for lights_obj in lights_objects:
-                            self._apply_lights_modifications(
-                                lights_obj, field_updates, result
-                            )
-                    elif target.startswith("zone:"):
-                        # Apply to Lights objects in specific zone
-                        zone_name = target.replace("zone:", "").strip()
-                        for lights_obj in lights_objects:
-                            if getattr(lights_obj, 'Zone_or_ZoneList_or_Space_or_SpaceList_Name', '') == zone_name:
-                                self._apply_lights_modifications(
-                                    lights_obj, field_updates, result
-                                )
-                    elif target.startswith("name:"):
-                        # Apply to specific Lights object by name
-                        lights_name = target.replace("name:", "").strip()
-                        for lights_obj in lights_objects:
-                            if getattr(lights_obj, 'Name', '') == lights_name:
-                                self._apply_lights_modifications(
-                                    lights_obj, field_updates, result
-                                )
-                                break
-                    else:
-                        result["errors"].append(f"Invalid target specification: {target}")
-                        
-                except Exception as e:
-                    result["errors"].append(f"Error processing modification: {str(e)}")
-            
-            # Save the modified IDF
-            idf.save(output_path)
-            result["total_modifications_applied"] = len(result["modifications_applied"])
-            
-            logger.info(f"Applied {len(result['modifications_applied'])} modifications to Lights objects")
-            return result
-            
+                target = mod_spec.get("target", "all")
+                field_updates = mod_spec.get("field_updates", {})
+
+                # Business logic: Validate calculation method changes
+                if "Design_Level_Calculation_Method" in field_updates:
+                    new_method = field_updates["Design_Level_Calculation_Method"]
+                    if new_method not in self.VALID_CALCULATION_METHODS:
+                        errors.append(
+                            f"Invalid calculation method '{new_method}'. "
+                            f"Valid options: {list(self.VALID_CALCULATION_METHODS.keys())}"
+                        )
+                        continue
+
+                # Convert field_updates dict to list format for IDFModifier
+                field_list = [{"field": k, "value": v} for k, v in field_updates.items()]
+
+                processed_mods.append({
+                    "target": target,
+                    "modifications": field_list
+                })
+
+            # Delegate to IDFModifier for mechanics (load, filter, validate, save)
+            all_modified_objects = []
+            for mod in processed_mods:
+                result = self.idf_modifier.modify_objects(
+                    idf_path=idf_path,
+                    object_type=self.object_type,
+                    modifications=mod["modifications"],
+                    target=mod["target"],
+                    output_path=output_path
+                )
+
+                if result.get("success"):
+                    all_modified_objects.extend(result.get("modified_objects", []))
+                    # Use output from first modification as input for next
+                    if result.get("output_file"):
+                        idf_path = result["output_file"]
+                else:
+                    errors.extend(result.get("errors", []))
+
+            # Format result in expected format
+            modifications_applied = []
+            for obj in all_modified_objects:
+                for field in obj.get("modified_fields", []):
+                    modifications_applied.append({
+                        "object_name": obj["name"],
+                        "field": field["field"],
+                        "old_value": field["old_value"],
+                        "new_value": field["new_value"]
+                    })
+
+            final_result = {
+                "success": len(modifications_applied) > 0,
+                "input_file": idf_path,
+                "output_file": output_path if len(modifications_applied) > 0 else None,
+                "modifications_requested": len(modifications),
+                "modifications_applied": modifications_applied,
+                "total_modifications_applied": len(modifications_applied),
+                "errors": errors
+            }
+
+            logger.info(f"Applied {len(modifications_applied)} modifications to Lights objects")
+            return final_result
+
         except Exception as e:
             logger.error(f"Error modifying Lights objects: {e}")
             return {
@@ -231,124 +249,16 @@ class LightsManager:
                 "input_file": idf_path
             }
     
-    def _apply_lights_modifications(self, lights_obj: Any, field_updates: Dict[str, Any], 
-                                   result: Dict[str, Any]) -> None:
-        """Apply field updates to a Lights object"""
-        # Valid Lights object fields based on IDD
-        valid_fields = {
-            "Schedule_Name",
-            "Design_Level_Calculation_Method", 
-            "Lighting_Level",
-            "Watts_per_Floor_Area",  # Fixed field name
-            "Watts_per_Person",
-            "Return_Air_Fraction",
-            "Fraction_Radiant",
-            "Fraction_Visible",
-            "Fraction_Replaceable",
-            "EndUse_Subcategory",  # Fixed field name
-            "Return_Air_Fraction_Calculated_from_Plenum_Temperature",
-            "Return_Air_Fraction_Function_of_Plenum_Temperature_Coefficient_1",
-            "Return_Air_Fraction_Function_of_Plenum_Temperature_Coefficient_2",
-            "Return_Air_Heat_Gain_Node_Name",
-            "Exhaust_Air_Heat_Gain_Node_Name"
-        }
-        
-        # Fraction fields that must be between 0.0 and 1.0
-        fraction_fields = {
-            "Return_Air_Fraction",
-            "Fraction_Radiant", 
-            "Fraction_Visible",
-            "Fraction_Replaceable"
-        }
-        
-        # Numeric fields that must be >= 0
-        positive_numeric_fields = {
-            "Lighting_Level",
-            "Watts_per_Floor_Area",
-            "Watts_per_Person",
-            "Return_Air_Fraction_Function_of_Plenum_Temperature_Coefficient_1",
-            "Return_Air_Fraction_Function_of_Plenum_Temperature_Coefficient_2"
-        }
-        
-        lights_name = getattr(lights_obj, 'Name', 'Unknown')
-        
-        for field_name, new_value in field_updates.items():
-            if field_name not in valid_fields:
-                result["errors"].append(f"Invalid field '{field_name}' for Lights object '{lights_name}'")
-                continue
-            
-            try:
-                # Validate calculation method change
-                if field_name == "Design_Level_Calculation_Method":
-                    if new_value not in self.VALID_CALCULATION_METHODS:
-                        result["errors"].append(
-                            f"Invalid calculation method '{new_value}' for '{lights_name}'. "
-                            f"Valid options: {list(self.VALID_CALCULATION_METHODS.keys())}"
-                        )
-                        continue
-                
-                # Validate fraction fields (0.0 to 1.0)
-                if field_name in fraction_fields:
-                    try:
-                        float_value = float(new_value)
-                        if not (0.0 <= float_value <= 1.0):
-                            result["errors"].append(
-                                f"Field '{field_name}' for '{lights_name}' must be between 0.0 and 1.0, got {new_value}"
-                            )
-                            continue
-                    except (ValueError, TypeError):
-                        result["errors"].append(
-                            f"Field '{field_name}' for '{lights_name}' must be a number, got {new_value}"
-                        )
-                        continue
-                
-                # Validate positive numeric fields
-                if field_name in positive_numeric_fields:
-                    try:
-                        float_value = float(new_value)
-                        if float_value < 0.0:
-                            result["errors"].append(
-                                f"Field '{field_name}' for '{lights_name}' must be >= 0.0, got {new_value}"
-                            )
-                            continue
-                    except (ValueError, TypeError):
-                        result["errors"].append(
-                            f"Field '{field_name}' for '{lights_name}' must be a number, got {new_value}"
-                        )
-                        continue
-                
-                # Validate plenum temperature choice field
-                if field_name == "Return_Air_Fraction_Calculated_from_Plenum_Temperature":
-                    if str(new_value).lower() not in ['yes', 'no']:
-                        result["errors"].append(
-                            f"Field '{field_name}' for '{lights_name}' must be 'Yes' or 'No', got {new_value}"
-                        )
-                        continue
-                
-                old_value = getattr(lights_obj, field_name, "")
-                setattr(lights_obj, field_name, new_value)
-                
-                result["modifications_applied"].append({
-                    "object_name": lights_name,
-                    "field": field_name,
-                    "old_value": old_value,
-                    "new_value": new_value
-                })
-                
-                logger.debug(f"Updated {lights_name}.{field_name}: {old_value} -> {new_value}")
-                
-            except Exception as e:
-                result["errors"].append(
-                    f"Error setting {field_name} to {new_value} for '{lights_name}': {str(e)}"
-                )
-    
     def validate_lights_modifications(self, modifications: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Validate modification specifications before applying them
-        
+
+        Note: Field name validation is now handled by IDD at modification time.
+        This method focuses on business logic validation.
+
         Args:
             modifications: List of modification specifications
-            
+
         Returns:
             Validation result dictionary
         """
@@ -357,32 +267,13 @@ class LightsManager:
             "errors": [],
             "warnings": []
         }
-        
-        # Valid field names based on IDD
-        valid_fields = {
-            "Schedule_Name",
-            "Design_Level_Calculation_Method", 
-            "Lighting_Level",
-            "Watts_per_Floor_Area",
-            "Watts_per_Person",
-            "Return_Air_Fraction",
-            "Fraction_Radiant",
-            "Fraction_Visible",
-            "Fraction_Replaceable",
-            "EndUse_Subcategory",
-            "Return_Air_Fraction_Calculated_from_Plenum_Temperature",
-            "Return_Air_Fraction_Function_of_Plenum_Temperature_Coefficient_1",
-            "Return_Air_Fraction_Function_of_Plenum_Temperature_Coefficient_2",
-            "Return_Air_Heat_Gain_Node_Name",
-            "Exhaust_Air_Heat_Gain_Node_Name"
-        }
-        
+
         for i, mod_spec in enumerate(modifications):
             # Check required fields
             if "target" not in mod_spec:
                 validation_result["errors"].append(f"Modification {i}: Missing 'target' field")
                 validation_result["valid"] = False
-            
+
             if "field_updates" not in mod_spec:
                 validation_result["errors"].append(f"Modification {i}: Missing 'field_updates' field")
                 validation_result["valid"] = False
@@ -390,34 +281,36 @@ class LightsManager:
                 validation_result["errors"].append(f"Modification {i}: 'field_updates' must be a dictionary")
                 validation_result["valid"] = False
             else:
-                # Validate individual field updates
+                # Business logic validation
                 field_updates = mod_spec["field_updates"]
-                for field_name, value in field_updates.items():
-                    if field_name not in valid_fields:
+
+                # Validate calculation method
+                if "Design_Level_Calculation_Method" in field_updates:
+                    value = field_updates["Design_Level_Calculation_Method"]
+                    if value not in self.VALID_CALCULATION_METHODS:
                         validation_result["errors"].append(
-                            f"Modification {i}: Invalid field name '{field_name}'. "
-                            f"Valid fields: {sorted(valid_fields)}"
+                            f"Modification {i}: Invalid calculation method '{value}'. "
+                            f"Valid options: {list(self.VALID_CALCULATION_METHODS.keys())}"
                         )
                         validation_result["valid"] = False
-                    
+
                     # Check for conflicting calculation method and values
-                    if field_name == "Design_Level_Calculation_Method":
-                        if value == "LightingLevel" and "Watts_per_Floor_Area" in field_updates:
-                            validation_result["warnings"].append(
-                                f"Modification {i}: Setting calculation method to 'LightingLevel' "
-                                "but also setting 'Watts_per_Floor_Area'"
-                            )
-                        elif value == "Watts/Area" and "Lighting_Level" in field_updates:
-                            validation_result["warnings"].append(
-                                f"Modification {i}: Setting calculation method to 'Watts/Area' "
-                                "but also setting 'Lighting_Level'"
-                            )
-                        elif value == "Watts/Person" and ("Lighting_Level" in field_updates or "Watts_per_Floor_Area" in field_updates):
-                            validation_result["warnings"].append(
-                                f"Modification {i}: Setting calculation method to 'Watts/Person' "
-                                "but also setting other power values"
-                            )
-            
+                    if value == "LightingLevel" and "Watts_per_Floor_Area" in field_updates:
+                        validation_result["warnings"].append(
+                            f"Modification {i}: Setting calculation method to 'LightingLevel' "
+                            "but also setting 'Watts_per_Floor_Area'"
+                        )
+                    elif value == "Watts/Area" and "Lighting_Level" in field_updates:
+                        validation_result["warnings"].append(
+                            f"Modification {i}: Setting calculation method to 'Watts/Area' "
+                            "but also setting 'Lighting_Level'"
+                        )
+                    elif value == "Watts/Person" and ("Lighting_Level" in field_updates or "Watts_per_Floor_Area" in field_updates):
+                        validation_result["warnings"].append(
+                            f"Modification {i}: Setting calculation method to 'Watts/Person' "
+                            "but also setting other power values"
+                        )
+
             # Validate target format
             target = mod_spec.get("target", "")
             if target and not (target == "all" or target.startswith("zone:") or target.startswith("name:")):
@@ -426,5 +319,5 @@ class LightsManager:
                     "Use 'all', 'zone:ZoneName', or 'name:LightsName'"
                 )
                 validation_result["valid"] = False
-        
+
         return validation_result 

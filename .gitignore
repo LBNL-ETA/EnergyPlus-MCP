@@ -178,3 +178,4 @@ energyplus-mcp-server/outputs/
 energyplus-mcp-server/.DS_Store
 energyplus-mcp-server/sample_files/.DS_Store
 test_runs
+.DS_Store

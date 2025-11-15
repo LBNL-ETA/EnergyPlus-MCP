@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Literal
+from typing import Any, Optional, Literal
 import json
 import os
 import logging
@@ -24,6 +24,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         - resolve_paths: Resolve and verify IDF and weather file paths
         - readiness: Check if model is ready for simulation
         - capabilities: Show available actions and parameters
+
+        Note: For modifications, use the 'idf_modification' tool instead.
         """
         try:
             if action == "capabilities":
@@ -37,6 +39,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                         {"name": "readiness", "required": ["idf_path"], "optional": ["weather_file"], "description": "Check simulation readiness (IDF, weather, IDD availability)"},
                     ],
                     "detail": detail,
+                    "note": "For IDF modifications, use the 'idf_modification' tool"
                 }, indent=2)
 
             if not idf_path:
