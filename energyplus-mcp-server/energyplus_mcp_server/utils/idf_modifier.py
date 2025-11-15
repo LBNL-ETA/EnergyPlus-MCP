@@ -304,7 +304,8 @@ class IDFModifier:
         idf_path: str,
         object_type: str,
         fields: Dict[str, Any],
-        output_path: Optional[str] = None
+        output_path: Optional[str] = None,
+        replace_existing: bool = True
     ) -> Dict[str, Any]:
         """Add a new IDF object with IDD validation.
 
@@ -313,6 +314,7 @@ class IDFModifier:
             object_type: EnergyPlus object type (e.g., 'OutputControl:Table:Style')
             fields: Dictionary of field names and values
             output_path: Where to save (auto-generated if None)
+            replace_existing: If True and object exists, modify it instead of creating duplicate (default: True)
 
         Returns:
             Dict with success status, new object info, and errors
@@ -337,9 +339,51 @@ class IDFModifier:
             logger.error(f"Failed to load IDF: {e}")
             return {"success": False, "error": f"Failed to load IDF: {e}"}
 
-        # Normalize object type
-        # Eppy uses uppercase with colons (e.g., "OUTPUTCONTROL:TABLE:STYLE")
+        # Normalize object type - try to preserve original case by checking existing objects
         object_type_normalized = object_type.upper()
+
+        # Check if objects of this type already exist (case-insensitive search)
+        existing_objects = []
+        for key in idf.idfobjects.keys():
+            if key.upper() == object_type_normalized:
+                existing_objects = idf.idfobjects[key]
+                object_type_normalized = key  # Use the existing case
+                break
+
+        # Determine if this is a singleton object type
+        # Normalize for comparison (remove colons and spaces)
+        singleton_types = {
+            'SIMULATIONCONTROL', 'BUILDING', 'GLOBALGEOMETRYRULES',
+            'SHADOWCALCULATION', 'HEATBALANCEALGORITHM', 'TIMESTEP',
+            'CONVERGANCELIMITS', 'PROGRAMCONTROL', 'VERSION',
+            'OUTPUTCONTROLTABLESTYLE', 'OUTPUTCONTROLREPORTINGTOLERANCES',
+            'OUTPUTCONTROLSIZINGSTYLE', 'OUTPUTDIAGNOSTICS',
+            'PERFORMANCEPRECISIONTRADEOFFS', 'LIFECYCLECOSTPARAMETERS'
+        }
+
+        is_singleton = object_type_normalized.replace(':', '').replace(' ', '') in singleton_types
+
+        # If object exists and replace_existing is True, modify instead of creating duplicate
+        if existing_objects and replace_existing:
+            logger.info(f"Found {len(existing_objects)} existing {object_type} object(s). "
+                       f"{'Modifying first instance (singleton)' if is_singleton else 'Modifying existing objects'}.")
+
+            # For singleton types, modify the first (and should be only) instance
+            if is_singleton:
+                existing_obj = existing_objects[0]
+                return self._modify_existing_object(
+                    idf=idf,
+                    obj=existing_obj,
+                    object_type=object_type,
+                    fields=fields,
+                    idf_path=idf_path,
+                    output_path=output_path
+                )
+
+        # If object exists but replace_existing is False, warn about potential duplicate
+        if existing_objects and not replace_existing:
+            logger.warning(f"Creating new {object_type} object, but {len(existing_objects)} already exist. "
+                          f"This may create duplicates.")
 
         # Create new object
         try:
@@ -418,6 +462,115 @@ class IDFModifier:
             "output_file": output_path,
             "object_type": object_type,
             "object_created": True,
+            "fields_set": set_fields,
+            "fields_set_count": len(set_fields),
+            "errors": errors
+        }
+
+        if errors:
+            result["warnings"] = f"{len(errors)} field(s) had errors"
+
+        return result
+
+    def _modify_existing_object(
+        self,
+        idf: Any,
+        obj: Any,
+        object_type: str,
+        fields: Dict[str, Any],
+        idf_path: str,
+        output_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Modify an existing IDF object instead of creating a new one.
+
+        Args:
+            idf: Loaded IDF object
+            obj: Existing IDF object to modify
+            object_type: Object type name
+            fields: Fields to update
+            idf_path: Input file path
+            output_path: Output file path
+
+        Returns:
+            Dict with modification results
+        """
+        logger.info(f"Modifying existing {object_type} object instead of creating duplicate")
+
+        set_fields = []
+        errors = []
+
+        # Apply field values with IDD validation
+        for field_name, value in fields.items():
+            try:
+                # Check if field exists in IDD
+                if not hasattr(obj, field_name):
+                    # Get valid fields from IDD
+                    valid_fields = obj.fieldnames if hasattr(obj, 'fieldnames') else []
+                    errors.append({
+                        "field": field_name,
+                        "error": f"Field '{field_name}' not found in {object_type}",
+                        "valid_fields": valid_fields[:10]  # Show first 10 valid fields
+                    })
+                    continue
+
+                # Get old value
+                old_value = getattr(obj, field_name, None)
+
+                # Set the value
+                setattr(obj, field_name, value)
+
+                # Validate with IDD
+                try:
+                    if hasattr(obj, 'checkrange'):
+                        obj.checkrange(field_name)
+
+                    # Success
+                    set_fields.append({
+                        "field": field_name,
+                        "old_value": old_value,
+                        "new_value": value
+                    })
+                    logger.debug(f"Modified {field_name}: {old_value} → {value}")
+
+                except Exception as range_error:
+                    # Get IDD constraints for error message
+                    field_info = self.get_field_info(obj, field_name)
+                    errors.append({
+                        "field": field_name,
+                        "error": f"IDD validation failed: {range_error}",
+                        "constraints": field_info.get("constraints", {}),
+                        "value_attempted": value
+                    })
+                    # Revert the change
+                    setattr(obj, field_name, old_value)
+                    continue
+
+            except Exception as e:
+                errors.append({
+                    "field": field_name,
+                    "error": str(e)
+                })
+
+        # Save the modified IDF
+        if not output_path:
+            output_path = self._generate_output_path(idf_path)
+
+        try:
+            idf.save(output_path)
+            logger.info(f"Saved IDF with modified {object_type} to {output_path}")
+        except Exception as e:
+            logger.error(f"Failed to save IDF: {e}")
+            return {"success": False, "error": f"Failed to save IDF: {e}"}
+
+        # Build result
+        result = {
+            "success": len(set_fields) > 0,
+            "input_file": idf_path,
+            "output_file": output_path,
+            "object_type": object_type,
+            "object_created": False,
+            "object_modified": True,
+            "existing_object_updated": True,
             "fields_set": set_fields,
             "fields_set_count": len(set_fields),
             "errors": errors
