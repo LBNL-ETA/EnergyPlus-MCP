@@ -26,7 +26,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         list_reports: bool = False,
         variable_ids: Optional[List[int]] = None,
         variable_names: Optional[List[str]] = None,
-        output_path: Optional[str] = None,
+        output_path: Optional[str] = None,  # Deprecated for visualize_output
     ) -> str:
         """Post-processing tools for analyzing EnergyPlus simulation outputs.
 
@@ -36,8 +36,31 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         - query_sql_variables: Query available variables/meters in SQLite database
         - query_sql_timeseries: Query time-series data from SQLite database
         - query_sql_tabular: Query tabular reports from SQLite database
-        - visualize_output: Create interactive plot with datetime x-axis from SQLite time-series data (primary visualization tool)
+        - visualize_output: Create interactive HTML plot from SQLite time-series data (returns HTML string)
         - capabilities: Show available actions and parameters
+
+        Args:
+            action: The operation to perform
+            output_directory: Directory containing simulation output files
+            err_file_path: Path to .err file for error parsing
+            idf_name: IDF filename to filter outputs
+            file_type: Type of CSV file (auto/meter/variable)
+            custom_title: Custom title for visualization
+            sql_path: Path to SQLite output file
+            frequency: Data frequency filter (Hourly/Daily/Monthly/RunPeriod)
+            is_meter: Filter for meters (True) or variables (False)
+            name_filter: Filter variable/meter names (case-insensitive substring)
+            include_summary: Include summary statistics
+            variable_name: Specific variable name to query
+            variable_id: Specific variable ID to query
+            key_value: Key value for variable query
+            start_date: Start date for time-series filtering (YYYY-MM-DD)
+            end_date: End date for time-series filtering (YYYY-MM-DD)
+            output_format: Output format (json/csv)
+            report_name: Specific report name to query
+            list_reports: List available reports
+            variable_ids: List of variable IDs for visualization
+            variable_names: List of variable names for visualization
         """
         if action == "capabilities":
             return json.dumps({
@@ -48,7 +71,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     {"name": "query_sql_variables", "required": ["sql_path"], "optional": ["frequency", "is_meter", "name_filter", "include_summary"], "description": "Query available variables/meters in SQLite database with filtering and summary"},
                     {"name": "query_sql_timeseries", "required": ["sql_path"], "optional": ["variable_name", "variable_id", "key_value", "start_date", "end_date", "output_format"], "description": "Query time-series data from SQLite database"},
                     {"name": "query_sql_tabular", "required": ["sql_path"], "optional": ["report_name", "list_reports"], "description": "Query tabular reports from SQLite database"},
-                    {"name": "visualize_output", "required": ["sql_path"], "optional": ["variable_ids", "variable_names", "start_date", "end_date", "custom_title", "output_path"], "description": "Create interactive plot with datetime x-axis from SQLite time-series data (primary visualization tool)"}
+                    {"name": "visualize_output", "required": ["sql_path"], "optional": ["variable_ids", "variable_names", "start_date", "end_date", "custom_title"], "description": "Create interactive HTML plot from SQLite time-series data (returns HTML string)"}
                 ],
             }, indent=2)
         if action == "list_output_files":

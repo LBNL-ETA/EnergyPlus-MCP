@@ -11,7 +11,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
     
     @mcp.tool()
     async def envelope_manager(
-        action: Literal["inspect", "modify", "generate_html", "capabilities"],
+        action: Literal["inspect", "modify", "generate_html_str", "capabilities"],
         idf_path: Optional[str] = None,
         # Inspect parameters
         focus: Literal["all", "surfaces", "constructions", "materials", "relationships"] = "all",
@@ -23,38 +23,48 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         target: Optional[str] = None,  # Material or construction name
         properties: Optional[Dict[str, Any]] = None,  # For material.edit
         layers: Optional[List[str]] = None,  # For construction.edit
-        output_path: Optional[str] = None,
+        output_path: Optional[str] = None,  # For modify action only; deprecated for generate_html_str
     ) -> str:
         """
         Envelope domain manager for building envelope components.
-        
+
         Actions:
         - inspect: Get comprehensive envelope data (surfaces, constructions, materials, relationships)
-        - modify: Edit material properties or construction layers
-        - generate_html: Generate interactive HTML visualization of envelope relationships
+        - modify: Edit material properties or construction layers (optionally specify output_path for modified IDF)
+        - generate_html_str: Generate interactive HTML visualization of envelope relationships as string
         - capabilities: List supported operations
-        
+
+        Args:
+            action: The operation to perform
+            idf_path: Path to the IDF file (required for all actions except capabilities)
+            focus: Level of detail for inspect action (all/surfaces/constructions/materials/relationships)
+            op: Operation type for modify action (material.edit/construction.edit)
+            target: Material or construction name for modify action
+            properties: Dictionary of material properties for material.edit
+            layers: List of material layer names for construction.edit
+
         Inspection Focus:
         - "all": Complete envelope with all components and relationships (default)
         - "surfaces": Building surfaces only
         - "constructions": Construction definitions only
         - "materials": Material definitions only
         - "relationships": Usage and dependency analysis
-        
+
         Modification Operations:
         - "material.edit": Modify material properties
           Required: target (material name), properties (dict of field: value pairs)
-          Example: {"op": "material.edit", "target": "M01 100mm brick", 
+          Example: {"op": "material.edit", "target": "M01 100mm brick",
                    "properties": {"Conductivity": 0.75, "Solar_Absorptance": 0.6}}
-        
+
         - "construction.edit": Modify construction layers
           Required: target (construction name), layers (list of material names from outside to inside)
           Example: {"op": "construction.edit", "target": "WALL-1",
                    "layers": ["M01 100mm brick", "NEW_INSULATION", "I02 50mm insulation board"]}
-        
+
         Returns:
         - inspect: JSON with envelope data based on focus
         - modify: JSON with modification results and changelog
+        - generate_html_str: HTML string with interactive viewer
         - capabilities: JSON describing available operations
         """
         try:
@@ -77,9 +87,10 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                             "optional": ["output_path"]
                         },
                         {
-                            "name": "generate_html",
-                            "description": "Generate interactive HTML visualization of envelope relationships",
+                            "name": "generate_html_str",
+                            "description": "Generate interactive HTML visualization of envelope relationships as string",
                             "required": ["idf_path"],
+                            "optional": [],
                             "returns": "HTML string with React-based interactive viewer showing zones, constructions, materials, and their relationships"
                         }
                     ],
@@ -124,7 +135,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 return json.dumps({"error": "Missing required parameter: idf_path"})
             
             # Handle HTML generation
-            if action == "generate_html":
+            if action == "generate_html_str":
                 return ep_manager.generate_envelope_html(idf_path)
             
             # Handle inspection
