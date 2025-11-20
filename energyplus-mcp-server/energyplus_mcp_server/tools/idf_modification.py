@@ -28,7 +28,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
 
     @mcp.tool()
     async def idf_modification(
-        action: Literal["modify", "add", "capabilities"],
+        action: Literal["modify", "add", "delete", "capabilities"],
         idf_path: Optional[str] = None,
         object_type: Optional[str] = None,
         fields: Optional[Dict[str, Any]] = None,
@@ -44,6 +44,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         Actions:
         - modify: Modify existing IDF objects with specified field values
         - add: Add a new IDF object with specified field values
+        - delete: Delete IDF objects matching the target pattern
         - capabilities: Show available actions and parameters
 
         Parameters:
@@ -99,6 +100,22 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
              }
            }
 
+        5. Delete a specific object:
+           {
+             "action": "delete",
+             "idf_path": "model.idf",
+             "object_type": "Lights",
+             "target": "name:SPACE1-1 Lights"
+           }
+
+        6. Delete all objects of a type in a zone:
+           {
+             "action": "delete",
+             "idf_path": "model.idf",
+             "object_type": "ElectricEquipment",
+             "target": "zone:SPACE1-1"
+           }
+
         Note: For semantic operations like "reduce lighting power density",
         use domain-specific managers (e.g., lights_manager) instead.
         """
@@ -119,6 +136,12 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                             "required": ["idf_path", "object_type", "fields"],
                             "optional": ["output_path"],
                             "description": "Add a new IDF object with IDD validation"
+                        },
+                        {
+                            "name": "delete",
+                            "required": ["idf_path", "object_type"],
+                            "optional": ["target", "output_path"],
+                            "description": "Delete IDF objects matching target pattern"
                         }
                     ],
                     "target_formats": [
@@ -146,10 +169,10 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             if not object_type:
                 return json.dumps({"error": "Missing required parameter: object_type"}, indent=2)
 
-            if not fields:
-                return json.dumps({"error": "Missing required parameter: fields"}, indent=2)
-
             if action == "modify":
+                # Validate fields for modify action
+                if not fields:
+                    return json.dumps({"error": "Missing required parameter: fields"}, indent=2)
                 # Use IDFModifier for the actual modification
                 modifier = IDFModifier()
 
@@ -172,6 +195,10 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 return json.dumps(result, indent=2)
 
             if action == "add":
+                # Validate fields for add action
+                if not fields:
+                    return json.dumps({"error": "Missing required parameter: fields"}, indent=2)
+
                 # Use IDFModifier to add a new object
                 modifier = IDFModifier()
 
@@ -186,6 +213,24 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 # Add tool metadata to result
                 result["tool"] = "idf_modification"
                 result["modification_type"] = "add"
+
+                return json.dumps(result, indent=2)
+
+            if action == "delete":
+                # Use IDFModifier to delete objects
+                modifier = IDFModifier()
+
+                # Perform deletion
+                result = modifier.delete_objects(
+                    idf_path=idf_path,
+                    object_type=object_type,
+                    target=target,
+                    output_path=output_path
+                )
+
+                # Add tool metadata to result
+                result["tool"] = "idf_modification"
+                result["modification_type"] = "delete"
 
                 return json.dumps(result, indent=2)
 

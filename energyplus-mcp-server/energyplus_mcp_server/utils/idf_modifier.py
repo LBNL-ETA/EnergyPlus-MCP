@@ -581,6 +581,117 @@ class IDFModifier:
 
         return result
 
+    def delete_objects(
+        self,
+        idf_path: str,
+        object_type: str,
+        target: str = "all",
+        output_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Delete IDF objects matching the target pattern.
+
+        Args:
+            idf_path: Path to input IDF file
+            object_type: EnergyPlus object type (e.g., 'Lights', 'People')
+            target: Filter pattern - "all", "zone:ZoneName", "name:ObjectName"
+            output_path: Where to save (auto-generated if None)
+
+        Returns:
+            Dict with deleted_objects, errors, output_file, etc.
+
+        Example:
+            modifier = IDFModifier()
+            result = modifier.delete_objects(
+                idf_path="model.idf",
+                object_type="Lights",
+                target="name:SPACE1-1 Lights"
+            )
+        """
+        logger.info(f"Deleting {object_type} objects in {idf_path} with target={target}")
+
+        # Load IDF
+        try:
+            idf = IDF(idf_path)
+        except Exception as e:
+            logger.error(f"Failed to load IDF: {e}")
+            return {"success": False, "error": f"Failed to load IDF: {e}"}
+
+        # Get objects of this type
+        object_type_normalized = object_type.upper()
+        objects = idf.idfobjects.get(object_type_normalized, [])
+
+        if not objects:
+            return {
+                "success": False,
+                "error": f"No {object_type} objects found in IDF"
+            }
+
+        # Filter targets
+        target_objects = self._filter_targets(objects, target)
+
+        if not target_objects:
+            return {
+                "success": False,
+                "error": f"No objects match target pattern: {target}"
+            }
+
+        # Track deleted objects
+        deleted_objects = []
+        errors = []
+
+        # Delete each target object
+        for obj in target_objects:
+            try:
+                obj_name = getattr(obj, "Name", "Unnamed")
+
+                # Remove the object from IDF
+                idf.removeidfobject(obj)
+
+                deleted_objects.append({
+                    "name": obj_name,
+                    "object_type": object_type
+                })
+
+                logger.debug(f"Deleted {object_type}: {obj_name}")
+
+            except Exception as e:
+                obj_name = getattr(obj, "Name", "Unnamed")
+                errors.append({
+                    "name": obj_name,
+                    "error": str(e)
+                })
+                logger.error(f"Error deleting {obj_name}: {e}")
+
+        # Build result
+        result = {
+            "success": len(deleted_objects) > 0,
+            "deleted_objects": deleted_objects,
+            "deleted_count": len(deleted_objects),
+            "errors": errors,
+            "input_file": idf_path,
+            "object_type": object_type,
+            "target": target
+        }
+
+        # Save if any deletions succeeded
+        if len(deleted_objects) > 0:
+            if output_path is None:
+                output_path = self._generate_output_path(idf_path)
+
+            try:
+                idf.save(output_path)
+                result["output_file"] = output_path
+                logger.info(f"Saved modified IDF to {output_path}")
+            except Exception as e:
+                logger.error(f"Failed to save IDF: {e}")
+                result["success"] = False
+                result["errors"].append({"error": f"Failed to save IDF: {e}"})
+        else:
+            result["success"] = False
+            result["error"] = "No objects were deleted"
+
+        return result
+
     def _generate_output_path(self, input_path: str) -> str:
         """Generate timestamped output path.
 
