@@ -1,44 +1,43 @@
-# EnergyPlus MCP Server
+# EnergyPlus MCP Server (agentic-bem)
 
-A Model Context Protocol (MCP) server that provides **35 comprehensive tools** for working with EnergyPlus building energy simulation models. This server enables AI assistants and other MCP clients to load, validate, modify, and analyze EnergyPlus IDF files through a standardized interface.
+A Model Context Protocol (MCP) server for EnergyPlus that exposes a **compact, agent-friendly tool surface** built around domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, …) and a few unified master tools. It lets AI assistants load, validate, modify, and simulate EnergyPlus IDF files through a consolidated interface.
 
-> **Version**: 0.1.0  
-> **EnergyPlus Compatibility**: 25.1.0  
+> **Branch**: `agentic-bem` — this README documents the domain-manager / master-tool architecture on this branch.
+> For the fine-grained 35-tool layout, see the [`main` branch README](https://github.com/LBNL-ETA/EnergyPlus-MCP/blob/main/README.md).
+>
+> **Version**: 0.1.0
+> **EnergyPlus Compatibility**: 25.1.0
 > **Python**: 3.10+
 
 <details open>
 <summary><h2>📑 Table of Contents</h2></summary>
 
-- [EnergyPlus MCP Server](#energyplus-mcp-server)
-  - [Overview](#overview)
-  - [Installation](#installation)
-    - [Using the MCP Server](#using-the-mcp-server)
-      - [Claude Desktop](#claude-desktop)
-      - [VS Code](#vs-code)
-      - [Cursor](#cursor)
-    - [Development Setup](#development-setup)
-      - [VS Code Dev Container](#vs-code-dev-container)
-      - [Docker Setup](#docker-setup)
-      - [Local Development](#local-development)
+- [Overview](#overview)
+- [Installation](#installation)
+  - [Using the MCP Server](#using-the-mcp-server)
+    - [Claude Desktop](#claude-desktop)
+    - [VS Code](#vs-code)
+    - [Cursor](#cursor)
+  - [Development Setup](#development-setup)
+    - [VS Code Dev Container](#vs-code-dev-container)
+    - [Docker Setup](#docker-setup)
+    - [Local Development](#local-development)
 - [Available Tools](#available-tools)
-    - [Tool Surface Profiles (config.yaml)](#tool-surface-profiles-configyaml)
-    - [🔍 Inspection](#-inspection)
-    - [⚙️ Modification](#️-modification)
-    - [✅ Preflight](#-preflight)
-    - [🚀 Simulation](#-simulation)
-    - [📊 Post-Processing](#-post-processing)
-    - [🗂️ Files](#️-files)
-    - [🖥️ Server Management](#️-server-management)
-    - [Tool Exposure Flags](#tool-exposure-flags)
-  - [Usage Examples](#usage-examples)
-    - [Basic Workflow](#basic-workflow)
-    - [Advanced Features](#advanced-features)
-    - [Using with MCP Inspector](#using-with-mcp-inspector)
-  - [Architecture](#architecture)
-  - [Configuration](#configuration)
-  - [Troubleshooting](#troubleshooting)
-  - [Contributing](#contributing)
-  - [License](#license)
+  - [Tool Registration Modes](#tool-registration-modes)
+  - [Core Tools (Always Available)](#core-tools-always-available)
+  - [Mode-Specific Tools](#mode-specific-tools)
+  - [Optional Wrapper Tools](#optional-wrapper-tools)
+- [Usage Examples](#usage-examples)
+  - [Basic Workflow](#basic-workflow)
+  - [Advanced Features](#advanced-features)
+  - [Using with MCP Inspector](#using-with-mcp-inspector)
+- [Architecture](#architecture)
+- [Configuration](#configuration)
+  - [Environment variables](#environment-variables)
+  - [Tool Surface Profiles (config.yaml)](#tool-surface-profiles-configyaml)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
 
 </details>
 
@@ -58,20 +57,32 @@ EnergyPlus MCP Server makes EnergyPlus building energy simulation accessible to 
 
 ### Using the MCP Server
 
+**Prerequisites (all clients):**
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (macOS / Windows) or Docker Engine (Linux), running
+- `git` on your PATH
+- The `energyplus-mcp-dev` image built locally (step 1 below — do this once)
+- ⚠️ **Check out the `agentic-bem` branch** before configuring clients, otherwise you'll get the `main`-branch tool surface:
+  ```bash
+  cd EnergyPlus-MCP && git checkout agentic-bem
+  ```
+
 Choose the appropriate setup for your AI assistant or IDE:
 
 #### Claude Desktop
 
 1. **Build the Docker image** (one-time setup):
    ```bash
-   git clone https://github.com/tsbyq/EnergyPlus_MCP.git
-   cd EnergyPlus_MCP/.devcontainer
-   docker build -t energyplus-mcp-dev .
+   git clone -b agentic-bem https://github.com/LBNL-ETA/EnergyPlus-MCP.git
+   cd EnergyPlus-MCP
+   docker build -t energyplus-mcp-dev -f .devcontainer/Dockerfile .devcontainer
    ```
 
-2. **Configure Claude Desktop**:
-   
-   Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+2. **Locate the Claude Desktop config file** for your OS:
+   - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+   - **Linux**: Claude Desktop is not officially supported on Linux. If you use a community build, check its docs for the config path (commonly `~/.config/Claude/claude_desktop_config.json`).
+
+   Create the file if it does not exist, then add:
    ```json
    {
      "mcpServers": {
@@ -90,30 +101,34 @@ Choose the appropriate setup for your AI assistant or IDE:
      }
    }
    ```
-   
-   **Important**: 
-   - Replace `/path/to/EnergyPlus-MCP` with your actual repository path
-   - Remove all comments (text after `//`) when adding to the actual config file, as JSON doesn't support comments
 
-3. **Restart Claude Desktop** and the EnergyPlus server should connect automatically.
+   **Important**:
+   - Replace `/path/to/EnergyPlus-MCP` with the absolute path to your cloned repo.
+     - macOS/Linux example: `/Users/yourname/code/EnergyPlus-MCP`
+     - Windows example: `C:\\Users\\yourname\\code\\EnergyPlus-MCP` (use double backslashes in JSON)
+   - Remove all comments (text after `//`) when saving — JSON does not support comments.
+
+3. **Restart Claude Desktop**. The EnergyPlus server should appear in the MCP servers panel.
+
+4. **Verify**: in a new chat, ask *"List the EnergyPlus MCP tools you have access to."* You should see the domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, …) plus core tools (`model_preflight`, `simulation_manager`, `file_utils`, `post_processing`, `server_manager`). If you see instead a long flat list like `modify_lights` / `inspect_people`, you are on the `main` branch — re-check out `agentic-bem`.
 
 #### VS Code
 
-1. **Build the Docker image** (same as Claude Desktop step 1 above)
+VS Code 1.102+ ships native MCP support. Config goes in `.vscode/mcp.json` at the workspace root (or in user settings under `"mcp"`).
 
-2. **Configure VS Code**:
-   
-   Add to `.vscode/settings.json` in your project:
+1. **Build the Docker image** (same as Claude Desktop step 1 above).
+
+2. **Create `.vscode/mcp.json`** in your project:
    ```json
    {
-     "mcp.servers": {
+     "servers": {
        "energyplus": {              // Server name shown in VS Code
-         "command": "docker",         // Main command to execute  
+         "command": "docker",         // Main command to execute
          "args": [
            "run",                     // Docker subcommand to run a container
            "--rm",                    // Remove container after it exits (cleanup)
            "-i",                      // Interactive mode for stdio communication
-           "-v", "${workspaceFolder}:/workspace",      // Mount workspace to container
+           "-v", "${workspaceFolder}:/workspace",       // Mount workspace to container
            "-w", "/workspace/energyplus-mcp-server",    // Working dir in container
            "energyplus-mcp-dev",      // Docker image name we built
            "uv", "run", "python", "-m", "energyplus_mcp_server.server"  // Server startup command
@@ -122,18 +137,22 @@ Choose the appropriate setup for your AI assistant or IDE:
      }
    }
    ```
-   
-   **Important**: Remove all comments (text after `//`) when adding to the actual config file
 
-3. **Restart VS Code** for the changes to take effect.
+   **Important**: Remove all comments (text after `//`) when saving — JSON does not support comments.
+
+3. **Reload VS Code** (`Ctrl/Cmd+Shift+P` → *Developer: Reload Window*). Open the Chat view and confirm the `energyplus` MCP server shows as *Running*.
+
+4. **Verify**: ask the chat *"What EnergyPlus tools are available?"* — you should see the domain managers and core tools listed above.
 
 #### Cursor
 
-1. **Build the Docker image** (same as Claude Desktop step 1 above)
+1. **Build the Docker image** (same as Claude Desktop step 1 above).
 
-2. **Configure Cursor**:
-   
-   Add to `~/.cursor/mcp.json`:
+2. **Locate the Cursor MCP config file** for your OS:
+   - **macOS/Linux**: `~/.cursor/mcp.json`
+   - **Windows**: `%USERPROFILE%\.cursor\mcp.json`
+
+   Create the file if it does not exist, then add:
    ```json
    {
      "mcpServers": {
@@ -152,12 +171,14 @@ Choose the appropriate setup for your AI assistant or IDE:
      }
    }
    ```
-   
-   **Important**: 
-   - Replace `/path/to/EnergyPlus-MCP` with your actual repository path
-   - Remove all comments (text after `//`) when adding to the actual config file, as JSON doesn't support comments
 
-3. **Restart Cursor** for the changes to take effect.
+   **Important**:
+   - Replace `/path/to/EnergyPlus-MCP` with the absolute path to your cloned repo (Windows users: use double backslashes in JSON, e.g. `C:\\Users\\yourname\\code\\EnergyPlus-MCP`).
+   - Remove all comments (text after `//`) when saving — JSON does not support comments.
+
+3. **Restart Cursor**. Open *Settings → MCP* and confirm the `energyplus` server is listed as connected.
+
+4. **Verify**: ask Cursor chat *"What EnergyPlus tools are available?"* — you should see the domain managers and core tools listed above.
 
 ### Development Setup
 
@@ -175,8 +196,8 @@ The easiest development setup with all dependencies pre-configured.
 **Steps:**
 1. Clone and open in VS Code:
    ```bash
-   git clone https://github.com/tsbyq/EnergyPlus_MCP.git
-   cd EnergyPlus_MCP
+   git clone -b agentic-bem https://github.com/LBNL-ETA/EnergyPlus-MCP.git
+   cd EnergyPlus-MCP
    code .
    ```
 
@@ -190,11 +211,11 @@ For direct Docker development without VS Code:
 
 ```bash
 # Clone repository
-git clone https://github.com/tsbyq/EnergyPlus_MCP.git
-cd EnergyPlus_MCP
+git clone -b agentic-bem https://github.com/LBNL-ETA/EnergyPlus-MCP.git
+cd EnergyPlus-MCP
 
 # Build container
-docker build -t energyplus-mcp-dev -f .devcontainer/Dockerfile .
+docker build -t energyplus-mcp-dev -f .devcontainer/Dockerfile .devcontainer
 
 # Run container
 docker run -it --rm -v "$(pwd)":/workspace -w /workspace/energyplus-mcp-server energyplus-mcp-dev bash
@@ -214,8 +235,8 @@ For local development (requires EnergyPlus installation):
 
 ```bash
 # Clone and install
-git clone https://github.com/tsbyq/EnergyPlus_MCP.git
-cd EnergyPlus_MCP/energyplus-mcp-server
+git clone -b agentic-bem https://github.com/LBNL-ETA/EnergyPlus-MCP.git
+cd EnergyPlus-MCP/energyplus-mcp-server
 uv sync --extra dev
 
 # Run server for testing
@@ -476,11 +497,25 @@ By default, master tools are exposed when `mode: masters` (or `hybrid`): `inspec
 
 ### Using with MCP Inspector
 
-Test tools interactively:
+Test tools interactively (requires Node.js 18+):
+
+```bash
+# From the repo root, run the server inside the dev image under the Inspector
+npx @modelcontextprotocol/inspector \
+  docker run --rm -i \
+    -v "$(pwd):/workspace" \
+    -w /workspace/energyplus-mcp-server \
+    energyplus-mcp-dev \
+    uv run python -m energyplus_mcp_server.server
+```
+
+Or with a local dev environment (see [Local Development](#local-development)):
 ```bash
 cd energyplus-mcp-server
-uv run mcp-inspector energyplus_mcp_server.server
+npx @modelcontextprotocol/inspector uv run python -m energyplus_mcp_server.server
 ```
+
+The Inspector opens a browser UI where you can list registered tools and invoke them with JSON arguments — useful for confirming the active `tool_surface.mode` matches what you expect before wiring up a client.
 
 **HVAC Loops: Discover**
 ```json
@@ -515,7 +550,7 @@ The server follows a layered architecture:
 ┌─────────────────────────┐
 │   MCP Protocol Layer    │  FastMCP server handling client communications
 ├─────────────────────────┤
-│     Tools Layer         │  Tools organized into categories (aggregated inspectors/outputs)
+│     Tools Layer         │  Master tools + domain managers (registered per config)
 ├─────────────────────────┤
 │  Orchestration Layer    │  EnergyPlus Manager & Config Module
 ├─────────────────────────┤
@@ -526,23 +561,83 @@ The server follows a layered architecture:
 **Project Structure:**
 ```
 energyplus-mcp-server/
+├── config.yaml                  # Tool-surface config (mode, per-domain toggles)
 ├── energyplus_mcp_server/
-│   ├── server.py              # FastMCP server with tools
-│   ├── energyplus_tools.py    # Core EnergyPlus integration
-│   ├── config.py              # Configuration management
-│   └── utils/                 # Specialized utilities
-├── sample_files/              # Sample IDF and weather files
-├── tests/                     # Unit tests
-└── pyproject.toml            # Dependencies
+│   ├── server.py                # Lean bootstrap: loads config, delegates registration
+│   ├── energyplus_tools.py      # Core EnergyPlus integration (EnergyPlusManager)
+│   ├── config.py                # Configuration management
+│   ├── domains/                 # Domain manager tools (envelope, hvac, internal_loads, outputs, geometry, retrofit)
+│   ├── tools/                   # Master / core tools (inspect, modify, simulation, preflight, files, post, server)
+│   └── utils/                   # Specialized utilities (idf_modifier, geometry, plots, …)
+├── sample_files/                # Sample IDF and weather files
+├── tests/                       # Unit tests
+└── pyproject.toml               # Dependencies
 ```
 
 ## Configuration
 
-The server auto-detects EnergyPlus installation and uses sensible defaults. Configuration can be customized via environment variables:
+The server auto-detects EnergyPlus installation and uses sensible defaults.
+
+### Environment variables
 
 - `EPLUS_IDD_PATH`: Path to EnergyPlus IDD file
 - `EPLUS_SAMPLE_PATH`: Custom sample files directory
 - `EPLUS_OUTPUT_PATH`: Output directory for results
+- `MCP_CONFIG_PATH`: Override path to `config.yaml` (default: `energyplus-mcp-server/config.yaml`)
+- `MCP_EXPOSE_MASTERS`, `MCP_EXPOSE_DOMAIN_MANAGERS`, and the per-group `MCP_EXPOSE_*_WRAPPERS` flags described in [Tool Exposure Flags](#tool-exposure-flags).
+
+### Tool Surface Profiles (config.yaml)
+
+You can control how tools are presented via `config.yaml`. The server reads this on startup to decide which tool groups to register. **A restart is required after edits** — MCP clients only see tools registered at startup.
+
+- Location: `energyplus-mcp-server/config.yaml` (checked first), or the path in `MCP_CONFIG_PATH`.
+- Parser: requires `pyyaml` (included in dependencies). If missing, the server falls back to env flags and logs a note.
+- Precedence: YAML, when present, overrides the `MCP_EXPOSE_MASTERS` / `MCP_EXPOSE_DOMAIN_MANAGERS` env flags for mode selection.
+
+Schema (minimal):
+```yaml
+tool_surface:
+  mode: masters | domains | hybrid
+  enable_wrappers: true | false   # optional, overrides all wrapper flags
+  domains:                        # optional fine-grained controls
+    envelope: true | false
+    internal_loads: true | false
+    hvac: true | false
+    outputs: true | false
+    geometry: true | false
+    retrofit: true | false
+```
+
+**Profiles:**
+
+Masters-only (fewer, unified tools):
+```yaml
+tool_surface:
+  mode: masters
+  enable_wrappers: false
+```
+
+Domains-only (default on `agentic-bem`; one manager per building domain):
+```yaml
+tool_surface:
+  mode: domains
+  domains:
+    envelope: true
+    internal_loads: true
+    hvac: true
+    outputs: true
+    geometry: true
+    retrofit: true
+```
+
+Hybrid (expose both surfaces simultaneously):
+```yaml
+tool_surface:
+  mode: hybrid
+  enable_wrappers: false
+  domains:
+    outputs: true
+```
 
 ## Troubleshooting
 
@@ -553,10 +648,12 @@ The server auto-detects EnergyPlus installation and uses sensible defaults. Conf
 3. **"Permission denied"**: Check file permissions
 4. **"Simulation failed"**: Check EnergyPlus error messages in output directory
 
-**Debugging:**
-- Check server status: `get_server_status`
-- View logs: `get_server_logs`
-- Check errors: `get_error_logs`
+**Debugging (use the `server_manager` tool with an `action`):**
+- Check server status: `{"tool": "server_manager", "arguments": {"action": "status"}}`
+- View logs: `{"tool": "server_manager", "arguments": {"action": "logs", "type": "all", "lines": 200}}`
+- Check errors: `{"tool": "server_manager", "arguments": {"action": "logs", "type": "error", "lines": 100, "format": "raw"}}`
+
+If you enable `MCP_EXPOSE_SERVER_WRAPPERS=true`, the legacy `get_server_status` / `get_server_logs` / `get_error_logs` / `clear_logs` tools become available as thin wrappers over `server_manager`.
 
 ## Contributing
 
@@ -574,65 +671,3 @@ The server auto-detects EnergyPlus installation and uses sensible defaults. Conf
 ## License
 
 See [LICENSE](License.txt) file for details.
-**Outputs via Domain Manager**
-```json
-{
-  "tool": "outputs_manager",
-  "arguments": {
-    "action": "list",
-    "idf_path": "sample_files/5ZoneAirCooled.idf",
-    "type": "both",
-    "discover_available": true,
-    "run_days": 1
-  }
-}
-```
-## Tool Surface Profiles (config.yaml)
-
-You can control how tools are presented via `config.yaml` (default path `energyplus-mcp-server/config.yaml`, override with `MCP_CONFIG_PATH`). The server loads this on startup to decide which tool groups to register.
-
-- Location: `energyplus-mcp-server/config.yaml` (checked first), or path in `MCP_CONFIG_PATH`.
-- Parser: requires `pyyaml` (included in dependencies). If missing, the server falls back to env flags and logs a note.
-- Restart required after edits.
-
-Schema (minimal):
-```yaml
-tool_surface:
-  mode: masters | domains | hybrid
-  enable_wrappers: true | false   # optional, overrides all wrapper flags
-  domains:                        # optional fine-grained controls
-    envelope: true | false
-    internal_loads: true | false
-    hvac: true | false
-    outputs: true | false
-```
-
-Profiles
-- Masters (default):
-```yaml
-tool_surface:
-  mode: masters
-  enable_wrappers: false
-```
-
-- Domains-only (all domains):
-```yaml
-tool_surface:
-  mode: domains
-  domains:
-    envelope: true
-    internal_loads: true
-    hvac: true
-    outputs: true
-```
-
-- Hybrid (both):
-```yaml
-tool_surface:
-  mode: hybrid
-  enable_wrappers: false
-  domains:
-    outputs: true
-```
-
-Env flags remain supported and act as defaults when YAML is absent. YAML, if present, takes precedence for mode and global wrapper exposure.
