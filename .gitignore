@@ -175,6 +175,8 @@ cython_debug/
 
 # For simulation outputs
 energyplus-mcp-server/outputs/
+docs/energyplus_mcp_strategy/output/
+docs/energyplus_mcp_strategy/previews/
 energyplus-mcp-server/.DS_Store
 energyplus-mcp-server/sample_files/.DS_Store
 test_runs
