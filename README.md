@@ -16,6 +16,7 @@ A Model Context Protocol (MCP) server for EnergyPlus that exposes a **compact, a
 - [Installation](#installation)
   - [Using the MCP Server](#using-the-mcp-server)
     - [Claude Desktop](#claude-desktop)
+    - [Codex](#codex)
     - [VS Code](#vs-code)
     - [Cursor](#cursor)
   - [Development Setup](#development-setup)
@@ -111,6 +112,63 @@ Choose the appropriate setup for your AI assistant or IDE:
 3. **Restart Claude Desktop**. The EnergyPlus server should appear in the MCP servers panel.
 
 4. **Verify**: in a new chat, ask *"List the EnergyPlus MCP tools you have access to."* You should see the domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, …) plus core tools (`model_preflight`, `simulation_manager`, `file_utils`, `post_processing`, `server_manager`). If you see instead a long flat list like `modify_lights` / `inspect_people`, you are on the `main` branch — re-check out `agentic-bem`.
+
+#### Codex
+
+Codex supports local (stdio) MCP servers through its built-in *Connect to a custom MCP* dialog — no JSON editing required.
+
+1. **Build the Docker image** (same as Claude Desktop step 1 above).
+
+2. **Open the custom MCP dialog** in Codex (*Settings → MCP servers → Connect to a custom MCP*) and fill in:
+
+   | Field | Value |
+   |---|---|
+   | **Name** | `energyplus` |
+   | **Transport** | *STDIO* (the default tab) |
+   | **Command to launch** | `docker` |
+   | **Arguments** | Add each token as a **separate** entry via *Add argument* (see list below). Do not paste them as a single string. |
+   | **Environment variables** | *(leave empty)* |
+   | **Environment variable passthrough** | *(leave empty)* |
+   | **Working directory** | *(leave empty — Docker sets cwd via `-w`)* |
+
+   **Arguments**, one per entry, in order:
+   ```
+   run
+   --rm
+   -i
+   -v
+   /path/to/EnergyPlus-MCP:/workspace
+   -w
+   /workspace/energyplus-mcp-server
+   energyplus-mcp-dev
+   uv
+   run
+   python
+   -m
+   energyplus_mcp_server.server
+   ```
+
+   Replace `/path/to/EnergyPlus-MCP` with the absolute path to your cloned repo.
+   - macOS/Linux example: `/Users/yourname/code/EnergyPlus-MCP`
+   - Windows example: `C:\Users\yourname\code\EnergyPlus-MCP` *(single backslashes are fine here — this is a form field, not JSON)*
+
+3. Click **Save**, then restart any active Codex session so the new server is picked up.
+
+4. **Verify**: ask Codex *"What EnergyPlus tools are available?"* — you should see the domain managers (`envelope_manager`, `hvac_manager`, …) and core tools. Same "flat-list → wrong branch" check as above applies.
+
+> **Codex CLI users**: the terminal Codex reads MCP servers from `~/.codex/config.toml` instead of the UI:
+> ```toml
+> [mcp_servers.energyplus]
+> command = "docker"
+> args = [
+>   "run", "--rm", "-i",
+>   "-v", "/path/to/EnergyPlus-MCP:/workspace",
+>   "-w", "/workspace/energyplus-mcp-server",
+>   "energyplus-mcp-dev",
+>   "uv", "run", "python", "-m", "energyplus_mcp_server.server",
+> ]
+> ```
+> Windows users: escape backslashes in TOML strings (`"C:\\Users\\yourname\\code\\EnergyPlus-MCP:/workspace"`).
 
 #### VS Code
 
