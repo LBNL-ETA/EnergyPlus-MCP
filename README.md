@@ -46,20 +46,28 @@ EnergyPlus MCP Server makes EnergyPlus building energy simulation accessible to 
 
 ### Using the MCP Server
 
+**Prerequisites (all clients):**
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (macOS / Windows) or Docker Engine (Linux), running
+- `git` on your PATH
+- The `energyplus-mcp-dev` image built locally (step 1 below — do this once)
+
 Choose the appropriate setup for your AI assistant or IDE:
 
 #### Claude Desktop
 
 1. **Build the Docker image** (one-time setup):
    ```bash
-   git clone https://github.com/tsbyq/EnergyPlus_MCP.git
-   cd EnergyPlus_MCP/.devcontainer
-   docker build -t energyplus-mcp-dev .
+   git clone https://github.com/LBNL-ETA/EnergyPlus-MCP.git
+   cd EnergyPlus-MCP
+   docker build -t energyplus-mcp-dev -f .devcontainer/Dockerfile .devcontainer
    ```
 
-2. **Configure Claude Desktop**:
-   
-   Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+2. **Locate the Claude Desktop config file** for your OS:
+   - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+   - **Linux**: Claude Desktop is not officially supported on Linux. If you use a community build, check its docs for the config path (commonly `~/.config/Claude/claude_desktop_config.json`).
+
+   Create the file if it does not exist, then add:
    ```json
    {
      "mcpServers": {
@@ -80,28 +88,32 @@ Choose the appropriate setup for your AI assistant or IDE:
    ```
    
    **Important**: 
-   - Replace `/path/to/EnergyPlus-MCP` with your actual repository path
-   - Remove all comments (text after `//`) when adding to the actual config file, as JSON doesn't support comments
+   - Replace `/path/to/EnergyPlus-MCP` with the absolute path to your cloned repo.
+     - macOS/Linux example: `/Users/yourname/code/EnergyPlus-MCP`
+     - Windows example: `C:\\Users\\yourname\\code\\EnergyPlus-MCP` (use double backslashes in JSON)
+   - Remove all comments (text after `//`) when adding to the actual config file, as JSON doesn't support comments.
 
-3. **Restart Claude Desktop** and the EnergyPlus server should connect automatically.
+3. **Restart Claude Desktop**. The EnergyPlus server should appear in the MCP servers panel.
+
+4. **Verify**: in a new chat, ask *"List the EnergyPlus MCP tools you have access to."* You should see tools like `load_idf_model`, `run_energyplus_simulation`, `get_server_status`. If not, check [Troubleshooting](#troubleshooting).
 
 #### VS Code
 
-1. **Build the Docker image** (same as Claude Desktop step 1 above)
+VS Code 1.102+ ships native MCP support. Config goes in `.vscode/mcp.json` at the workspace root (or in user settings under `"mcp"`).
 
-2. **Configure VS Code**:
-   
-   Add to `.vscode/settings.json` in your project:
+1. **Build the Docker image** (same as Claude Desktop step 1 above).
+
+2. **Create `.vscode/mcp.json`** in your project:
    ```json
    {
-     "mcp.servers": {
+     "servers": {
        "energyplus": {              // Server name shown in VS Code
-         "command": "docker",         // Main command to execute  
+         "command": "docker",         // Main command to execute
          "args": [
            "run",                     // Docker subcommand to run a container
            "--rm",                    // Remove container after it exits (cleanup)
            "-i",                      // Interactive mode for stdio communication
-           "-v", "${workspaceFolder}:/workspace",      // Mount workspace to container
+           "-v", "${workspaceFolder}:/workspace",       // Mount workspace to container
            "-w", "/workspace/energyplus-mcp-server",    // Working dir in container
            "energyplus-mcp-dev",      // Docker image name we built
            "uv", "run", "python", "-m", "energyplus_mcp_server.server"  // Server startup command
@@ -110,18 +122,22 @@ Choose the appropriate setup for your AI assistant or IDE:
      }
    }
    ```
-   
-   **Important**: Remove all comments (text after `//`) when adding to the actual config file
 
-3. **Restart VS Code** for the changes to take effect.
+   **Important**: Remove all comments (text after `//`) when saving — JSON does not support comments.
+
+3. **Reload VS Code** (`Ctrl/Cmd+Shift+P` → *Developer: Reload Window*). Open the Chat view and confirm the `energyplus` MCP server shows as *Running*.
+
+4. **Verify**: ask the chat *"What EnergyPlus tools are available?"* — you should see the tool list.
 
 #### Cursor
 
-1. **Build the Docker image** (same as Claude Desktop step 1 above)
+1. **Build the Docker image** (same as Claude Desktop step 1 above).
 
-2. **Configure Cursor**:
-   
-   Add to `~/.cursor/mcp.json`:
+2. **Locate the Cursor MCP config file** for your OS:
+   - **macOS/Linux**: `~/.cursor/mcp.json`
+   - **Windows**: `%USERPROFILE%\.cursor\mcp.json`
+
+   Create the file if it does not exist, then add:
    ```json
    {
      "mcpServers": {
@@ -140,12 +156,14 @@ Choose the appropriate setup for your AI assistant or IDE:
      }
    }
    ```
-   
-   **Important**: 
-   - Replace `/path/to/EnergyPlus-MCP` with your actual repository path
-   - Remove all comments (text after `//`) when adding to the actual config file, as JSON doesn't support comments
 
-3. **Restart Cursor** for the changes to take effect.
+   **Important**:
+   - Replace `/path/to/EnergyPlus-MCP` with the absolute path to your cloned repo (Windows users: use double backslashes in JSON, e.g. `C:\\Users\\yourname\\code\\EnergyPlus-MCP`).
+   - Remove all comments (text after `//`) when saving — JSON does not support comments.
+
+3. **Restart Cursor**. Open *Settings → MCP* and confirm the `energyplus` server is listed as connected.
+
+4. **Verify**: ask Cursor chat *"What EnergyPlus tools are available?"* — you should see the tool list.
 
 ### Development Setup
 
@@ -163,8 +181,8 @@ The easiest development setup with all dependencies pre-configured.
 **Steps:**
 1. Clone and open in VS Code:
    ```bash
-   git clone https://github.com/tsbyq/EnergyPlus_MCP.git
-   cd EnergyPlus_MCP
+   git clone https://github.com/LBNL-ETA/EnergyPlus-MCP.git
+   cd EnergyPlus-MCP
    code .
    ```
 
@@ -178,11 +196,11 @@ For direct Docker development without VS Code:
 
 ```bash
 # Clone repository
-git clone https://github.com/tsbyq/EnergyPlus_MCP.git
-cd EnergyPlus_MCP
+git clone https://github.com/LBNL-ETA/EnergyPlus-MCP.git
+cd EnergyPlus-MCP
 
 # Build container
-docker build -t energyplus-mcp-dev -f .devcontainer/Dockerfile .
+docker build -t energyplus-mcp-dev -f .devcontainer/Dockerfile .devcontainer
 
 # Run container
 docker run -it --rm -v "$(pwd)":/workspace -w /workspace/energyplus-mcp-server energyplus-mcp-dev bash
@@ -202,8 +220,8 @@ For local development (requires EnergyPlus installation):
 
 ```bash
 # Clone and install
-git clone https://github.com/tsbyq/EnergyPlus_MCP.git
-cd EnergyPlus_MCP/energyplus-mcp-server
+git clone https://github.com/LBNL-ETA/EnergyPlus-MCP.git
+cd EnergyPlus-MCP/energyplus-mcp-server
 uv sync --extra dev
 
 # Run server for testing
@@ -344,11 +362,25 @@ The server provides **35 tools** organized into **5 categories**:
 
 ### Using with MCP Inspector
 
-Test tools interactively:
+Test tools interactively (requires Node.js 18+):
+
+```bash
+# From the repo root, run the server inside the dev image under the Inspector
+npx @modelcontextprotocol/inspector \
+  docker run --rm -i \
+    -v "$(pwd):/workspace" \
+    -w /workspace/energyplus-mcp-server \
+    energyplus-mcp-dev \
+    uv run python -m energyplus_mcp_server.server
+```
+
+Or, if you have a local dev environment (see [Local Development](#local-development)):
 ```bash
 cd energyplus-mcp-server
-uv run mcp-inspector energyplus_mcp_server.server
+npx @modelcontextprotocol/inspector uv run python -m energyplus_mcp_server.server
 ```
+
+The Inspector opens a browser UI where you can list tools and invoke them with JSON arguments — useful for sanity-checking the install before wiring up a client.
 
 ## Architecture
 
