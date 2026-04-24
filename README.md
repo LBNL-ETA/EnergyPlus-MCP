@@ -6,7 +6,7 @@ A Model Context Protocol (MCP) server for EnergyPlus that exposes a **compact, a
 > For the fine-grained 35-tool layout, see the [`main` branch README](https://github.com/LBNL-ETA/EnergyPlus-MCP/blob/main/README.md).
 >
 > **Version**: 0.1.0
-> **EnergyPlus Compatibility**: 25.1.0
+> **EnergyPlus Compatibility**: 26.1.0 (default; see [Building against a different EnergyPlus version](#building-against-a-different-energyplus-version))
 > **Python**: 3.10+
 
 <details open>
@@ -261,7 +261,7 @@ The easiest development setup with all dependencies pre-configured.
 
 2. Click "Reopen in Container" when prompted (or press `Ctrl+Shift+P` → "Dev Containers: Reopen in Container")
 
-3. The container automatically installs EnergyPlus 25.1.0 and all dependencies
+3. The container automatically installs EnergyPlus 26.1.0 and all dependencies (to pin a different version, see [below](#building-against-a-different-energyplus-version))
 
 #### Docker Setup
 
@@ -289,7 +289,7 @@ For local development (requires EnergyPlus installation):
 **Prerequisites:**
 - Python 3.10+
 - [uv package manager](https://github.com/astral-sh/uv)
-- [EnergyPlus 25.1.0](https://github.com/NREL/EnergyPlus/releases)
+- [EnergyPlus 26.1.0](https://github.com/NREL/EnergyPlus/releases/tag/v26.1.0) (or pin a different version — see [below](#building-against-a-different-energyplus-version))
 
 ```bash
 # Clone and install
@@ -300,6 +300,34 @@ uv sync --extra dev
 # Run server for testing
 uv run python -m energyplus_mcp_server.server
 ```
+
+#### Building against a different EnergyPlus version
+
+The Docker image bakes EnergyPlus **26.1.0** in by default. To pin a different release, override the build args below when building the image. You'll need:
+
+- `EPLUS_VER`: release version, e.g. `25.1.0`
+- `EPLUS_HASH`: the short commit string NREL embeds in the release tarball filename. Find it by looking at any asset on the release page — e.g. for [v25.1.0](https://github.com/NREL/EnergyPlus/releases/tag/v25.1.0) the tarball `EnergyPlus-25.1.0-68a4a7c774-Linux-Ubuntu22.04-x86_64.tar.gz` gives `EPLUS_HASH=68a4a7c774`.
+- `EPLUS_PREFIX`: install path inside the container. Must match `/app/software/EnergyPlusV<major>-<minor>-<patch>` (hyphens, not dots).
+- `EPLUS_DIST_SUFFIX`: Ubuntu distro tag. Use `Ubuntu22.04` for EnergyPlus ≤ 25.1.0; `Ubuntu24.04` for ≥ 26.1.0 (NREL stopped shipping 22.04 builds from 26.1.0 onward).
+
+**Example — rebuild against 25.1.0:**
+```bash
+docker build \
+  --build-arg EPLUS_VER=25.1.0 \
+  --build-arg EPLUS_HASH=68a4a7c774 \
+  --build-arg EPLUS_PREFIX=/app/software/EnergyPlusV25-1-0 \
+  --build-arg EPLUS_DIST_SUFFIX=Ubuntu22.04 \
+  -t energyplus-mcp-dev \
+  -f .devcontainer/Dockerfile .devcontainer
+```
+
+**Heads up — three other places reference the install path** (`/app/software/EnergyPlusV26-1-0`) and don't read the Dockerfile ARG, so if you override `EPLUS_PREFIX` you'll also need to update:
+
+- `energyplus-mcp-server/energyplus_mcp_server/config.py` — `version` and `default_installation`
+- `energyplus-mcp-server/.vscode/mcp.json` — the two `EnergyPlusV26-1-0` strings
+- The client config JSON you created for Claude Desktop / Codex / VS Code / Cursor — only if it sets `EPLUS_IDD_PATH` explicitly; otherwise `config.py`'s update is enough.
+
+Alternatively, set `EPLUS_IDD_PATH` to the new install location in your client config's `env` block — `config.py` will derive everything else from it.
 
 ## Available Tools
 

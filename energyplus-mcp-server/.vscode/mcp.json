@@ -6,7 +6,7 @@
       "args": [
         "@modelcontextprotocol/server-filesystem",
         "/workspace/energyplus-mcp-server",
-        "/app/software/EnergyPlusV25-1-0",
+        "/app/software/EnergyPlusV26-1-0",
         "/tmp"
       ]
     },
@@ -18,7 +18,7 @@
         "energyplus_mcp_server.server"
       ],
       "env": {
-        "EPLUS_IDD_PATH": "/app/software/EnergyPlusV25-1-0/Energy+.idd"
+        "EPLUS_IDD_PATH": "/app/software/EnergyPlusV26-1-0/Energy+.idd"
       }
     }
   }

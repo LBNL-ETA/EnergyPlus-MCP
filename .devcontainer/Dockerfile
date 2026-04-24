@@ -20,19 +20,31 @@ RUN apt-get update && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# ----------------------------------------------------------------------------- 
-# 2. EnergyPlus 25.1.0 (auto-detect host architecture)
-# ----------------------------------------------------------------------------- 
-ARG EPLUS_VER=25.1.0
-ARG EPLUS_HASH=68a4a7c774                    # update when bumping version
-ARG EPLUS_PREFIX=/app/software/EnergyPlusV25-1-0
+# -----------------------------------------------------------------------------
+# 2. EnergyPlus (auto-detect host architecture)
+#
+# To build against a different EnergyPlus release, override these three build
+# args together — e.g. to pin 25.1.0:
+#   docker build \
+#     --build-arg EPLUS_VER=25.1.0 \
+#     --build-arg EPLUS_HASH=68a4a7c774 \
+#     --build-arg EPLUS_PREFIX=/app/software/EnergyPlusV25-1-0 \
+#     --build-arg EPLUS_DIST_SUFFIX=Ubuntu22.04 \
+#     -t energyplus-mcp-dev -f .devcontainer/Dockerfile .devcontainer
+# The EPLUS_HASH is the commit string NREL embeds in the release tarball name;
+# get it from the filenames listed at https://github.com/NREL/EnergyPlus/releases
+# -----------------------------------------------------------------------------
+ARG EPLUS_VER=26.1.0
+ARG EPLUS_HASH=6f2e40d102                    # update when bumping version
+ARG EPLUS_PREFIX=/app/software/EnergyPlusV26-1-0
+ARG EPLUS_DIST_SUFFIX=Ubuntu24.04            # Ubuntu22.04 for <=25.1.0, Ubuntu24.04 for >=26.1.0
 
 # Compute EPLUS_DIST based on TARGETPLATFORM and then download/unpack
 RUN set -eux; \
     if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
-      EPLUS_DIST="Linux-Ubuntu22.04-arm64"; \
+      EPLUS_DIST="Linux-${EPLUS_DIST_SUFFIX}-arm64"; \
     elif [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
-      EPLUS_DIST="Linux-Ubuntu22.04-x86_64"; \
+      EPLUS_DIST="Linux-${EPLUS_DIST_SUFFIX}-x86_64"; \
     else \
       echo "Unsupported platform: $TARGETPLATFORM" >&2; \
       exit 1; \
