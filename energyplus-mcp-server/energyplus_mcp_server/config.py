@@ -10,10 +10,20 @@ See License.txt in the parent directory for license details.
 """
 
 import os
+import json
+import re
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+# Soft-load .env for local development convenience.
+# Production (Cloud Run, etc.) sets env vars directly — no .env needed.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 
 @dataclass
@@ -53,18 +63,109 @@ class ServerConfig:
 
 
 @dataclass
+class TransportConfig:
+    """Transport-layer configuration (stdio vs streamable-http)"""
+    transport: str = "stdio"          # "stdio" | "streamable-http"
+    http_host: str = "0.0.0.0"
+    http_port: int = 8000
+    http_path: str = "/mcp"
+
+
+@dataclass
+class AuthConfig:
+    """Bearer-token table for streamable-http transport.
+
+    Internal shape: dict mapping raw token string → human label.
+    Empty dict in stdio mode (no auth wired in).
+    """
+    tokens: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class Config:
     """Main configuration class"""
     energyplus: EnergyPlusConfig = field(default_factory=EnergyPlusConfig)
     paths: PathConfig = field(default_factory=PathConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    transport: TransportConfig = field(default_factory=TransportConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
     debug_mode: bool = False
-    
+
     def __post_init__(self):
         """Set up configuration after initialization"""
+        self._setup_transport()
+        self._setup_auth()
         self._setup_energyplus_paths()
         self._setup_logging()
         self._validate_config()
+
+    def _setup_transport(self):
+        """Read transport env vars; fail-closed on unknown values."""
+        valid = {"stdio", "streamable-http"}
+        t = os.getenv("MCP_TRANSPORT", "stdio").strip()
+        if t not in valid:
+            raise ValueError(
+                f"MCP_TRANSPORT must be one of {sorted(valid)}, got: {t!r}"
+            )
+        self.transport.transport = t
+        self.transport.http_host = os.getenv("MCP_HTTP_HOST", self.transport.http_host)
+        port_str = os.getenv("MCP_HTTP_PORT") or os.getenv("PORT")
+        if port_str:
+            try:
+                self.transport.http_port = int(port_str)
+            except ValueError:
+                raise ValueError(f"MCP_HTTP_PORT/PORT must be an integer, got: {port_str!r}")
+        self.transport.http_path = os.getenv("MCP_HTTP_PATH", self.transport.http_path)
+
+    _LABEL_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+    _MIN_TOKEN_LEN = 32
+
+    def _setup_auth(self):
+        """Parse MCP_TOKENS JSON; fail-closed on validation errors."""
+        raw = os.getenv("MCP_TOKENS", "").strip()
+        if not raw:
+            tokens = {}
+        else:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"MCP_TOKENS must be valid JSON: {e}") from e
+            if not isinstance(parsed, list):
+                raise ValueError("MCP_TOKENS must be a JSON array of objects")
+            tokens = {}
+            seen_labels = set()
+            for i, entry in enumerate(parsed):
+                if not isinstance(entry, dict) or "label" not in entry or "token" not in entry:
+                    raise ValueError(
+                        f"MCP_TOKENS[{i}] missing 'token' or 'label' key"
+                    )
+                label = entry["label"]
+                token = entry["token"]
+                if not isinstance(label, str) or not self._LABEL_RE.match(label):
+                    raise ValueError(
+                        f"MCP_TOKENS[{i}] invalid label {label!r}; must match "
+                        f"[a-z0-9_-]{{1,32}}"
+                    )
+                if not isinstance(token, str) or len(token) < self._MIN_TOKEN_LEN:
+                    raise ValueError(
+                        f"MCP_TOKENS[{i}] token too short; min "
+                        f"{self._MIN_TOKEN_LEN} characters"
+                    )
+                if label in seen_labels:
+                    raise ValueError(f"MCP_TOKENS has duplicate label {label!r}")
+                if token in tokens:
+                    raise ValueError(
+                        f"MCP_TOKENS has duplicate token: labels "
+                        f"{tokens[token]!r} and {label!r} share the same token value"
+                    )
+                seen_labels.add(label)
+                tokens[token] = label
+
+        if self.transport.transport == "streamable-http" and not tokens:
+            raise ValueError(
+                "streamable-http transport requires non-empty MCP_TOKENS"
+            )
+        self.auth.tokens = tokens
 
     def _setup_energyplus_paths(self):
         """Set up EnergyPlus paths from environment variables or defaults"""
@@ -143,21 +244,30 @@ class Config:
         if not os.path.exists(self.paths.sample_files_path):
             logger.warning(f"Sample files directory not found: {self.paths.sample_files_path}")
         
-        # Create output directory if it doesn't exist
-        os.makedirs(self.paths.output_dir, exist_ok=True)
-        
+        # Create output directory if it doesn't exist (tolerant in dev/test)
+        try:
+            os.makedirs(self.paths.output_dir, exist_ok=True)
+        except OSError:
+            logger.warning("Could not create output dir %s", self.paths.output_dir)
+
         logger.info("Configuration loaded and validated successfully")
 
     def _setup_logging(self):
         """Set up logging configuration with both console and file handlers"""
         import logging.handlers
         from pathlib import Path
-        
+
         logger = logging.getLogger(__name__)
-        
-        # Create logs directory
+
+        # Create logs directory (tolerant of read-only/missing parent in dev/test)
         log_dir = Path(self.paths.workspace_root) / "logs"
-        log_dir.mkdir(exist_ok=True)
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.warning(
+                "Could not create log directory %s; file logging disabled", log_dir
+            )
+            return  # file logging disabled; WARNING+ still visible via logging.lastResort
         
         # Configure root logger
         root_logger = logging.getLogger()

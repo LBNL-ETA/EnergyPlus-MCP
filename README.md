@@ -19,6 +19,7 @@ A Model Context Protocol (MCP) server that provides **35 comprehensive tools** f
     - [VS Code Dev Container](#vs-code-dev-container)
     - [Docker Setup](#docker-setup)
     - [Local Development](#local-development)
+    - [Streamable HTTP Transport (Local Testing)](#streamable-http-transport-local-testing)
 - [Available Tools](#available-tools)
 - [Usage Examples](#usage-examples)
 - [Architecture](#architecture)
@@ -227,6 +228,119 @@ uv sync --extra dev
 # Run server for testing
 uv run python -m energyplus_mcp_server.server
 ```
+
+#### Streamable HTTP Transport (Local Testing)
+
+By default the server runs over **stdio**, which is what every MCP client config in this README uses. The server can also run as a token-authenticated **streamable HTTP** service — useful for testing remote-style deployments, smoke-testing with `curl`, or connecting clients that expect an HTTP MCP endpoint.
+
+**Prerequisites — pick one path:**
+
+- **Docker (recommended; no local EnergyPlus install needed)**: build the `energyplus-mcp-dev` image once (per [Docker Setup](#docker-setup) above). The image ships with EnergyPlus 25.1.0 and all Python deps pre-installed.
+- **Local Development**: follow [Local Development](#local-development) above — Python 3.10+, `uv`, and a local EnergyPlus install. HTTP mode pulls in `uvicorn` and `python-dotenv`, which are declared in `pyproject.toml` — `uv sync --extra dev` will install them.
+
+**1. Generate a bearer token.** Tokens must be at least 32 characters:
+
+```bash
+openssl rand -hex 32
+```
+
+**2. Create `.env` in `energyplus-mcp-server/`** (gitignored). Copy from [.env.example](energyplus-mcp-server/.env.example) and fill in your values:
+
+```bash
+# EPLUS_IDD_PATH — ONLY set this for the Local variant.
+# Leave it commented out / unset when using the Docker variant; the image has
+# EnergyPlus 25.1.0 baked in and auto-detects it. Setting a host path
+# (e.g. /Applications/...) inside the container will override the in-container
+# install and crash the server with "IDD file not found".
+# EPLUS_IDD_PATH=/Applications/EnergyPlus-25-1-0/Energy+.idd
+
+MCP_TRANSPORT=streamable-http
+MCP_HTTP_HOST=0.0.0.0
+MCP_HTTP_PORT=8000
+MCP_HTTP_PATH=/mcp
+
+# JSON array. Required when MCP_TRANSPORT=streamable-http.
+MCP_TOKENS=[{"label":"local-dev","token":"<paste-32+-char-hex-here>"}]
+```
+
+`MCP_TOKENS` is strict (parsed in [config.py](energyplus-mcp-server/energyplus_mcp_server/config.py)):
+
+- JSON array of `{"label": "...", "token": "..."}` objects
+- `label` matches `[a-z0-9_-]{1,32}` (lowercase only)
+- `token` is at least 32 characters
+- Labels and tokens must be unique within the array
+- An empty list while `MCP_TRANSPORT=streamable-http` causes the server to refuse to start (fail-closed)
+
+**3. Start the server.** Pick the variant that matches your setup:
+
+*Docker (recommended):* publish the port, mount the repo, and let the container pick up `.env` via `--env-file`. Run from the **repo root**:
+
+```bash
+docker run --rm \
+  -p 8000:8000 \
+  -v "$(pwd)":/workspace \
+  -w /workspace/energyplus-mcp-server \
+  --env-file energyplus-mcp-server/.env \
+  energyplus-mcp-dev \
+  uv run python -m energyplus_mcp_server.server
+```
+
+> **Note**: `uv run python -m ...` outside `docker run` executes Python on your **host**, not in the container — even if the dev image is built. The container is only used when you actually invoke `docker run`. That's why the Local variant below requires a host-side EnergyPlus install.
+>
+> For the Docker command above, make sure `EPLUS_IDD_PATH` is **unset / commented out** in `.env` (see the note in step 2). `--env-file` forwards every uncommented line into the container, and a host-side `/Applications/...` path inside the container will override the image's auto-detected install and crash startup.
+
+*Local:* (requires a host EnergyPlus install matching whatever `EPLUS_IDD_PATH` is set to in `.env`)
+
+```bash
+cd energyplus-mcp-server
+uv run python -m energyplus_mcp_server.server
+```
+
+Either way you should see a log line like `Listening on http://0.0.0.0:8000 (path=/mcp, 1 tokens)`.
+
+**4. Smoke-test with curl.** The server exposes two endpoints:
+
+```bash
+# Health check — no auth required, useful for confirming the server is up
+curl -s http://localhost:8000/health
+# → {"status":"ok"}
+
+# Unauthenticated MCP request — should return 401
+curl -i -X POST http://localhost:8000/mcp
+
+# Authenticated initialize handshake
+TOKEN=<paste-your-token>
+curl -i -X POST http://localhost:8000/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+```
+
+**5. Connect MCP Inspector.** Run the Inspector and point it at `http://localhost:8000/mcp` with transport `Streamable HTTP` and an `Authorization: Bearer <your-token>` header.
+
+**6. Connect an MCP client.** Replace the stdio command stanza in your client config with an HTTP one:
+
+```json
+{
+  "mcpServers": {
+    "energyplus": {
+      "type": "http",
+      "url": "http://localhost:8000/mcp",
+      "headers": { "Authorization": "Bearer <your-token>" }
+    }
+  }
+}
+```
+
+**Common pitfalls:**
+
+- **`RuntimeError: IDD file not found at: /Applications/...`** when using Docker — `EPLUS_IDD_PATH` in `.env` is set to a host path and `--env-file` forwarded it into the container, overriding the image's auto-detected install. Comment out the `EPLUS_IDD_PATH` line in `.env` (or set it to the in-container path `/app/software/EnergyPlusV25-1-0/Energy+.idd`).
+- **`streamable-http transport requires non-empty MCP_TOKENS`** — `MCP_TOKENS` is empty or unset. Generate a token and add it to `.env`.
+- **JSON quoting in shells** — if you `export MCP_TOKENS=...` in zsh/bash instead of using `.env`, wrap the value in single quotes so the inner `"` characters survive.
+- **Port conflict on 8000** — set `MCP_HTTP_PORT=8001` in `.env` (the Cloud Run-style `PORT` env var is also honored).
+- **421 "Invalid Host header"** — `mcp>=1.10` ships DNS rebinding protection that rejects unrecognized Host headers. The server disables it by default for HTTP-behind-auth use cases. To re-enable with an allowlist, set `MCP_ALLOWED_HOSTS=host1.example.com,host2.example.com`.
+- **Tests** — transport and auth behavior is covered by `tests/test_config_transport.py` and `tests/test_auth.py`. Run with `uv run pytest tests/test_config_transport.py tests/test_auth.py`.
 
 ## Available Tools
 

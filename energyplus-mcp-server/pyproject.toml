@@ -10,13 +10,15 @@ authors = [{name = "Han Li", email = "hanli@lbl.gov"}]
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp[cli]",
+    "mcp[cli]>=1.10",
     "eppy",
     "matplotlib",
     "networkx",
     "pandas",
     "plotly",
-    "graphviz"
+    "graphviz",
+    "uvicorn[standard]",
+    "python-dotenv",
 ]
 license = {text = "BSD-3-Clause-LBNL"}
 keywords = ["EnergyPlus", "MCP", "server"]
@@ -37,6 +39,10 @@ repository = "https://github.com/LBNL-ETA/EnergyPlus-MCP"
 where = ["."]
 include = ["energyplus_mcp_server*"]
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
 [project.optional-dependencies]
 dev = [
     "ipykernel",
@@ -45,5 +51,7 @@ dev = [
     "pytest-asyncio",
     "black",
     "ruff",
-    "mypy"
+    "mypy",
+    "httpx",
+    "asgi-lifespan",
 ]
