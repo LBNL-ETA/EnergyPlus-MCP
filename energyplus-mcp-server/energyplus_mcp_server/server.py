@@ -56,8 +56,42 @@ def _load_tool_surface_config() -> Dict[str, Any]:
 
 tool_surface_cfg = _load_tool_surface_config()
 
-# Initialize FastMCP server
-mcp = FastMCP(config.server.name)
+# Initialize FastMCP server.
+#
+# DNS rebinding protection (in mcp>=1.10) defaults to allowed_hosts=[], which
+# makes the SDK reject ANY Host header with 421 "Invalid Host header". That's
+# correct for browser-attack scenarios but unnecessary when bearer-token auth
+# is enforced on every non-/health request.
+#
+# Behavior:
+#   - MCP_ALLOWED_HOSTS unset (default) -> disable DNS rebinding check
+#     (suitable for HTTP behind our AuthMiddleware, or stdio).
+#   - MCP_ALLOWED_HOSTS="host1,host2"   -> keep check on with that allowlist.
+_allowed_hosts_env = os.getenv("MCP_ALLOWED_HOSTS", "").strip()
+if _allowed_hosts_env:
+    from mcp.server.transport_security import TransportSecuritySettings
+    _transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[h.strip() for h in _allowed_hosts_env.split(",") if h.strip()],
+    )
+    logger.info(
+        "DNS rebinding protection ENABLED, allowed_hosts=%s",
+        _transport_security.allowed_hosts,
+    )
+else:
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+        _transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+        logger.info("DNS rebinding protection DISABLED (MCP_ALLOWED_HOSTS unset)")
+    except ImportError:
+        # mcp<1.10 has no transport_security module; behavior was equivalent
+        # to disabled-protection (no host check existed). Pass nothing.
+        _transport_security = None
+
+_mcp_kwargs: dict = {}
+if _transport_security is not None:
+    _mcp_kwargs["transport_security"] = _transport_security
+mcp = FastMCP(config.server.name, **_mcp_kwargs)
 
 # Defaults (env flags as secondary control)
 EXPOSE_DOMAIN_MANAGERS = os.getenv("MCP_EXPOSE_DOMAIN_MANAGERS", "false").lower() in ("1", "true", "yes")
@@ -134,13 +168,38 @@ if __name__ == "__main__":
     logger.info(f"Starting {config.server.name} v{config.server.version}")
     logger.info(f"EnergyPlus version: {config.energyplus.version}")
     logger.info(f"Sample files path: {config.paths.sample_files_path}")
+    logger.info(f"Transport: {config.transport.transport}")
 
     try:
-        mcp.run(transport="stdio")
+        if config.transport.transport == "stdio":
+            mcp.run(transport="stdio")
+        elif config.transport.transport == "streamable-http":
+            import uvicorn
+            from energyplus_mcp_server.http_app import build_app
+
+            app = build_app(mcp, config)
+            logger.info(
+                "Listening on http://%s:%d (path=%s, %d tokens)",
+                config.transport.http_host,
+                config.transport.http_port,
+                config.transport.http_path,
+                len(config.auth.tokens),
+            )
+            uvicorn.run(
+                app,
+                host=config.transport.http_host,
+                port=config.transport.http_port,
+                log_level=config.server.log_level.lower(),
+            )
+        else:
+            raise RuntimeError(
+                f"Unknown transport: {config.transport.transport!r} "
+                f"(should have been caught at config load)"
+            )
     except KeyboardInterrupt:
         logger.info("Server shutdown requested")
     except Exception as e:
-        logger.error(f"Server error: {str(e)}")
+        logger.error(f"Server error: {e}", exc_info=True)
         raise
     finally:
         logger.info("Server stopped")
