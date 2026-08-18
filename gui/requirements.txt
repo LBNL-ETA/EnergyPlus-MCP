@@ -1,0 +1,13 @@
+# EnergyPlus-MCP GUI 依赖
+pywebview>=5.0
+fastapi>=0.110
+uvicorn>=0.29
+requests>=2.31
+# MCP server 本体依赖（打包时收集）
+mcp[cli]>=1.10
+eppy
+matplotlib
+networkx
+pandas
+plotly
+python-dotenv

@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EnergyPlus-MCP 图形界面</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "PingFang SC","Microsoft YaHei",system-ui,sans-serif; background: #f5f7fa; color: #222; padding: 20px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: #888; font-size: 13px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: #fff; border-radius: 12px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,.05); }
+  .card h2 { font-size: 15px; margin-bottom: 12px; }
+  label { display: block; font-size: 12px; color: #666; margin: 10px 0 4px; }
+  input { width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 13px; font-family: inherit; }
+  .btn { padding: 9px 18px; border: none; border-radius: 8px; font-size: 13px; cursor: pointer; font-weight: 600; }
+  .btn-primary { background: #2563eb; color: #fff; }
+  .btn-green { background: #16a34a; color: #fff; }
+  .btn-gray { background: #e5e7eb; color: #333; }
+  .btn:hover { opacity: .88; }
+  .row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+  .status { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+  .status.ok { background: #dcfce7; color: #166534; }
+  .status.no { background: #fee2e2; color: #991b1b; }
+  .status.info { background: #e0e7ff; color: #3730a3; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot.green { background: #16a34a; } .dot.red { background: #dc2626; } .dot.blue { background: #4f46e5; }
+  .detect-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #eee; font-size: 13px; }
+  .detect-item:last-child { border: none; }
+  .log { background: #0f172a; color: #cbd5e1; border-radius: 8px; padding: 12px; font-size: 12px; font-family: Consolas, monospace; max-height: 220px; overflow-y: auto; margin-top: 10px; white-space: pre-wrap; }
+  .tools { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tool-tag { background: #eef2ff; color: #3730a3; padding: 4px 10px; border-radius: 12px; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>⚡ EnergyPlus-MCP 图形界面</h1>
+<div class="sub">建筑能耗模拟 MCP 服务器 · 图形化管理工具（Windows / macOS / Linux）</div>
+
+<div class="grid">
+  <div>
+    <div class="card">
+      <h2>🔍 环境检测
+        <span id="ep-status" class="status no"><span class="dot red"></span>检测中…</span>
+      </h2>
+      <div id="detect-list"></div>
+      <div class="row">
+        <button class="btn btn-primary" onclick="refreshStatus()">重新检测</button>
+        <button class="btn btn-green" onclick="verifyEP()">验证 EnergyPlus</button>
+        <span id="verify-result"></span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>⚙️ 配置
+        <span id="mcp-status" class="status info"><span class="dot blue"></span>MCP 未启动</span>
+      </h2>
+      <label>EnergyPlus 安装路径</label>
+      <input id="cfg-path" placeholder="如 C:\EnergyPlusV26-1-0">
+      <label>EnergyPlus 可执行文件</label>
+      <input id="cfg-exe" placeholder="如 C:\EnergyPlusV26-1-0\energyplus.exe">
+      <label>Energy+.idd 路径</label>
+      <input id="cfg-idd" placeholder="如 C:\EnergyPlusV26-1-0\Energy+.idd">
+      <label>天气文件目录</label>
+      <input id="cfg-weather" placeholder="可选，如 C:\EnergyPlusV26-1-0\WeatherData">
+      <label>MCP 服务端口</label>
+      <input id="cfg-port" value="8631">
+      <div class="row">
+        <button class="btn btn-primary" onclick="saveConfig()">💾 保存配置</button>
+        <button class="btn btn-green" onclick="startMCP()">🚀 启动 MCP 服务</button>
+        <button class="btn btn-gray" onclick="listTools()">🧰 工具清单</button>
+      </div>
+      <div id="tools-area"></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>📋 状态日志</h2>
+      <div id="log" class="log">欢迎使用 EnergyPlus-MCP 图形界面\n点击「重新检测」查看本机 EnergyPlus 环境。</div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>📖 快速使用说明</h2>
+      <div style="font-size:13px;line-height:1.9;color:#444">
+        1. <b>检测环境</b>：自动查找本机 EnergyPlus 安装（常见路径）<br>
+        2. <b>保存配置</b>：确认安装/可执行文件/IDD 路径正确<br>
+        3. <b>启动 MCP</b>：在后台启动 MCP HTTP 服务（端口默认 8631）<br>
+        4. <b>接入 AI</b>：在 Claude / Cursor / Hermes 等中配置 MCP 服务器地址：
+        <code style="background:#f1f5f9;padding:2px 6px;border-radius:4px">http://127.0.0.1:8631/mcp</code><br>
+        5. <b>问 AI</b>："读取 5ZoneAirCooled.idf 的模型信息"、"列出可用的示例文件"…
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+function log(msg) {
+  const el = $("#log");
+  el.textContent = (el.textContent + "\n" + msg).trim();
+  el.scrollTop = el.scrollHeight;
+}
+
+async function api(path, body) {
+  const opt = body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {};
+  const r = await fetch(path, opt);
+  return r.json();
+}
+
+async function refreshStatus() {
+  log("→ 检测 EnergyPlus 环境…");
+  const s = await api("/api/status");
+  const list = $("#detect-list");
+  if (s.detected && s.detected.length) {
+    list.innerHTML = s.detected.map(d =>
+      `<div class="detect-item"><span>📁 ${d.path}</span><span>${d.executable ? "✅" : "⚠️ 无可执行文件"}</span></div>`).join("");
+  } else {
+    list.innerHTML = '<div style="color:#999;font-size:13px">未检测到 EnergyPlus（可手动配置）</div>';
+  }
+  const ep = $("#ep-status");
+  if (s.energyplus_ready) { ep.className = "status ok"; ep.innerHTML = '<span class="dot green"></span>已就绪'; }
+  else { ep.className = "status no"; ep.innerHTML = '<span class="dot red"></span>未配置'; }
+
+  const mcp = $("#mcp-status");
+  if (s.mcp_running) { mcp.className = "status ok"; mcp.innerHTML = '<span class="dot green"></span>MCP 运行中'; log("✅ MCP 服务运行中"); }
+  else { mcp.className = "status info"; mcp.innerHTML = '<span class="dot blue"></span>MCP 未启动'; }
+
+  // 回填配置
+  if (s.configured) {
+    if (s.configured.installation_path) $("#cfg-path").value = s.configured.installation_path;
+    if (s.configured.executable_path) $("#cfg-exe").value = s.configured.executable_path;
+    if (s.configured.idd_path) $("#cfg-idd").value = s.configured.idd_path;
+    if (s.configured.weather_path) $("#cfg-weather").value = s.configured.weather_path;
+    if (s.configured.port) $("#cfg-port").value = s.configured.port;
+  } else if (s.detected && s.detected.length) {
+    const d = s.detected[0];
+    $("#cfg-path").value = d.path;
+    if (d.executable) $("#cfg-exe").value = d.executable;
+    if (d.idd) $("#cfg-idd").value = d.idd;
+  }
+  log("→ 检测完成");
+}
+
+async function saveConfig() {
+  const body = {
+    installation_path: $("#cfg-path").value.trim(),
+    executable_path: $("#cfg-exe").value.trim(),
+    idd_path: $("#cfg-idd").value.trim(),
+    weather_path: $("#cfg-weather").value.trim(),
+    port: parseInt($("#cfg-port").value) || 8631,
+  };
+  const r = await api("/api/config", body);
+  log(r.ok ? "✅ 配置已保存" : "❌ 保存失败");
+}
+
+async function startMCP() {
+  log("→ 正在启动 MCP 服务…");
+  const r = await api("/api/start-mcp", {});
+  log(r.ok ? `✅ MCP 服务已启动（端口 ${r.port}）` : `❌ ${r.error || "启动失败"}`);
+  setTimeout(refreshStatus, 2500);
+}
+
+async function verifyEP() {
+  log("→ 验证 EnergyPlus…");
+  const r = await api("/api/verify", {});
+  $("#verify-result").innerHTML = r.ok
+    ? `<span class="status ok"><span class="dot green"></span>${r.version || "OK"}</span>`
+    : `<span class="status no"><span class="dot red"></span>${r.message || "失败"}</span>`;
+  log(r.ok ? `✅ ${r.version}` : `❌ ${r.message}`);
+}
+
+async function listTools() {
+  log("→ 获取工具清单…");
+  const r = await api("/api/tools");
+  if (r.tools && r.tools.length) {
+    $("#tools-area").innerHTML = `<div class="tools" style="margin-top:10px">${r.tools.map(t => `<span class="tool-tag">${t}</span>`).join("")}</div>`;
+    log(`✅ 共 ${r.count} 个工具能力`);
+  } else {
+    $("#tools-area").innerHTML = '<div style="color:#999;font-size:12px;margin-top:8px">工具列表加载失败（MCP 包未安装？）</div>';
+    log(`⚠️ ${r.error || "无工具"}`);
+  }
+}
+
+refreshStatus();
+setInterval(refreshStatus, 15000);
+</script>
+</body>
+</html>
