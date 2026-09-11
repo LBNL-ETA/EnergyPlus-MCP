@@ -12,20 +12,25 @@ slice, not the full SF calibration campaign or PNNL harness integration.
 ## Minimal workflow
 
 1. Select an EnergyPlus executable and IDD compatible with the input IDF.
-   Call `calibration_manager(action="capabilities", idf_path=...)` and pass
-   its result to the calibration service's backend-aware gates.
+   Call `parameter_capabilities` on `internal_load_manager`,
+   `envelope_manager`, and `hvac_manager`, and pass the reports to the
+   calibration service's backend-aware gate.
 2. Create a calibration project with `backend="energyplus"` and a shared
    `runs_dir`; ingest the monthly bills and classify climate as usual.
 3. Run the baseline with `simulation_manager(action="run", idf_path=...,
    weather_file=..., runs_dir=...)`. Record the returned run ID with the
    explicit baseline `model_path` in calibration-MCP.
 4. Use the existing pattern/state/selection tools. Obtain, for example,
-   `get_measure_recipe("COP", 10, project_id=...)` from calibration-MCP.
-   Call its returned EnergyPlus tool/arguments, adding explicit `idf_path`
-   and a different `output_path`.
+   `get_measure_recipe("COP", 10, project_id=...)` from Calibration-MCP.
+   It resolves to `hvac_manager(action="adjust_percentage", parameter="COP")`;
+   add explicit `idf_path` and a different `output_path`.
 5. Simulate that output through the same `runs_dir` route. Record the
    candidate with its `model_path`, explicit `seed_model_path`, selection,
    value, and decision. Continue the existing sweep/commit procedure.
+
+The first implementation exposed these operations through a workflow-specific
+`calibration_manager`; current releases route the same semantics through the
+owning domain manager. The deprecated façade is opt-in only.
 
 LPD means a signed percentage change from the explicitly supplied input:
 `after = before * (1 + value / 100)`. The native implementation scales each

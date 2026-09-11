@@ -1,19 +1,20 @@
 # Native absolute setters and explicit calibration bounds
 
-The existing `calibration_manager` now distinguishes inspection, percentage
-changes, and absolute targets. It does not silently clip percentage edits.
+The workflow-neutral domain managers distinguish inspection, percentage
+changes, and absolute targets. They do not silently clip percentage edits.
 Calibration-MCP decides the allowed range; EnergyPlus-MCP performs the edit.
 
 ## Workflow
 
-1. Check model-specific `calibration_manager(action="capabilities", idf_path=...)`.
+1. Call `action="parameter_capabilities"` on the manager that owns the
+   parameter (`internal_load_manager`, `envelope_manager`, or `hvac_manager`).
    Percentage and absolute coverage are separate. Inspect `absolute_set` for
    the desired parameter; partial coverage is not enabled.
-2. Inspect the incoming model with `action="inspect", parameter=...`.
+2. Inspect the incoming model with `action="inspect_parameter", parameter=...`.
    The response contains canonical values, units, stable target IDs and the
    input model's SHA-256. It does not expose raw IDF objects.
 3. For a direct absolute target, request Calibration-MCP's
-   `get_measure_recipe(..., operation="absolute_set")`. Execute `action="set"`
+   `get_measure_recipe(..., operation="absolute_set")`. Execute `action="set_parameter"`
    with `value`, an explicit input and a different output path. Optional
    `target_ids` restricts the edit to known targets. Pass the inspected hash
    as `expected_model_sha256` to refuse stale input.
@@ -22,7 +23,7 @@ Calibration-MCP decides the allowed range; EnergyPlus-MCP performs the edit.
    or the existing state's override. Without `percentage_change`, it repairs
    only out-of-range targets. With it, it projects a percentage trial and
    clips the proposed canonical values explicitly before any model is saved.
-5. Execute the returned atomic `set` recipe. `assignments` maps target IDs to
+5. Execute the returned atomic `set_parameter` recipe. `assignments` maps target IDs to
    absolute values and replaces the scalar `value`/`target_ids` arguments.
    Conflicting shared-field assignments fail. The manager verifies achieved
    canonical quantities before saving and reports each underlying field edit.

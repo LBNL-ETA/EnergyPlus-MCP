@@ -2,11 +2,13 @@ from typing import Any, Dict, Optional, Literal
 import json
 import logging
 
+from . import envelope as envelope_domain
+
 logger = logging.getLogger(__name__)
 
 
 def register(mcp: Any, ep_manager: Any, config: Any) -> None:
-    """Register the retrofit_manager tool with the MCP server."""
+    """Register the opt-in deprecated retrofit compatibility facade."""
     logger.info("domains.retrofit.register starting")
     
     @mcp.tool()
@@ -24,7 +26,9 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         output_path: Optional[str] = None,
     ) -> str:
         """
-        Retrofit manager for applying energy conservation measures (ECMs).
+        Deprecated retrofit facade for applying energy conservation measures.
+
+        Use envelope_manager operations directly for new integrations.
         
         Actions:
         - list_measures: Show available retrofit measures with descriptions
@@ -85,6 +89,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             if action == "capabilities":
                 return json.dumps({
                     "tool": "retrofit_manager",
+                    "deprecated": True,
+                    "replacement": "envelope_manager(action='modify', op=...)",
                     "purpose": "Apply energy conservation measures (ECMs) to improve building performance",
                     "actions": [
                         {
@@ -215,7 +221,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 p = params or {}
                 
                 if measure == "add_window_film":
-                    return ep_manager.add_window_film_outside(
+                    return envelope_domain.add_window_film(
+                        ep_manager,
                         idf_path,
                         float(p.get("u_value", 4.94)),
                         float(p.get("shgc", 0.45)),
@@ -224,7 +231,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     )
                 
                 elif measure == "add_cool_roof_coating":
-                    return ep_manager.add_coating_outside(
+                    return envelope_domain.apply_surface_coating(
+                        ep_manager,
                         idf_path,
                         "roof",
                         float(p.get("solar_absorptance", 0.3)),
@@ -233,7 +241,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     )
                 
                 elif measure == "add_cool_wall_coating":
-                    return ep_manager.add_coating_outside(
+                    return envelope_domain.apply_surface_coating(
+                        ep_manager,
                         idf_path,
                         "wall",
                         float(p.get("solar_absorptance", 0.4)),
@@ -242,7 +251,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     )
                 
                 elif measure == "reduce_infiltration":
-                    return ep_manager.change_infiltration_by_mult(
+                    return envelope_domain.scale_infiltration(
+                        ep_manager,
                         idf_path,
                         float(p.get("multiplier", 0.7)),
                         output_path
@@ -272,8 +282,10 @@ def apply_window_film(
     visible_transmittance: float = 0.66,
     output_path: Optional[str] = None
 ) -> str:
-    """Apply window film retrofit."""
-    return ep_manager.add_window_film_outside(idf_path, u_value, shgc, visible_transmittance, output_path)
+    """Deprecated retrofit alias for :func:`envelope.add_window_film`."""
+    return envelope_domain.add_window_film(
+        ep_manager, idf_path, u_value, shgc, visible_transmittance, output_path
+    )
 
 
 def apply_cool_roof(
@@ -283,8 +295,10 @@ def apply_cool_roof(
     thermal_absorptance: float = 0.9,
     output_path: Optional[str] = None
 ) -> str:
-    """Apply cool roof coating retrofit."""
-    return ep_manager.add_coating_outside(idf_path, "roof", solar_absorptance, thermal_absorptance, output_path)
+    """Deprecated retrofit alias for :func:`envelope.apply_surface_coating`."""
+    return envelope_domain.apply_surface_coating(
+        ep_manager, idf_path, "roof", solar_absorptance, thermal_absorptance, output_path
+    )
 
 
 def apply_cool_walls(
@@ -294,8 +308,10 @@ def apply_cool_walls(
     thermal_absorptance: float = 0.9,
     output_path: Optional[str] = None
 ) -> str:
-    """Apply cool wall coating retrofit."""
-    return ep_manager.add_coating_outside(idf_path, "wall", solar_absorptance, thermal_absorptance, output_path)
+    """Deprecated retrofit alias for :func:`envelope.apply_surface_coating`."""
+    return envelope_domain.apply_surface_coating(
+        ep_manager, idf_path, "wall", solar_absorptance, thermal_absorptance, output_path
+    )
 
 
 def reduce_infiltration(
@@ -304,6 +320,5 @@ def reduce_infiltration(
     multiplier: float = 0.7,
     output_path: Optional[str] = None
 ) -> str:
-    """Reduce building infiltration."""
-    return ep_manager.change_infiltration_by_mult(idf_path, multiplier, output_path)
-
+    """Deprecated retrofit alias for :func:`envelope.scale_infiltration`."""
+    return envelope_domain.scale_infiltration(ep_manager, idf_path, multiplier, output_path)

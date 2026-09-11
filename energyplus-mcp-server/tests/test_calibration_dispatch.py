@@ -7,7 +7,7 @@ import pytest
 
 from energyplus_mcp_server.energyplus_tools import EnergyPlusManager
 from energyplus_mcp_server.tools.calibration import register
-from energyplus_mcp_server.utils import calibration
+from energyplus_mcp_server.utils import model_parameters as calibration
 
 
 def test_numeric_range_handles_eppy_glazing_bound_lists():

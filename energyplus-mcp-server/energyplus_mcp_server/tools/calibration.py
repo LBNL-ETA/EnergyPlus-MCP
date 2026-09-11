@@ -1,4 +1,4 @@
-"""Lean native-IDF operations used by the calibration service."""
+"""Deprecated compatibility facade over generic semantic domain operations."""
 
 import json
 from typing import Any, Dict, List, Literal, Optional
@@ -16,7 +16,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         assignments: Optional[Dict[str, float]] = None,
         expected_model_sha256: Optional[str] = None,
     ) -> str:
-        """Report native-IDF calibration support or perturb the supplied model.
+        """Deprecated calibration facade; use the owning generic domain manager.
 
         perturb uses signed percentages. inspect reports canonical absolute
         quantities and target IDs. set uses an absolute value (optionally
@@ -27,6 +27,10 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         if action == "capabilities":
             payload = ep_manager.calibration_capabilities(idf_path)
             payload["action"] = "capabilities"
+            payload["deprecated"] = True
+            payload["replacement"] = (
+                "internal_load_manager, envelope_manager, or hvac_manager"
+            )
             return json.dumps(payload, indent=2)
 
         if action not in ("inspect", "perturb", "set"):

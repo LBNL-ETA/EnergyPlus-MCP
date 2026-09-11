@@ -2,9 +2,6 @@ tool_surface:
   # One of: masters | domains | hybrid
   mode: domains
 
-  # If set to true/false, overrides all wrapper exposure env flags
-  enable_wrappers: false
-
   # Per-domain toggles (used when mode is domains or hybrid)
   domains:
     envelope: true
@@ -13,3 +10,7 @@ tool_surface:
     outputs: true
     geometry: true
 
+  # Deprecated workflow-specific managers are disabled by default. They are
+  # thin aliases over domain operations and will be removed after migration.
+  compatibility:
+    workflow_managers: false

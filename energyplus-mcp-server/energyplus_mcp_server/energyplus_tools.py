@@ -3351,41 +3351,72 @@ class EnergyPlusManager:
             "skipped": skipped,
         }
 
-    def adjust_calibration_percentage(
-        self, idf_path: str, parameter: str, percentage_change: float, output_path: str,
-    ) -> Dict[str, Any]:
-        return self._apply_calibration_edit(idf_path, parameter, percentage_change, output_path)
+    def inspect_parameter(self, idf_path: str, parameter: str) -> Dict[str, Any]:
+        """Inspect canonical semantic parameter quantities without mutation.
 
-    def inspect_calibration_parameter(self, idf_path: str, parameter: str) -> Dict[str, Any]:
-        """Inspect canonical absolute quantities without modifying a model."""
-        from .utils import calibration
+        This is deliberately workflow-neutral.  Callers select the relevant
+        domain manager (internal loads, envelope, or HVAC); the manager keeps
+        the source-hash binding needed by a later absolute set.
+        """
+        from .utils import model_parameters
         resolved = self._resolve_idf_path(idf_path)
         self._assert_simulation_version_matches(resolved)
-        result = calibration.inspect_absolute(IDF(resolved), parameter)
+        result = model_parameters.inspect_absolute(IDF(resolved), parameter)
         return {"success": True, "model_format": "idf", "idf_path": resolved,
                 "model_sha256": sha256(Path(resolved).read_bytes()).hexdigest(),
                 "parameter": parameter, **result}
+
+    def adjust_parameter_percentage(
+        self, idf_path: str, parameter: str, percentage_change: float, output_path: str,
+    ) -> Dict[str, Any]:
+        """Apply a complete, signed percentage plan to a separate IDF copy."""
+        return self._apply_parameter_edit(
+            idf_path, parameter, percentage_change, output_path,
+            operation="adjust_percentage",
+        )
+
+    def set_parameter(
+        self, idf_path, parameter, value, output_path, target_ids=None,
+        assignments=None, expected_model_sha256=None,
+    ) -> Dict[str, Any]:
+        """Set inspected semantic targets to absolute values in a separate IDF copy."""
+        return self._apply_parameter_edit(
+            idf_path, parameter, value, output_path, operation="set_parameter",
+            target_ids=target_ids, assignments=assignments,
+            expected_model_sha256=expected_model_sha256,
+        )
+
+    # Deprecated compatibility aliases.  The workflow facade calls these so
+    # existing clients keep their established action labels while all edits
+    # still pass through the generic implementation above.
+    def adjust_calibration_percentage(
+        self, idf_path: str, parameter: str, percentage_change: float, output_path: str,
+    ) -> Dict[str, Any]:
+        return self._apply_parameter_edit(idf_path, parameter, percentage_change, output_path)
+
+    def inspect_calibration_parameter(self, idf_path: str, parameter: str) -> Dict[str, Any]:
+        return self.inspect_parameter(idf_path, parameter)
 
     def set_calibration_values(
         self, idf_path, parameter, value, output_path, target_ids=None,
         assignments=None, expected_model_sha256=None,
     ) -> Dict[str, Any]:
-        return self._apply_calibration_edit(
+        return self._apply_parameter_edit(
             idf_path, parameter, value, output_path, operation="set",
             target_ids=target_ids, assignments=assignments,
             expected_model_sha256=expected_model_sha256,
         )
 
-    def _apply_calibration_edit(
+    def _apply_parameter_edit(
         self, idf_path, parameter, value, output_path, operation="perturb",
         target_ids=None, assignments=None, expected_model_sha256=None,
     ) -> Dict[str, Any]:
         """Validate and apply a complete plan to a separate candidate IDF."""
-        from .utils import calibration
+        from .utils import model_parameters
 
-        percentage = calibration.percentage_value(value) if operation == "perturb" else None
-        if parameter not in calibration.PARAMETERS:
-            raise ValueError(f"Unsupported calibration parameter: {parameter}")
+        percentage = model_parameters.percentage_value(value) if operation in ("perturb", "adjust_percentage") else None
+        if parameter not in model_parameters.PARAMETERS:
+            raise ValueError(f"Unsupported semantic parameter: {parameter}")
         resolved_input = self._resolve_idf_path(idf_path)
         model_hash = sha256(Path(resolved_input).read_bytes()).hexdigest()
         if expected_model_sha256 is not None and model_hash != expected_model_sha256:
@@ -3396,15 +3427,15 @@ class EnergyPlusManager:
             raise ValueError("output_path must differ from the explicit input model")
         self._assert_simulation_version_matches(resolved_input)
         idf = IDF(resolved_input)
-        if operation == "perturb":
-            planned, skipped = calibration.plan(idf, parameter, percentage)
+        if operation in ("perturb", "adjust_percentage"):
+            planned, skipped = model_parameters.plan(idf, parameter, percentage)
         else:
-            inspection = calibration.inspect_absolute(idf, parameter)
+            inspection = model_parameters.inspect_absolute(idf, parameter)
             if inspection["coverage"] != "complete":
                 return {"success": False, "parameter": parameter,
                         "error": "Absolute operation requires complete inspection coverage",
                         **inspection}
-            planned, skipped = calibration.plan_absolute(idf, parameter, value, target_ids, assignments)
+            planned, skipped = model_parameters.plan_absolute(idf, parameter, value, target_ids, assignments)
         if skipped:
             return {
                 "success": False, "parameter": parameter,
@@ -3416,10 +3447,10 @@ class EnergyPlusManager:
         # Only this in-memory copy is touched. Any invalid field aborts before save.
         for change in planned:
             if isinstance(change["after"], (int, float)):
-                calibration.check_numeric_range(change["object"], change["field"], change["after"])
+                model_parameters.check_numeric_range(change["object"], change["field"], change["after"])
             setattr(change["object"], change["field"], change["after"])
-        if operation == "set":
-            updated = calibration.inspect_absolute(idf, parameter)
+        if operation in ("set", "set_parameter"):
+            updated = model_parameters.inspect_absolute(idf, parameter)
             actual = {target["target_id"]: target["value"] for target in updated["targets"]}
             expected = assignments if assignments is not None else {
                 target["target_id"]: value for target in inspection["targets"]
@@ -3436,7 +3467,8 @@ class EnergyPlusManager:
         idf.save(str(resolved_output))
         return {
             "success": True, "parameter": parameter, "action": operation,
-            "requested_percent": percentage, "requested_value": value if operation == "set" else None,
+            "requested_percent": percentage,
+            "requested_value": value if operation in ("set", "set_parameter") else None,
             "assignments": assignments, "input_sha256": model_hash,
             "input_file": resolved_input, "output_file": str(resolved_output),
             "before": [{"object_name": c["object_name"], "field": c["field"], "value": c["before"]} for c in changes],
@@ -3445,9 +3477,16 @@ class EnergyPlusManager:
             "changed": any(change["before"] != change["after"] for change in changes),
         }
 
-    def calibration_capabilities(self, idf_path: Optional[str] = None) -> Dict[str, Any]:
-        """Return the small capability gate for the native-IDF calibration path."""
-        from .utils import calibration
+    def parameter_capabilities(
+        self, idf_path: Optional[str] = None, parameters: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Return capability gates for generic semantic IDF parameters.
+
+        Domain managers narrow this response to parameters they own.  A
+        model with partial coverage remains unsupported: consumers must not
+        silently edit only a convenient subset of objects.
+        """
+        from .utils import model_parameters
 
         try:
             runtime_version = self._runtime_energyplus_version()
@@ -3480,7 +3519,27 @@ class EnergyPlusManager:
                     "model_error": str(error),
                 }
 
-        parameters = calibration.capabilities(idf)
+        capabilities = model_parameters.capabilities(idf)
+        if parameters is not None:
+            requested = {str(parameter).strip().upper() for parameter in parameters}
+            unsupported = requested.difference(capabilities)
+            if unsupported:
+                raise ValueError(
+                    "Unsupported semantic parameter(s): " + ", ".join(sorted(unsupported))
+                )
+            capabilities = {
+                parameter: detail for parameter, detail in capabilities.items()
+                if parameter in requested
+            }
+        for detail in capabilities.values():
+            detail["tool"] = "domain_manager"
+            detail["action"] = "adjust_percentage"
+            detail["operations"] = [
+                "adjust_percentage",
+                *( ["set_parameter"] if detail["absolute_set_supported"] else [] ),
+            ]
+            detail["absolute_set"]["tool"] = "domain_manager"
+            detail["absolute_set"]["action"] = "set_parameter"
         return {
             "success": True,
             "ready": True,
@@ -3490,10 +3549,10 @@ class EnergyPlusManager:
             "model_version": version_info.get("model_version"),
             "applicability": {
                 "lights_count": lights_count,
-                "lpd_reachable": parameters["LPD"]["supported"],
+                "lpd_reachable": capabilities.get("LPD", {}).get("supported"),
             },
             "monthly_meters": ["Electricity:Facility", "NaturalGas:Facility"],
-            "parameters": parameters,
+            "parameters": capabilities,
             "simulation_evidence": {
                 "tool": "simulation_manager",
                 "action": "run",
@@ -3502,6 +3561,20 @@ class EnergyPlusManager:
                 "paths": "<runs_dir>/<run_id>/run/eplusout.sql and <runs_dir>/<run_id>/run_record.json",
             },
         }
+
+    def calibration_capabilities(self, idf_path: Optional[str] = None) -> Dict[str, Any]:
+        """Deprecated compatibility view of :meth:`parameter_capabilities`."""
+        payload = self.parameter_capabilities(idf_path)
+        for detail in payload.get("parameters", {}).values():
+            detail["tool"] = "calibration_manager"
+            detail["action"] = "perturb"
+            detail["operations"] = [
+                "percentage_change",
+                *( ["absolute_set"] if detail["absolute_set_supported"] else [] ),
+            ]
+            detail["absolute_set"]["tool"] = "calibration_manager"
+            detail["absolute_set"]["action"] = "set"
+        return payload
 
     # ------------------------ Simulation Execution ------------------------
     def run_simulation(self, idf_path: str, weather_file: str = None, 

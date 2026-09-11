@@ -1,9 +1,11 @@
-# EnergyPlus MCP Server (agentic-bem)
+# EnergyPlus MCP Server
 
 A Model Context Protocol (MCP) server for EnergyPlus that exposes a **compact, agent-friendly tool surface** built around domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, …) and a few unified master tools. It lets AI assistants load, validate, modify, and simulate EnergyPlus IDF files through a consolidated interface.
 
-> **Branch**: `agentic-bem` — this README documents the domain-manager / master-tool architecture on this branch.
-> For the fine-grained 35-tool layout, see the [`main` branch README](https://github.com/LBNL-ETA/EnergyPlus-MCP/blob/main/README.md).
+> This README documents the compact domain-manager / master-tool architecture
+> and its workflow-neutral default surface. Older releases may expose a
+> fine-grained tool layout; always use the documentation from the checked-out
+> revision.
 >
 > **Version**: 0.1.0
 > **EnergyPlus Compatibility**: 26.1.0 (default; see [Building against a different EnergyPlus version](#building-against-a-different-energyplus-version))
@@ -29,7 +31,7 @@ A Model Context Protocol (MCP) server for EnergyPlus that exposes a **compact, a
   - [Tool Registration Modes](#tool-registration-modes)
   - [Core Tools (Always Available)](#core-tools-always-available)
   - [Mode-Specific Tools](#mode-specific-tools)
-  - [Optional Wrapper Tools](#optional-wrapper-tools)
+  - [Deprecated Workflow Compatibility](#deprecated-workflow-compatibility)
 - [Usage Examples](#usage-examples)
   - [Basic Workflow](#basic-workflow)
   - [Advanced Features](#advanced-features)
@@ -64,10 +66,7 @@ EnergyPlus MCP Server makes EnergyPlus building energy simulation accessible to 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (macOS / Windows) or Docker Engine (Linux), running
 - `git` on your PATH
 - The `energyplus-mcp-dev` image built locally (step 1 below — do this once)
-- ⚠️ **Check out the `agentic-bem` branch** before configuring clients, otherwise you'll get the `main`-branch tool surface:
-  ```bash
-  cd EnergyPlus-MCP && git checkout agentic-bem
-  ```
+- Check out the revision whose tool-surface contract you intend to deploy.
 
 Choose the appropriate setup for your AI assistant or IDE:
 
@@ -75,7 +74,7 @@ Choose the appropriate setup for your AI assistant or IDE:
 
 1. **Build the Docker image** (one-time setup):
    ```bash
-   git clone -b agentic-bem https://github.com/LBNL-ETA/EnergyPlus-MCP.git
+   git clone https://github.com/LBNL-ETA/EnergyPlus-MCP.git
    cd EnergyPlus-MCP
    docker build -t energyplus-mcp-dev -f .devcontainer/Dockerfile .devcontainer
    ```
@@ -113,7 +112,7 @@ Choose the appropriate setup for your AI assistant or IDE:
 
 3. **Restart Claude Desktop**. The EnergyPlus server should appear in the MCP servers panel.
 
-4. **Verify**: in a new chat, ask *"List the EnergyPlus MCP tools you have access to."* You should see the domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, …) plus core tools (`model_preflight`, `simulation_manager`, `file_utils`, `post_processing`, `server_manager`). If you see instead a long flat list like `modify_lights` / `inspect_people`, you are on the `main` branch — re-check out `agentic-bem`.
+4. **Verify**: in a new chat, ask *"List the EnergyPlus MCP tools you have access to."* With the default `domains` profile you should see the domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, …) plus core tools (`model_preflight`, `model_upgrade`, `simulation_manager`, `idf_modification`, `file_utils`, `post_processing`, `server_manager`).
 
 #### Codex
 
@@ -460,7 +459,7 @@ The `mode` field in `config.yaml` controls how tools are organized and registere
 - `model_preflight` — Load, validate, info, resolve_paths, readiness (preflight)
 - `model_upgrade` — Read-only transition planning and copy-only one-model IDF upgrades
 - `simulation_manager` — Run/update simulations, status
-- `calibration_manager` — Native-IDF calibration capabilities and perturbations
+- `idf_modification` — Direct IDD-validated object changes when no semantic domain operation exists
 - `file_utils` — List and copy sample/weather files
 - `post_processing` — Interactive plots
 - `server_manager` — Status, logs, clear logs
@@ -478,23 +477,27 @@ The `mode` field in `config.yaml` controls how tools are organized and registere
 - `internal_load_manager` — Inspect/modify people, lights, and electric equipment
 - `hvac_manager` — Discover, analyze topology, and visualize HVAC loops
 - `outputs_manager` — List or add output variables/meters with discovery
+- `geometry_manager` — Extract, summarize, and visualize model geometry
 
-### Optional Wrapper Tools
+The three modeling managers also expose workflow-neutral semantic parameter
+operations. `internal_load_manager` owns LPD, EPD, and occupancy density;
+`envelope_manager` owns infiltration, window U-factor, and window SHGC; and
+`hvac_manager` owns cooling COP, heating efficiency, and fan efficiency. Each
+uses the same actions: `parameter_capabilities`, `inspect_parameter`,
+`adjust_percentage`, and `set_parameter`.
 
-- `MCP_EXPOSE_INSPECT_WRAPPERS=true` — Expose individual inspection wrappers (`inspect_people`, `inspect_lights`, `list_zones`, etc.).
-- `MCP_EXPOSE_OUTPUT_WRAPPERS=true` — Expose legacy output wrappers (`get_output_variables`, `get_output_meters`).
-- `MCP_EXPOSE_SUMMARY_WRAPPER=true` — Expose `get_model_summary` wrapper.
-- `MCP_EXPOSE_MODIFY_WRAPPERS=true` — Expose legacy modify wrappers (`modify_people`, `modify_lights`, etc.).
-- `MCP_EXPOSE_SERVER_WRAPPERS=true` — Expose legacy server wrappers (`get_server_status`, `get_server_logs`, `get_error_logs`, `clear_logs`).
-- `MCP_EXPOSE_HVAC_WRAPPERS=true` — Expose legacy HVAC wrappers (`discover_hvac_loops`, `get_loop_topology`).
-- `MCP_EXPOSE_FILE_WRAPPERS=true` — Expose legacy file wrappers (`list_available_files`, `copy_file`).
-- `MCP_EXPOSE_SIM_WRAPPERS=true` — Expose simulation wrappers (`run_simulation`, legacy `run_energyplus_simulation`, `modify_simulation_control`, `modify_run_period`).
-- `MCP_EXPOSE_MODEL_WRAPPERS=true` — Expose model preflight wrappers (`load_idf_model`, `validate_idf`).
-- `MCP_EXPOSE_POST_WRAPPERS=true` — Expose post-processing wrappers (`create_interactive_plot`).
-- `MCP_EXPOSE_DOMAIN_MANAGERS=true` — Expose domain manager tools (`envelope_manager`, `internal_load_manager`, `hvac_manager`).
-  - Controlled via YAML too: `tool_surface.mode: domains|hybrid`; per-domain toggles under `tool_surface.domains.*`.
+### Deprecated Workflow Compatibility
 
-By default, master tools are exposed when `mode: masters` (or `hybrid`): `inspect_model`, `get_outputs`, `modify_basic_parameters`, `hvac_loop_inspect`. Core tools are always available in all modes: `model_preflight`, `model_upgrade`, `simulation_manager`, `calibration_manager`, `file_utils`, `post_processing`, `server_manager`. Enable thin wrappers via the flags above if/when implemented. MCP clients only see the tools registered at startup (as configured via `config.yaml` or env flags).
+`calibration_manager` and `retrofit_manager` are no longer part of the default
+surface. Existing consumers can temporarily enable both deprecated façades
+with `tool_surface.compatibility.workflow_managers: true` or
+`MCP_ENABLE_WORKFLOW_COMPATIBILITY=true`. They delegate to the same generic
+domain implementation and are not separate operation stacks. See the
+[tool-surface migration guide](docs/tool-surface-migration.md).
+
+The historical `enable_wrappers` setting and `MCP_EXPOSE_*_WRAPPERS` variables
+were documented but never implemented. Enabling them now fails at startup with
+an actionable migration error instead of silently changing nothing.
 
 ### Copy-only IDF upgrades
 
@@ -511,9 +514,18 @@ simulation budget event. The default target is the configured EnergyPlus
 runtime; a same-version `run` is an explicit no-op. See
 [IDF upgrade details](docs/idf-version-upgrade.md).
 
-### Native-IDF calibration MVP
+### Native-IDF semantic parameter operations
 
-`calibration_manager` supports `LPD`, `EPD`, `OCD`, `INF`, `WIN-U`, `WIN-SHGC`, `COP`, `HE`, and `FAN`. `perturb` applies signed percentages; `inspect` reports canonical quantities, units and target IDs; `set` applies absolute values or a target-to-value `assignments` map. Edits use an explicit input and a separate output. Physical limits apply, with no hidden clipping. `capabilities` checks runtime compatibility and reports percentage and absolute coverage separately; only complete coverage is enabled. Without a model, coverage is unverified. Calibration-MCP supplies explicit bound-repair/bounded-trial recipes using its methodology limits. See [absolute setters and bounds](docs/calibration-absolute-setters.md) for semantics and limitations, and [percentage-slice verification](docs/calibration-idf-mvp.md) for the earlier integration evidence.
+The domain managers support LPD, EPD, OCD, INF, WIN-U, WIN-SHGC, COP, HE,
+and FAN without assigning calibration policy to EnergyPlus-MCP.
+`adjust_percentage` applies a signed percentage; `inspect_parameter` reports
+canonical quantities, units, and target IDs; `set_parameter` applies an
+absolute value or target-to-value `assignments` map. Edits use an explicit
+input and separate output, enforce physical limits without hidden clipping,
+and report model-specific complete/partial/none coverage. Calibration-MCP owns
+bounds and bounded-trial recipes. See [absolute setters and bounds](docs/calibration-absolute-setters.md),
+[percentage-slice verification](docs/calibration-idf-mvp.md), and the
+[migration map](docs/tool-surface-migration.md).
 
 For calibration evidence, opt into the existing synchronous `simulation_manager` with `action: "run"` and `runs_dir`. It creates one unique run directory at `<runs_dir>/<run_id>/`, writes `run_record.json` for each launched success or failure, snapshots the staged input as `in.idf`, and produces monthly `Electricity:Facility` and `NaturalGas:Facility` meters in `run/eplusout.sql`. Normal simulation calls that omit `runs_dir` retain their existing behavior.
 
@@ -541,11 +553,12 @@ that the current parameter surface can calibrate every SF model.
    }
    ```
 
-2. **Inspect zones**:
+2. **Inspect geometry and zones**:
    ```json
    {
-     "tool": "list_zones",
+     "tool": "geometry_manager",
      "arguments": {
+       "action": "extract_and_summary",
        "idf_path": "sample_files/1ZoneUncontrolled.idf"
      }
    }
@@ -554,8 +567,9 @@ that the current parameter surface can calibrate every SF model.
 3. **Run simulation**:
    ```json
    {
-     "tool": "run_simulation",
+     "tool": "simulation_manager",
      "arguments": {
+       "action": "run",
        "idf_path": "sample_files/1ZoneUncontrolled.idf",
        "weather_file": "sample_files/USA_CA_San.Francisco.Intl.AP.724940_TMY3.epw",
        "annual": true
@@ -799,7 +813,7 @@ energyplus-mcp-server/
 │   ├── server.py                # Lean bootstrap: loads config, delegates registration
 │   ├── energyplus_tools.py      # Core EnergyPlus integration (EnergyPlusManager)
 │   ├── config.py                # Configuration management
-│   ├── domains/                 # Domain manager tools (envelope, hvac, internal_loads, outputs, geometry, retrofit)
+│   ├── domains/                 # Domain managers (envelope, HVAC, internal loads, outputs, geometry)
 │   ├── tools/                   # Master / core tools (inspect, modify, simulation, preflight, files, post, server)
 │   └── utils/                   # Specialized utilities (idf_modifier, geometry, plots, …)
 ├── sample_files/                # Sample IDF and weather files
@@ -817,28 +831,29 @@ The server auto-detects EnergyPlus installation and uses sensible defaults.
 - `EPLUS_SAMPLE_PATH`: Custom sample files directory
 - `EPLUS_OUTPUT_PATH`: Output directory for results
 - `MCP_CONFIG_PATH`: Override path to `config.yaml` (default: `energyplus-mcp-server/config.yaml`)
-- `MCP_EXPOSE_MASTERS`, `MCP_EXPOSE_DOMAIN_MANAGERS`, and the per-group `MCP_EXPOSE_*_WRAPPERS` flags described in [Tool Exposure Flags](#tool-exposure-flags).
+- `MCP_EXPOSE_MASTERS`, `MCP_EXPOSE_DOMAIN_MANAGERS`: mode controls when no YAML mode is supplied
+- `MCP_ENABLE_WORKFLOW_COMPATIBILITY`: opt in to deprecated workflow-manager aliases
 
 ### Tool Surface Profiles (config.yaml)
 
 You can control how tools are presented via `config.yaml`. The server reads this on startup to decide which tool groups to register. **A restart is required after edits** — MCP clients only see tools registered at startup.
 
 - Location: `energyplus-mcp-server/config.yaml` (checked first), or the path in `MCP_CONFIG_PATH`.
-- Parser: requires `pyyaml` (included in dependencies). If missing, the server falls back to env flags and logs a note.
+- Parser: requires `pyyaml` (included in dependencies); invalid configuration fails closed.
 - Precedence: YAML, when present, overrides the `MCP_EXPOSE_MASTERS` / `MCP_EXPOSE_DOMAIN_MANAGERS` env flags for mode selection.
 
 Schema (minimal):
 ```yaml
 tool_surface:
   mode: masters | domains | hybrid
-  enable_wrappers: true | false   # optional, overrides all wrapper flags
   domains:                        # optional fine-grained controls
     envelope: true | false
     internal_loads: true | false
     hvac: true | false
     outputs: true | false
     geometry: true | false
-    retrofit: true | false
+  compatibility:
+    workflow_managers: false      # deprecated calibration/retrofit façades
 ```
 
 **Profiles:**
@@ -847,7 +862,6 @@ Masters-only (fewer, unified tools):
 ```yaml
 tool_surface:
   mode: masters
-  enable_wrappers: false
 ```
 
 Domains-only (default on `agentic-bem`; one manager per building domain):
@@ -860,14 +874,14 @@ tool_surface:
     hvac: true
     outputs: true
     geometry: true
-    retrofit: true
+  compatibility:
+    workflow_managers: false
 ```
 
 Hybrid (expose both surfaces simultaneously):
 ```yaml
 tool_surface:
   mode: hybrid
-  enable_wrappers: false
   domains:
     outputs: true
 ```
@@ -886,7 +900,8 @@ tool_surface:
 - View logs: `{"tool": "server_manager", "arguments": {"action": "logs", "type": "all", "lines": 200}}`
 - Check errors: `{"tool": "server_manager", "arguments": {"action": "logs", "type": "error", "lines": 100, "format": "raw"}}`
 
-If you enable `MCP_EXPOSE_SERVER_WRAPPERS=true`, the legacy `get_server_status` / `get_server_logs` / `get_error_logs` / `clear_logs` tools become available as thin wrappers over `server_manager`.
+Use `server_manager` for status and logs. Historical per-function wrapper flags
+were never implemented and are deliberately rejected; see the migration guide.
 
 ## Contributing
 

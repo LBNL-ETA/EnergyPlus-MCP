@@ -15,10 +15,13 @@ def register_all(mcp: Any, ep_manager: Any, config: Any,
                  internal_loads: bool = True,
                  hvac: bool = True,
                  outputs: bool = False,
-                 geometry: bool = True,
-                 retrofit: bool = True) -> None:
-    logger.info("Registering domain managers: envelope=%s, internal_loads=%s, hvac=%s, geometry=%s, retrofit=%s", 
-                envelope, internal_loads, hvac, geometry, retrofit)
+                 geometry: bool = True) -> None:
+    """Register workflow-neutral EnergyPlus/modeling domain managers."""
+    logger.info(
+        "Registering domain managers: envelope=%s, internal_loads=%s, hvac=%s, "
+        "outputs=%s, geometry=%s",
+        envelope, internal_loads, hvac, outputs, geometry,
+    )
     if envelope:
         from . import envelope as _env
         _env.register(mcp, ep_manager, config)
@@ -39,7 +42,3 @@ def register_all(mcp: Any, ep_manager: Any, config: Any,
         from . import geometry as _geom
         _geom.register(mcp, ep_manager, config)
         logger.info("Registered geometry_manager tool")
-    if retrofit:
-        from . import retrofit as _retrofit
-        _retrofit.register(mcp, ep_manager, config)
-        logger.info("Registered retrofit_manager tool")
