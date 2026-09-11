@@ -17,6 +17,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         run_period: Optional[Dict[str, Any]] = None,
         run_period_index: int = 0,
         run_id: Optional[str] = None,
+        runs_dir: Optional[str] = None,
         detail: Literal["summary", "detailed"] = "summary",
         include_sqlite_output: bool = True,
     ) -> str:
@@ -24,7 +25,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             return json.dumps({
                 "tool": "simulation_manager",
                 "actions": [
-                    {"name": "run", "required": ["idf_path"], "optional": ["weather_file", "output_directory", "annual", "design_day", "readvars", "expandobjects", "include_sqlite_output"]},
+                    {"name": "run", "required": ["idf_path"], "optional": ["weather_file", "output_directory", "annual", "design_day", "readvars", "expandobjects", "include_sqlite_output", "runs_dir", "run_id"]},
                     {"name": "update_settings", "required": ["idf_path", "settings"]},
                     {"name": "update_run_period", "required": ["idf_path", "run_period"], "optional": ["run_period_index"]},
                     {"name": "status", "optional": ["run_id"]},
@@ -43,6 +44,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 readvars,
                 expandobjects,
                 include_sqlite_output=include_sqlite_output,
+                runs_dir=runs_dir,
+                run_id=run_id,
             )
             return f"Simulation run complete:\n{result}"
         if action == "update_settings":

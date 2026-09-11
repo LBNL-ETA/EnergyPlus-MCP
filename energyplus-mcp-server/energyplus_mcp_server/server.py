@@ -151,10 +151,12 @@ except Exception as e:
 # Always register core functional tools regardless of mode
 for _mod_name, _label in (
     ("preflight", "model_preflight"),
+    ("model_upgrade", "model_upgrade"),
     ("simulation", "simulation_manager"),
     ("files", "file_utils"),
     ("post", "post_processing"),
     ("idf_modification", "idf_modification"),
+    ("calibration", "calibration_manager"),
 ):
     try:
         _mod = __import__(f"energyplus_mcp_server.tools.{_mod_name}", fromlist=["register"])  # type: ignore

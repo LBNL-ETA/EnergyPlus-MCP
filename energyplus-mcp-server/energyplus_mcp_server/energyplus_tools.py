@@ -5,6 +5,13 @@ EnergyPlus tools with configuration management and simulation control
 import os
 import json
 import logging
+import math
+import re
+import shutil
+import subprocess
+import time
+import uuid
+from hashlib import sha256
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
@@ -633,7 +640,8 @@ class EnergyPlusManager:
                         "Use_Weather_File_Daylight_Saving_Period": "Yes/No",
                         "Apply_Weekend_Holiday_Rule": "Yes/No",
                         "Use_Weather_File_Rain_Indicators": "Yes/No",
-                        "Use_Weather_File_Snow_Indicators": "Yes/No"
+                        "Use_Weather_File_Snow_Indicators": "Yes/No",
+                        "Treat_Weather_as_Actual": "Yes/No"
                     }
                 },
                 "Timestep": {
@@ -677,7 +685,8 @@ class EnergyPlusManager:
                     "Use_Weather_File_Daylight_Saving_Period": getattr(run_period, 'Use_Weather_File_Daylight_Saving_Period', 'Unknown'),
                     "Apply_Weekend_Holiday_Rule": getattr(run_period, 'Apply_Weekend_Holiday_Rule', 'Unknown'),
                     "Use_Weather_File_Rain_Indicators": getattr(run_period, 'Use_Weather_File_Rain_Indicators', 'Unknown'),
-                    "Use_Weather_File_Snow_Indicators": getattr(run_period, 'Use_Weather_File_Snow_Indicators', 'Unknown')
+                    "Use_Weather_File_Snow_Indicators": getattr(run_period, 'Use_Weather_File_Snow_Indicators', 'Unknown'),
+                    "Treat_Weather_as_Actual": getattr(run_period, 'Treat_Weather_as_Actual', 'Unknown')
                 }
                 settings_info["RunPeriod"]["current_values"].append(run_data)
             
@@ -2823,7 +2832,7 @@ class EnergyPlusManager:
                     "End_Month", "End_Day_of_Month", "End_Year", "Day_of_Week_for_Start_Day",
                     "Use_Weather_File_Holidays_and_Special_Days", "Use_Weather_File_Daylight_Saving_Period",
                     "Apply_Weekend_Holiday_Rule", "Use_Weather_File_Rain_Indicators", 
-                    "Use_Weather_File_Snow_Indicators"
+                    "Use_Weather_File_Snow_Indicators", "Treat_Weather_as_Actual"
                 }
                 
                 for field_name, new_value in field_updates.items():
@@ -3153,131 +3162,517 @@ class EnergyPlusManager:
             idf.newidfobject("Output:SQLite", Option_Type=option_type)
             logger.debug("Added Output:SQLite Option_Type=%s", option_type)
 
+    def _ensure_calibration_outputs(self, idf: IDF) -> None:
+        """Add the small, in-memory output contract used by calibration runs."""
+        self._ensure_output_sqlite(idf)
+        required = {
+            ("Electricity:Facility", "Monthly"),
+            ("NaturalGas:Facility", "Monthly"),
+        }
+        existing = {
+            (str(getattr(meter, "Key_Name", "")), str(getattr(meter, "Reporting_Frequency", "")))
+            for meter in idf.idfobjects.get("Output:Meter", [])
+        }
+        for meter_name, frequency in sorted(required - existing):
+            idf.newidfobject(
+                "Output:Meter",
+                Key_Name=meter_name,
+                Reporting_Frequency=frequency,
+            )
+
+    @staticmethod
+    def _idf_version(idf_path: str) -> str:
+        """Read the declared Version object without loading the model into eppy."""
+        with open(idf_path, "r", encoding="utf-8", errors="ignore") as stream:
+            contents = stream.read()
+        match = re.search(r"(?im)^\s*version\s*,\s*([^,;!\s]+)", contents)
+        if not match:
+            raise ValueError(f"IDF has no Version object: {idf_path}")
+        return match.group(1)
+
+    @staticmethod
+    def _normalized_energyplus_version(version: str) -> str:
+        numbers = re.findall(r"\d+", version)
+        if len(numbers) < 2:
+            raise ValueError(f"Unrecognized EnergyPlus version: {version!r}")
+        while len(numbers) > 2 and numbers[-1] == "0":
+            numbers.pop()
+        return ".".join(str(int(number)) for number in numbers)
+
+    def _runtime_energyplus_version(self) -> str:
+        executable = self.config.energyplus.executable_path
+        completed = subprocess.run(
+            [executable, "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        version_text = f"{completed.stdout}\n{completed.stderr}"
+        match = re.search(r"\d+\.\d+(?:\.\d+)?", version_text)
+        if not match:
+            raise RuntimeError(f"Could not determine EnergyPlus version from {executable}")
+        return match.group(0)
+
+    def _assert_simulation_version_matches(self, idf_path: str) -> Dict[str, str]:
+        model_version = self._idf_version(idf_path)
+        runtime_version = self._runtime_energyplus_version()
+        if self._normalized_energyplus_version(model_version) != self._normalized_energyplus_version(runtime_version):
+            raise ValueError(
+                "EnergyPlus runtime version does not match model Version object: "
+                f"model {model_version}, runtime {runtime_version}."
+            )
+        return {"model_version": model_version, "runtime_version": runtime_version}
+
+    def _start_calibration_run(self, runs_dir: str, run_id: Optional[str], idf_path: str) -> Dict[str, Any]:
+        """Reserve a unique physical-run directory before a calibration simulation."""
+        resolved_runs_dir = Path(runs_dir).expanduser().resolve()
+        resolved_run_id = run_id or uuid.uuid4().hex
+        if not resolved_run_id or Path(resolved_run_id).name != resolved_run_id:
+            raise ValueError("run_id must be a single directory name")
+        run_root = resolved_runs_dir / resolved_run_id
+        if run_root.exists():
+            raise FileExistsError(f"Calibration run_id already exists: {resolved_run_id}")
+        output_dir = run_root / "run"
+        output_dir.mkdir(parents=True)
+        record_path = run_root / "run_record.json"
+        record = {
+            "run_id": resolved_run_id,
+            "name": Path(idf_path).stem,
+            "status": "running",
+            "started_at": time.time(),
+            "input_idf": idf_path,
+            "run_directory": str(output_dir),
+        }
+        record_path.write_text(json.dumps(record, indent=2))
+        return {
+            "run_id": resolved_run_id,
+            "run_root": run_root,
+            "output_dir": output_dir,
+            "record_path": record_path,
+            "record": record,
+        }
+
+    @staticmethod
+    def _finish_calibration_run(context: Dict[str, Any], status: str, **details: Any) -> None:
+        record = context["record"]
+        record.update(details)
+        record["status"] = status
+        record["finished_at"] = time.time()
+        context["record_path"].write_text(json.dumps(record, indent=2))
+
+    @staticmethod
+    def _canonical_calibration_sql(output_directory: str) -> str:
+        """Return the calibration contract's eplusout.sql, normalizing eppy's prefix."""
+        output_dir = Path(output_directory)
+        canonical = output_dir / "eplusout.sql"
+        if canonical.is_file():
+            return str(canonical)
+        sql_files = list(output_dir.glob("*.sql"))
+        if len(sql_files) != 1:
+            raise RuntimeError(
+                "Calibration run did not produce a unique SQLite result under "
+                f"{output_dir}"
+            )
+        shutil.move(str(sql_files[0]), canonical)
+        return str(canonical)
+
+    def adjust_lighting_power_percentage(
+        self,
+        idf_path: str,
+        percentage_change: float,
+        output_path: str,
+    ) -> Dict[str, Any]:
+        """Scale each native Lights object's active design-power field."""
+        try:
+            percentage = float(percentage_change)
+        except (TypeError, ValueError) as error:
+            raise ValueError("LPD percentage change must be numeric") from error
+        if not math.isfinite(percentage) or percentage < -100:
+            raise ValueError("LPD percentage change must be finite and at least -100")
+
+        resolved_input = self._resolve_idf_path(idf_path)
+        resolved_output = str(Path(output_path).expanduser().resolve())
+        if Path(resolved_input).resolve() == Path(resolved_output):
+            raise ValueError("output_path must differ from the explicit input model")
+
+        idf = IDF(resolved_input)
+        field_by_method = {
+            "lightinglevel": "Lighting_Level",
+            "watts/area": "Watts_per_Floor_Area",
+            "watts/person": "Watts_per_Person",
+        }
+        factor = 1 + percentage / 100.0
+        changes: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        planned: List[tuple[Any, str, float, float, str]] = []
+
+        for lights in idf.idfobjects.get("Lights", []):
+            method = str(getattr(lights, "Design_Level_Calculation_Method", ""))
+            field = field_by_method.get(method.strip().casefold())
+            name = str(getattr(lights, "Name", "Unnamed"))
+            if not field:
+                skipped.append({"object_name": name, "reason": f"unsupported calculation method {method!r}"})
+                continue
+            raw_value = getattr(lights, field, None)
+            try:
+                before = float(raw_value)
+            except (TypeError, ValueError):
+                skipped.append({"object_name": name, "field": field, "reason": "active design-power field is not numeric"})
+                continue
+            after = before * factor
+            planned.append((lights, field, before, after, method))
+
+        if not planned:
+            raise ValueError("No Lights objects with a supported numeric design-power field were found")
+
+        for lights, field, before, after, method in planned:
+            setattr(lights, field, after)
+            lights.checkrange(field)
+            changes.append({
+                "object_name": str(getattr(lights, "Name", "Unnamed")),
+                "calculation_method": method,
+                "field": field,
+                "before": before,
+                "after": after,
+            })
+
+        Path(resolved_output).parent.mkdir(parents=True, exist_ok=True)
+        idf.save(resolved_output)
+        return {
+            "success": True,
+            "parameter": "LPD",
+            "requested_percent": percentage,
+            "input_file": resolved_input,
+            "output_file": resolved_output,
+            "before": [{"object_name": change["object_name"], "field": change["field"], "value": change["before"]} for change in changes],
+            "after": [{"object_name": change["object_name"], "field": change["field"], "value": change["after"]} for change in changes],
+            "changes": changes,
+            "skipped": skipped,
+        }
+
+    def adjust_calibration_percentage(
+        self, idf_path: str, parameter: str, percentage_change: float, output_path: str,
+    ) -> Dict[str, Any]:
+        return self._apply_calibration_edit(idf_path, parameter, percentage_change, output_path)
+
+    def inspect_calibration_parameter(self, idf_path: str, parameter: str) -> Dict[str, Any]:
+        """Inspect canonical absolute quantities without modifying a model."""
+        from .utils import calibration
+        resolved = self._resolve_idf_path(idf_path)
+        self._assert_simulation_version_matches(resolved)
+        result = calibration.inspect_absolute(IDF(resolved), parameter)
+        return {"success": True, "model_format": "idf", "idf_path": resolved,
+                "model_sha256": sha256(Path(resolved).read_bytes()).hexdigest(),
+                "parameter": parameter, **result}
+
+    def set_calibration_values(
+        self, idf_path, parameter, value, output_path, target_ids=None,
+        assignments=None, expected_model_sha256=None,
+    ) -> Dict[str, Any]:
+        return self._apply_calibration_edit(
+            idf_path, parameter, value, output_path, operation="set",
+            target_ids=target_ids, assignments=assignments,
+            expected_model_sha256=expected_model_sha256,
+        )
+
+    def _apply_calibration_edit(
+        self, idf_path, parameter, value, output_path, operation="perturb",
+        target_ids=None, assignments=None, expected_model_sha256=None,
+    ) -> Dict[str, Any]:
+        """Validate and apply a complete plan to a separate candidate IDF."""
+        from .utils import calibration
+
+        percentage = calibration.percentage_value(value) if operation == "perturb" else None
+        if parameter not in calibration.PARAMETERS:
+            raise ValueError(f"Unsupported calibration parameter: {parameter}")
+        resolved_input = self._resolve_idf_path(idf_path)
+        model_hash = sha256(Path(resolved_input).read_bytes()).hexdigest()
+        if expected_model_sha256 is not None and model_hash != expected_model_sha256:
+            raise ValueError("Input model changed since inspection; inspect again before editing")
+        resolved_output = Path(output_path).expanduser().resolve()
+        if (Path(resolved_input).resolve() == resolved_output or
+                (resolved_output.exists() and os.path.samefile(resolved_input, resolved_output))):
+            raise ValueError("output_path must differ from the explicit input model")
+        self._assert_simulation_version_matches(resolved_input)
+        idf = IDF(resolved_input)
+        if operation == "perturb":
+            planned, skipped = calibration.plan(idf, parameter, percentage)
+        else:
+            inspection = calibration.inspect_absolute(idf, parameter)
+            if inspection["coverage"] != "complete":
+                return {"success": False, "parameter": parameter,
+                        "error": "Absolute operation requires complete inspection coverage",
+                        **inspection}
+            planned, skipped = calibration.plan_absolute(idf, parameter, value, target_ids, assignments)
+        if skipped:
+            return {
+                "success": False, "parameter": parameter,
+                "error": "Incomplete object coverage; no candidate was saved",
+                "skipped": skipped,
+            }
+        if not planned:
+            raise ValueError(f"No supported {parameter} fields were found")
+        # Only this in-memory copy is touched. Any invalid field aborts before save.
+        for change in planned:
+            if isinstance(change["after"], (int, float)):
+                calibration.check_numeric_range(change["object"], change["field"], change["after"])
+            setattr(change["object"], change["field"], change["after"])
+        if operation == "set":
+            updated = calibration.inspect_absolute(idf, parameter)
+            actual = {target["target_id"]: target["value"] for target in updated["targets"]}
+            expected = assignments if assignments is not None else {
+                target["target_id"]: value for target in inspection["targets"]
+                if target_ids is None or target["target_id"] in target_ids
+            }
+            if updated["coverage"] != "complete" or any(
+                key not in actual or not math.isclose(actual[key], target, rel_tol=1e-8, abs_tol=1e-10)
+                for key, target in expected.items()
+            ):
+                raise ValueError("Absolute target verification failed; no candidate saved")
+        changes = [{key: value for key, value in change.items() if key != "object"}
+                   for change in planned]
+        resolved_output.parent.mkdir(parents=True, exist_ok=True)
+        idf.save(str(resolved_output))
+        return {
+            "success": True, "parameter": parameter, "action": operation,
+            "requested_percent": percentage, "requested_value": value if operation == "set" else None,
+            "assignments": assignments, "input_sha256": model_hash,
+            "input_file": resolved_input, "output_file": str(resolved_output),
+            "before": [{"object_name": c["object_name"], "field": c["field"], "value": c["before"]} for c in changes],
+            "after": [{"object_name": c["object_name"], "field": c["field"], "value": c["after"]} for c in changes],
+            "changes": changes, "skipped": [], "coverage": "complete",
+            "changed": any(change["before"] != change["after"] for change in changes),
+        }
+
+    def calibration_capabilities(self, idf_path: Optional[str] = None) -> Dict[str, Any]:
+        """Return the small capability gate for the native-IDF calibration path."""
+        from .utils import calibration
+
+        try:
+            runtime_version = self._runtime_energyplus_version()
+        except Exception as error:
+            return {
+                "success": False,
+                "ready": False,
+                "idf_path": idf_path,
+                "model_format": "idf",
+                "runtime_error": str(error),
+            }
+
+        resolved_path = None
+        lights_count = None
+        idf = None
+        version_info: Dict[str, str] = {"runtime_version": runtime_version}
+        if idf_path:
+            try:
+                resolved_path = self._resolve_idf_path(idf_path)
+                version_info = self._assert_simulation_version_matches(resolved_path)
+                idf = IDF(resolved_path)
+                lights_count = len(idf.idfobjects.get("Lights", []))
+            except Exception as error:
+                return {
+                    "success": False,
+                    "ready": False,
+                    "idf_path": idf_path,
+                    "model_format": "idf",
+                    "energyplus_version": runtime_version,
+                    "model_error": str(error),
+                }
+
+        parameters = calibration.capabilities(idf)
+        return {
+            "success": True,
+            "ready": True,
+            "idf_path": resolved_path or idf_path,
+            "model_format": "idf",
+            "energyplus_version": runtime_version,
+            "model_version": version_info.get("model_version"),
+            "applicability": {
+                "lights_count": lights_count,
+                "lpd_reachable": parameters["LPD"]["supported"],
+            },
+            "monthly_meters": ["Electricity:Facility", "NaturalGas:Facility"],
+            "parameters": parameters,
+            "simulation_evidence": {
+                "tool": "simulation_manager",
+                "action": "run",
+                "required_args": ["idf_path", "runs_dir"],
+                "optional_args": ["run_id", "weather_file"],
+                "paths": "<runs_dir>/<run_id>/run/eplusout.sql and <runs_dir>/<run_id>/run_record.json",
+            },
+        }
+
     # ------------------------ Simulation Execution ------------------------
     def run_simulation(self, idf_path: str, weather_file: str = None, 
                        output_directory: str = None, annual: bool = True,
                        design_day: bool = False, readvars: bool = True,
-                       expandobjects: bool = True, include_sqlite_output: bool = True) -> str:
-            """
-            Run EnergyPlus simulation with specified IDF and weather file
-            
-            Args:
-                idf_path: Path to the IDF file
-                weather_file: Path to weather file (.epw). If None, searches for weather files in sample_files
-                output_directory: Directory for simulation outputs. If None, creates one in outputs/
-                annual: Run annual simulation (default: True)
-                design_day: Run design day only simulation (default: False)
-                readvars: Run ReadVarsESO after simulation (default: True)
-                expandobjects: Run ExpandObjects prior to simulation (default: True)
-                include_sqlite_output: If True, ensure Output:SQLite SimpleAndTabular output is enabled
-            
-            Returns:
-                JSON string with simulation results and output file paths
-            """
-            resolved_idf_path = self._resolve_idf_path(idf_path)
-            
-            try:
-                logger.info(f"Starting simulation for: {resolved_idf_path}")
-                
-                # Resolve weather file path
-                resolved_weather_path = None
+                       expandobjects: bool = True, include_sqlite_output: bool = True,
+                       runs_dir: str = None, run_id: str = None) -> str:
+        """Run EnergyPlus; ``runs_dir`` opts into the calibration evidence layout."""
+        calibration_context: Optional[Dict[str, Any]] = None
+        resolved_idf_path = idf_path
+        resolved_weather_path = None
+        simulation_options: Dict[str, Any] = {}
+        try:
+            if runs_dir:
+                if output_directory is not None:
+                    raise ValueError("runs_dir owns the calibration output directory; omit output_directory")
+                if not idf_path:
+                    raise ValueError("Missing required parameter: idf_path")
+                # Reject bad paths, incompatible models, and invalid IDFs before
+                # reserving a physical-run record.
+                resolved_idf_path = self._resolve_idf_path(idf_path)
+                version_info = self._assert_simulation_version_matches(resolved_idf_path)
                 if weather_file:
                     resolved_weather_path = self._resolve_weather_file_path(weather_file)
-                    logger.info(f"Using weather file: {resolved_weather_path}")
-                
-                # Set up output directory
+                idf = IDF(resolved_idf_path, resolved_weather_path) if resolved_weather_path else IDF(resolved_idf_path)
+                calibration_context = self._start_calibration_run(runs_dir, run_id, resolved_idf_path)
+                output_directory = str(calibration_context["output_dir"])
+                self._ensure_calibration_outputs(idf)
+                run_input_idf = calibration_context["run_root"] / "in.idf"
+                idf.save(str(run_input_idf))
+                # eppy.run creates a temporary IDF beside idfname. Keep that
+                # write in the staged run, not beside a read-only source model.
+                idf.idfname = str(run_input_idf)
+                calibration_context["record"].update({
+                    "input_idf": resolved_idf_path,
+                    "model_path": resolved_idf_path,
+                    "run_input_idf": str(run_input_idf),
+                    **version_info,
+                })
+                calibration_context["record_path"].write_text(json.dumps(calibration_context["record"], indent=2))
+            else:
+                resolved_idf_path = self._resolve_idf_path(idf_path)
+                if weather_file:
+                    resolved_weather_path = self._resolve_weather_file_path(weather_file)
                 if output_directory is None:
                     idf_name = Path(resolved_idf_path).stem
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     output_directory = str(Path(self.config.paths.output_dir) / f"{idf_name}_simulation_{timestamp}")
-                
-                # Create output directory if it doesn't exist
-                os.makedirs(output_directory, exist_ok=True)
-                logger.info(f"Output directory: {output_directory}")
-                
-                # Load IDF file
-                if resolved_weather_path:
-                    idf = IDF(resolved_idf_path, resolved_weather_path)
-                else:
-                    idf = IDF(resolved_idf_path)
-                
-                # Configure simulation options
-                simulation_options = {
-                    'output_directory': output_directory,
-                    'annual': annual,
-                    'design_day': design_day,
-                    'readvars': readvars,
-                    'expandobjects': expandobjects,
-                    'output_prefix': Path(resolved_idf_path).stem,
-                    'output_suffix': 'C',  # Capital suffix style
-                    'verbose': 'v'  # Verbose output
-                }
-                
-                # Add weather file to options if provided
-                if resolved_weather_path:
-                    simulation_options['weather'] = resolved_weather_path
-
-                # Ensure Output:SQLite if requested (don't add to simulation_options as eppy doesn't accept it)
+                idf = IDF(resolved_idf_path, resolved_weather_path) if resolved_weather_path else IDF(resolved_idf_path)
                 if include_sqlite_output:
                     self._ensure_output_sqlite(idf)
+                version_info = None
 
-                logger.info("Starting EnergyPlus simulation...")
-                start_time = datetime.now()
+            logger.info(f"Starting simulation for: {resolved_idf_path}")
+            if resolved_weather_path:
+                logger.info(f"Using weather file: {resolved_weather_path}")
+            os.makedirs(output_directory, exist_ok=True)
 
-                # Run the simulation
-                try:
-                    result = idf.run(**simulation_options)
-                    end_time = datetime.now()
-                    duration = end_time - start_time
-                    
-                    # Check for common output files
-                    output_files = self._find_simulation_outputs(output_directory)
-                    
-                    simulation_result = {
-                        "success": True,
-                        "input_idf": resolved_idf_path,
-                        "weather_file": resolved_weather_path,
-                        "output_directory": output_directory,
-                        "simulation_duration": str(duration),
-                        "simulation_options": simulation_options,
-                        "include_sqlite_output": include_sqlite_output,
-                        "output_files": output_files,
-                        "energyplus_result": str(result) if result else "Simulation completed",
-                        "timestamp": end_time.isoformat()
-                    }
-                    
-                    logger.info(f"Simulation completed successfully in {duration}")
-                    return json.dumps(simulation_result, indent=2)
-                    
-                except Exception as e:
-                    # Try to find error file for more detailed error information
-                    error_file = Path(output_directory) / f"{Path(resolved_idf_path).stem}.err"
-                    error_details = ""
-                    
-                    if error_file.exists():
-                        try:
-                            with open(error_file, 'r') as f:
-                                error_details = f.read()
-                        except Exception:
-                            error_details = "Could not read error file"
-                    
-                    simulation_result = {
-                        "success": False,
-                        "input_idf": resolved_idf_path,
-                        "weather_file": resolved_weather_path,
-                        "output_directory": output_directory,
-                        "error": str(e),
-                        "error_details": error_details,
-                        "simulation_options": simulation_options,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    
-                    logger.error(f"Simulation failed: {str(e)}")
-                    return json.dumps(simulation_result, indent=2)
-                    
-            except Exception as e:
-                logger.error(f"Error setting up simulation for {resolved_idf_path}: {e}")
-                raise RuntimeError(f"Error running simulation: {str(e)}")
+            simulation_options = {
+                "output_directory": output_directory,
+                "annual": annual,
+                "design_day": design_day,
+                "readvars": readvars,
+                "expandobjects": expandobjects,
+                "output_prefix": "eplusout" if calibration_context else Path(resolved_idf_path).stem,
+                "output_suffix": "L" if calibration_context else "C",
+                # stdout is the JSON-RPC transport when the server runs over
+                # stdio. Eppy's verbose mode forwards EnergyPlus progress to
+                # stdout and corrupts that protocol, so keep simulations quiet;
+                # errors remain available in the staged .err artifact.
+                "verbose": "q",
+            }
+            if resolved_weather_path:
+                simulation_options["weather"] = resolved_weather_path
+
+            start_time = datetime.now()
+            try:
+                result = idf.run(**simulation_options)
+                end_time = datetime.now()
+                duration = end_time - start_time
+                output_files = self._find_simulation_outputs(output_directory)
+                simulation_result: Dict[str, Any] = {
+                    "success": True,
+                    "input_idf": resolved_idf_path,
+                    "weather_file": resolved_weather_path,
+                    "output_directory": output_directory,
+                    "simulation_duration": str(duration),
+                    "simulation_options": simulation_options,
+                    "include_sqlite_output": include_sqlite_output,
+                    "output_files": output_files,
+                    "energyplus_result": str(result) if result else "Simulation completed",
+                    "timestamp": end_time.isoformat(),
+                }
+                if calibration_context:
+                    sql_path = self._canonical_calibration_sql(output_directory)
+                    self._finish_calibration_run(
+                        calibration_context,
+                        "completed",
+                        input_idf=resolved_idf_path,
+                        weather_file=resolved_weather_path,
+                        eplusout_sql=sql_path,
+                        **(version_info or {}),
+                    )
+                    simulation_result.update({
+                        "run_id": calibration_context["run_id"],
+                        "run_record": str(calibration_context["record_path"]),
+                        "eplusout_sql": sql_path,
+                        "model_path": resolved_idf_path,
+                        "run_input_idf": calibration_context["record"]["run_input_idf"],
+                    })
+                logger.info(f"Simulation completed successfully in {duration}")
+                return json.dumps(simulation_result, indent=2)
+            except Exception as error:
+                error_prefix = "eplusout" if calibration_context else Path(resolved_idf_path).stem
+                error_file = Path(output_directory) / f"{error_prefix}.err"
+                if calibration_context and not error_file.exists():
+                    # Eppy's legacy ``L`` suffix turns the canonical prefix
+                    # into ``eplusoutout``. Preserve the public run layout but
+                    # surface the actual simulator error instead of claiming
+                    # its .err artifact is absent.
+                    error_file = Path(output_directory) / "eplusoutout.err"
+                error_details = ""
+                if error_file.exists():
+                    try:
+                        error_details = error_file.read_text()
+                    except OSError:
+                        error_details = "Could not read error file"
+                simulation_result = {
+                    "success": False,
+                    "input_idf": resolved_idf_path,
+                    "weather_file": resolved_weather_path,
+                    "output_directory": output_directory,
+                    "error": str(error),
+                    "error_details": error_details,
+                    "simulation_options": simulation_options,
+                    "timestamp": datetime.now().isoformat(),
+                }
+                if calibration_context:
+                    self._finish_calibration_run(
+                        calibration_context,
+                        "failed",
+                        input_idf=resolved_idf_path,
+                        weather_file=resolved_weather_path,
+                        error=str(error),
+                        **(version_info or {}),
+                    )
+                    simulation_result.update({
+                        "run_id": calibration_context["run_id"],
+                        "run_record": str(calibration_context["record_path"]),
+                    })
+                logger.error(f"Simulation failed: {error}")
+                return json.dumps(simulation_result, indent=2)
+        except Exception as error:
+            if calibration_context:
+                self._finish_calibration_run(
+                    calibration_context,
+                    "failed",
+                    input_idf=str(resolved_idf_path),
+                    error=str(error),
+                )
+                return json.dumps({
+                    "success": False,
+                    "input_idf": str(resolved_idf_path),
+                    "output_directory": str(calibration_context["output_dir"]),
+                    "error": str(error),
+                    "run_id": calibration_context["run_id"],
+                    "run_record": str(calibration_context["record_path"]),
+                    "timestamp": datetime.now().isoformat(),
+                }, indent=2)
+            logger.error(f"Error setting up simulation for {resolved_idf_path}: {error}")
+            raise RuntimeError(f"Error running simulation: {error}")
         
 
     def _resolve_weather_file_path(self, weather_file: str) -> str:

@@ -458,7 +458,9 @@ The `mode` field in `config.yaml` controls how tools are organized and registere
 
 ### Core Tools (Always Available)
 - `model_preflight` — Load, validate, info, resolve_paths, readiness (preflight)
+- `model_upgrade` — Read-only transition planning and copy-only one-model IDF upgrades
 - `simulation_manager` — Run/update simulations, status
+- `calibration_manager` — Native-IDF calibration capabilities and perturbations
 - `file_utils` — List and copy sample/weather files
 - `post_processing` — Interactive plots
 - `server_manager` — Status, logs, clear logs
@@ -492,7 +494,37 @@ The `mode` field in `config.yaml` controls how tools are organized and registere
 - `MCP_EXPOSE_DOMAIN_MANAGERS=true` — Expose domain manager tools (`envelope_manager`, `internal_load_manager`, `hvac_manager`).
   - Controlled via YAML too: `tool_surface.mode: domains|hybrid`; per-domain toggles under `tool_surface.domains.*`.
 
-By default, master tools are exposed when `mode: masters` (or `hybrid`): `inspect_model`, `get_outputs`, `modify_basic_parameters`, `hvac_loop_inspect`. Core tools are always available in all modes: `model_preflight`, `simulation_manager`, `file_utils`, `post_processing`, `server_manager`. Enable thin wrappers via the flags above if/when implemented. MCP clients only see the tools registered at startup (as configured via `config.yaml` or env flags).
+By default, master tools are exposed when `mode: masters` (or `hybrid`): `inspect_model`, `get_outputs`, `modify_basic_parameters`, `hvac_loop_inspect`. Core tools are always available in all modes: `model_preflight`, `model_upgrade`, `simulation_manager`, `calibration_manager`, `file_utils`, `post_processing`, `server_manager`. Enable thin wrappers via the flags above if/when implemented. MCP clients only see the tools registered at startup (as configured via `config.yaml` or env flags).
+
+### Copy-only IDF upgrades
+
+`model_upgrade` is intentionally separate from simulation and calibration. Use
+`action: "plan"` to read an IDF Version object and discover the complete local
+adjacent transition chain before any write. Use `action: "run"` only with a new
+`output_directory`; it stages one copied model plus each official transition
+executable, adjacent IDDs, and report-variable mapping CSV there. Existing
+output directories and downgrades are refused. The resulting
+`migration-manifest.json` records hashes, logs, warnings, and transition state,
+with `simulation_validated: false`; it is not a simulation `run_record.json`
+and does not establish model equivalence, calibration adoption, or a physical
+simulation budget event. The default target is the configured EnergyPlus
+runtime; a same-version `run` is an explicit no-op. See
+[IDF upgrade details](docs/idf-version-upgrade.md).
+
+### Native-IDF calibration MVP
+
+`calibration_manager` supports `LPD`, `EPD`, `OCD`, `INF`, `WIN-U`, `WIN-SHGC`, `COP`, `HE`, and `FAN`. `perturb` applies signed percentages; `inspect` reports canonical quantities, units and target IDs; `set` applies absolute values or a target-to-value `assignments` map. Edits use an explicit input and a separate output. Physical limits apply, with no hidden clipping. `capabilities` checks runtime compatibility and reports percentage and absolute coverage separately; only complete coverage is enabled. Without a model, coverage is unverified. Calibration-MCP supplies explicit bound-repair/bounded-trial recipes using its methodology limits. See [absolute setters and bounds](docs/calibration-absolute-setters.md) for semantics and limitations, and [percentage-slice verification](docs/calibration-idf-mvp.md) for the earlier integration evidence.
+
+For calibration evidence, opt into the existing synchronous `simulation_manager` with `action: "run"` and `runs_dir`. It creates one unique run directory at `<runs_dir>/<run_id>/`, writes `run_record.json` for each launched success or failure, snapshots the staged input as `in.idf`, and produces monthly `Electricity:Facility` and `NaturalGas:Facility` meters in `run/eplusout.sql`. Normal simulation calls that omit `runs_dir` retain their existing behavior.
+
+The first qualified measured-bill SF pilot is documented in
+[SF native-IDF calibration pilot](docs/sf-native-idf-calibration-pilot.md).
+Building 69 completed 81 distinct EnergyPlus 26.1 simulations on the explicit
+2019 calendar and produced a formal terminal report. Six sweeps improved the
+score, but the result did not converge; missing schedule, thermostat,
+outdoor-air/economizer, occupancy-ratio, and service-hot-water semantics remain
+the main coverage gap. Treat this as end-to-end integration proof, not as proof
+that the current parameter surface can calibrate every SF model.
 
 ## Usage Examples
 
