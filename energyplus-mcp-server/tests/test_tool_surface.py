@@ -30,7 +30,7 @@ def write_config(tmp_path: Path, text: str) -> Path:
 
 @pytest.mark.parametrize(
     ("mode", "expected_count"),
-    [("domains", 12), ("masters", 11), ("hybrid", 16)],
+    [("domains", 14), ("masters", 11), ("hybrid", 18)],
 )
 def test_supported_surfaces_register_exactly_once(tmp_path, mode, expected_count):
     path = write_config(
@@ -59,7 +59,7 @@ def test_workflow_compatibility_is_explicit_and_adds_only_facades(tmp_path):
     names = register_tool_surface(FakeMCP(), object(), object(), surface)
 
     assert {"calibration_manager", "retrofit_manager"} <= names
-    assert len(names) == 14
+    assert len(names) == 16
 
 
 def test_geometry_toggle_is_loaded(tmp_path):

@@ -29,7 +29,7 @@ was built by **LBNL**, not PNNL. Never conflate these two uses of “harness.”
   isolated NLR OpenStudio-MCP execution. Consult its README and
   `agent_runner/README.md` for the current contract.
 - **LBNL calibration domain service:**
-  `/Users/hanli/Documents/projects/Openstudio-AI/pattern-based-BEM-calibration-mcp`.
+  `/Users/hanli/Documents/GitHub/BEM-AI/BEM-calibration-mcp`.
   Prototype deterministic metrics, pattern analysis, parameter-selection
   support, calibration state, audit ledger, and report finalization. The thin
   LBNL domain skill supplies methodology, phase procedure, and engineering

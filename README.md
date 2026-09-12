@@ -1,6 +1,6 @@
 # EnergyPlus MCP Server
 
-A Model Context Protocol (MCP) server for EnergyPlus that exposes a **compact, agent-friendly tool surface** built around domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, …) and a few unified master tools. It lets AI assistants load, validate, modify, and simulate EnergyPlus IDF files through a consolidated interface.
+A Model Context Protocol (MCP) server for EnergyPlus that exposes a **compact, agent-friendly tool surface** built around domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, `schedule_manager`, `service_water_manager`, …) and a few unified master tools. It lets AI assistants load, validate, modify, and simulate EnergyPlus IDF files through a consolidated interface.
 
 > This README documents the compact domain-manager / master-tool architecture
 > and its workflow-neutral default surface. Older releases may expose a
@@ -475,16 +475,32 @@ The `mode` field in `config.yaml` controls how tools are organized and registere
 #### When `mode: domains` (default) - Domain-Specific Managers
 - `envelope_manager` — Inspect/modify envelope (surfaces, materials, infiltration, window films, coatings)
 - `internal_load_manager` — Inspect/modify people, lights, and electric equipment
-- `hvac_manager` — Discover, analyze topology, and visualize HVAC loops
+- `schedule_manager` — Inspect schedule-reference graphs and safely edit selected load or availability schedules
+- `hvac_manager` — Discover HVAC topology and inspect/modify thermostats, availability, outdoor air, and economizers
+- `service_water_manager` — Inspect typed service-water targets and modify thermal efficiency or explicit target assignments
 - `outputs_manager` — List or add output variables/meters with discovery
 - `geometry_manager` — Extract, summarize, and visualize model geometry
 
-The three modeling managers also expose workflow-neutral semantic parameter
+The modeling managers also expose workflow-neutral semantic parameter
 operations. `internal_load_manager` owns LPD, EPD, and occupancy density;
 `envelope_manager` owns infiltration, window U-factor, and window SHGC; and
 `hvac_manager` owns cooling COP, heating efficiency, and fan efficiency. Each
 uses the same actions: `parameter_capabilities`, `inspect_parameter`,
 `adjust_percentage`, and `set_parameter`.
+
+The new semantic families keep descriptive provider operations:
+`schedule_manager` scales bounded lighting, electric-equipment, and HVAC
+availability schedules; `hvac_manager` applies heating/cooling setpoint deltas,
+availability changes, outdoor-air changes, and economizer selections;
+`internal_load_manager` provides atomic coupled occupancy; and
+`service_water_manager` keeps thermal efficiency, fuel, flow, loss, and
+parasitic-power targets in distinct unit families. Apply operations write a
+separate IDF, can bind to an inspected source SHA-256, and pre-close incomplete
+or ambiguous model coverage.
+
+The read-only [SF semantic coverage audit](docs/sf-new-semantic-coverage-audit.md)
+records the per-operation results for all 111 original EnergyPlus 9.2 models
+and one pre-existing 26.1 comparison model.
 
 ### Deprecated Workflow Compatibility
 
@@ -517,7 +533,9 @@ runtime; a same-version `run` is an explicit no-op. See
 ### Native-IDF semantic parameter operations
 
 The domain managers support LPD, EPD, OCD, INF, WIN-U, WIN-SHGC, COP, HE,
-and FAN without assigning calibration policy to EnergyPlus-MCP.
+and FAN, plus generic schedule, thermostat, coupled-occupancy, outdoor-air,
+economizer, and service-water operations, without assigning calibration policy
+to EnergyPlus-MCP.
 `adjust_percentage` applies a signed percentage; `inspect_parameter` reports
 canonical quantities, units, and target IDs; `set_parameter` applies an
 absolute value or target-to-value `assignments` map. Edits use an explicit
@@ -533,9 +551,9 @@ The first qualified measured-bill SF pilot is documented in
 [SF native-IDF calibration pilot](docs/sf-native-idf-calibration-pilot.md).
 Building 69 completed 81 distinct EnergyPlus 26.1 simulations on the explicit
 2019 calendar and produced a formal terminal report. Six sweeps improved the
-score, but the result did not converge; missing schedule, thermostat,
-outdoor-air/economizer, occupancy-ratio, and service-hot-water semantics remain
-the main coverage gap. Treat this as end-to-end integration proof, not as proof
+score, but the result did not converge. The generic operation families that
+were missing from that campaign now exist, while model-specific coverage still
+must be inspected before use. Treat the campaign as end-to-end integration proof, not as proof
 that the current parameter surface can calibrate every SF model.
 
 ## Usage Examples
@@ -849,7 +867,9 @@ tool_surface:
   domains:                        # optional fine-grained controls
     envelope: true | false
     internal_loads: true | false
+    schedules: true | false
     hvac: true | false
+    service_water: true | false
     outputs: true | false
     geometry: true | false
   compatibility:
@@ -871,7 +891,9 @@ tool_surface:
   domains:
     envelope: true
     internal_loads: true
+    schedules: true
     hvac: true
+    service_water: true
     outputs: true
     geometry: true
   compatibility:

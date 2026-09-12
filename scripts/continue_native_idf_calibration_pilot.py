@@ -25,11 +25,15 @@ from run_native_idf_calibration_pilot import (
     Audit,
     REQUIRED_PARAMETERS,
     call,
+    collect_domain_capabilities,
     connect,
     convergence_branch,
+    execute_provider_recipe,
+    inspect_parameter_from_capabilities,
     load_manifest,
     select_pattern,
     sha256,
+    supported_parameters,
     tool_data,
     validate_run_period_calendar,
 )
@@ -127,10 +131,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 status = f"{branch}_converged"
                 break
 
-            caps = await call(
-                ep, audit, "energyplus", "calibration_manager",
-                action="capabilities", idf_path=str(current_model),
-            )
+            caps = await collect_domain_capabilities(ep, audit, current_model)
             preflight = await call(
                 ep, audit, "energyplus", "model_preflight",
                 action="info", idf_path=str(current_model),
@@ -138,13 +139,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             validate_run_period_calendar(
                 preflight, manifest["weather"]["calendar_year"],
             )
-            supported = {
-                name for name, declaration in caps["parameters"].items()
-                if declaration.get("supported") and declaration.get("coverage") == "complete"
-            }
-            if supported != REQUIRED_PARAMETERS:
+            missing_legacy = REQUIRED_PARAMETERS - supported_parameters(caps)
+            if missing_legacy:
                 raise RuntimeError(
-                    f"current-best model lost native calibration coverage: {sorted(supported)}"
+                    "current-best model lost legacy native-IDF calibration coverage: "
+                    f"{sorted(missing_legacy)}"
                 )
             elec_pattern = tool_data(await call(
                 cal, audit, "calibration", "detect_patterns",
@@ -206,9 +205,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 
             project_summary = project.get("ledger_summary") or {}
             sweep_number = int(project_summary.get("committed_sweep_count") or 0) + 1
-            inspection = await call(
-                ep, audit, "energyplus", "calibration_manager",
-                action="inspect", idf_path=str(current_model), parameter=parameter,
+            inspection = await inspect_parameter_from_capabilities(
+                ep, audit, caps, current_model, parameter,
             )
             candidates = []
             for rung, value in enumerate(expected_values, start=1):
@@ -241,12 +239,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 candidate_model = models / (
                     f"sweep-{sweep_number:02d}-{parameter}-{rung:02d}-{token}.idf"
                 )
-                mutation_args = dict(recipe["arguments"])
-                mutation_args.update(
-                    idf_path=str(current_model), output_path=str(candidate_model),
-                )
-                mutation = await call(
-                    ep, audit, "energyplus", recipe["tool_name"], **mutation_args,
+                mutation = await execute_provider_recipe(
+                    ep, audit, recipe,
+                    input_path=current_model,
+                    output_path=candidate_model,
+                    source_sha256=inspection["model_sha256"],
                 )
                 if not mutation.get("changes"):
                     raise RuntimeError(f"{parameter} rung {value} made no IDF change")
@@ -353,10 +350,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--calibration-repo", type=Path,
-        default=Path(
-            "/Users/hanli/Documents/projects/Openstudio-AI/"
-            "pattern-based-BEM-calibration-mcp"
-        ),
+        default=Path("/Users/hanli/Documents/GitHub/BEM-AI/BEM-calibration-mcp"),
     )
     parser.add_argument(
         "--image", default="energyplus-mcp-dev:26.1.0-upgrade-20260910",

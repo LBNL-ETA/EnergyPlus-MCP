@@ -70,6 +70,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         target_ids: Optional[List[str]] = None,
         assignments: Optional[Dict[str, float]] = None,
         expected_model_sha256: Optional[str] = None,
+        mode: Literal["apply", "dry_run"] = "apply",
     ) -> str:
         """
         Envelope domain manager for building envelope components.
@@ -157,7 +158,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                         {
                             "name": "adjust_percentage",
                             "description": "Apply signed percentage change to a semantic parameter",
-                            "required": ["idf_path", "parameter", "value", "output_path"]
+                            "required": ["idf_path", "parameter", "value", "output_path"],
+                            "optional": ["expected_model_sha256"]
                         },
                         {
                             "name": "set_parameter",
@@ -238,7 +240,9 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 if value is None or not output_path:
                     return json.dumps({"error": "Missing required parameters: idf_path, parameter, value, output_path"})
                 return json.dumps(_tag_parameter_response(
-                    ep_manager.adjust_parameter_percentage(idf_path, normalized, value, output_path), action
+                    ep_manager.adjust_parameter_percentage(
+                        idf_path, normalized, value, output_path, expected_model_sha256, mode
+                    ), action
                 ), indent=2)
 
             if action == "set_parameter":
@@ -248,7 +252,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 return json.dumps(_tag_parameter_response(
                     ep_manager.set_parameter(
                         idf_path, normalized, value, output_path, target_ids,
-                        assignments, expected_model_sha256,
+                        assignments, expected_model_sha256, mode,
                     ), action
                 ), indent=2)
             

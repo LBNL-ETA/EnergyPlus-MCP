@@ -31,6 +31,63 @@ REQUIRED_PARAMETERS = {
     "LPD", "EPD", "OCD", "INF", "WIN-U", "WIN-SHGC", "COP", "HE", "FAN"
 }
 
+# Calibration-MCP receives this unflattened evidence so it can retain each
+# provider route rather than recreating a deprecated calibration facade.
+GENERIC_CAPABILITY_MANAGERS = (
+    "internal_load_manager",
+    "envelope_manager",
+    "schedule_manager",
+    "hvac_manager",
+    "service_water_manager",
+)
+
+# These assertions protect the generic semantic surface while allowing each
+# manager to advertise additional model-specific parameters. Schedule editing
+# has one canonical owner so aggregate declarations remain unambiguous.
+EXPECTED_GENERIC_PARAMETER_ACTIONS = {
+    "internal_load_manager": {
+        "LPD": "adjust_percentage",
+        "EPD": "adjust_percentage",
+        "OCD": "adjust_percentage",
+        "coupled_occupancy": "set_occupancy_ratio",
+    },
+    "envelope_manager": {
+        "INF": "adjust_percentage",
+        "WIN-U": "adjust_percentage",
+        "WIN-SHGC": "adjust_percentage",
+    },
+    "schedule_manager": {
+        "lighting_schedule": "adjust_percentage",
+        "equipment_schedule": "adjust_percentage",
+        "hvac_availability_schedule": "adjust_percentage",
+    },
+    "hvac_manager": {
+        "COP": "adjust_percentage",
+        "HE": "adjust_percentage",
+        "FAN": "adjust_percentage",
+        "heating_setpoint": "heating_setpoint_delta",
+        "cooling_setpoint": "cooling_setpoint_delta",
+        "outdoor_air_flow": "outdoor_air_flow_adjustment",
+        "economizer_control": "economizer_control",
+    },
+    "service_water_manager": {
+        "service_water_efficiency": "adjust_efficiency_percentage",
+    },
+}
+
+SIMULATION_EVIDENCE = {
+    "tool": "simulation_manager",
+    "action": "run",
+    "required_args": ["idf_path", "runs_dir"],
+    "optional_args": ["run_id", "weather_file"],
+    "paths": "<runs_dir>/<run_id>/run/eplusout.sql and <runs_dir>/<run_id>/run_record.json",
+}
+
+_HASH_PLACEHOLDERS = frozenset({
+    "{{input_sha256}}", "${input_sha256}", "$input_sha256",
+    "{{model_sha256}}", "${model_sha256}", "$model_sha256",
+})
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -230,6 +287,190 @@ async def connect(stack: AsyncExitStack, params: StdioServerParameters) -> Clien
     return session
 
 
+def _domain_parameter_capabilities(report: dict[str, Any]) -> list[dict[str, Any]]:
+    groups = report.get("domain_capabilities")
+    if not isinstance(groups, list) or not groups:
+        raise RuntimeError("generic capability aggregate has no domain_capabilities")
+    return groups
+
+
+def capability_for_parameter(
+    report: dict[str, Any], parameter: str, *, tool_name: str | None = None,
+) -> dict[str, Any]:
+    """Return one exact provider declaration, refusing duplicate routes."""
+    matches: list[dict[str, Any]] = []
+    for group in _domain_parameter_capabilities(report):
+        manager = group.get("tool") or group.get("manager")
+        if tool_name and manager != tool_name:
+            continue
+        declaration = (group.get("parameters") or {}).get(parameter)
+        if isinstance(declaration, dict):
+            matches.append({"tool": manager, "declaration": declaration})
+    if not matches:
+        suffix = f" through {tool_name}" if tool_name else ""
+        raise RuntimeError(f"EnergyPlus-MCP did not advertise {parameter}{suffix}")
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"EnergyPlus-MCP advertised {parameter} through multiple domains; "
+            "the caller must select an explicit semantic route"
+        )
+    match = matches[0]
+    tool = match["tool"]
+    if not isinstance(tool, str) or not tool:
+        raise RuntimeError(f"{parameter} capability does not identify a domain manager")
+    return {"tool": tool, **match["declaration"]}
+
+
+def require_complete_capability(
+    report: dict[str, Any], parameter: str, *, tool_name: str | None = None,
+) -> dict[str, Any]:
+    """Fail closed before a planner or simulation can target partial coverage."""
+    declaration = capability_for_parameter(report, parameter, tool_name=tool_name)
+    coverage = declaration.get("coverage", "unverified")
+    if not declaration.get("supported") or coverage != "complete":
+        raise RuntimeError(
+            f"{parameter} lacks complete EnergyPlus coverage (coverage: {coverage}); "
+            "the pilot will not tune a subset"
+        )
+    return declaration
+
+
+def supported_parameters(report: dict[str, Any]) -> set[str]:
+    supported: set[str] = set()
+    for group in _domain_parameter_capabilities(report):
+        parameters = group.get("parameters") or {}
+        if not isinstance(parameters, dict):
+            continue
+        for parameter, declaration in parameters.items():
+            if (
+                isinstance(parameter, str)
+                and isinstance(declaration, dict)
+                and declaration.get("supported")
+                and declaration.get("coverage") == "complete"
+            ):
+                supported.add(parameter)
+    return supported
+
+
+async def collect_domain_capabilities(
+    session: ClientSession, audit: Audit, idf_path: Path,
+) -> dict[str, Any]:
+    """Collect unmodified generic manager evidence into CalMCP's aggregate form."""
+    source = idf_path.resolve()
+    if not source.is_file():
+        raise RuntimeError(f"cannot collect parameter capabilities; IDF is missing: {source}")
+    groups: list[dict[str, Any]] = []
+    for manager in GENERIC_CAPABILITY_MANAGERS:
+        result = tool_data(await call(
+            session, audit, "energyplus", manager,
+            action="parameter_capabilities", idf_path=str(source),
+        ))
+        if result.get("success") is False:
+            raise RuntimeError(f"{manager} did not provide parameter capabilities")
+        if result.get("tool") != manager or result.get("action") != "parameter_capabilities":
+            raise RuntimeError(f"{manager} returned an invalid parameter-capabilities envelope")
+        parameters = result.get("parameters")
+        if not isinstance(parameters, dict):
+            raise RuntimeError(f"{manager} parameter capabilities have no parameters mapping")
+        for parameter, expected_action in EXPECTED_GENERIC_PARAMETER_ACTIONS[manager].items():
+            declaration = parameters.get(parameter)
+            if not isinstance(declaration, dict) or declaration.get("action") != expected_action:
+                raise RuntimeError(
+                    f"{manager} did not advertise {parameter} with canonical action {expected_action}"
+                )
+        groups.append(result)
+    return {
+        "success": True,
+        "model_format": "idf",
+        "idf_path": str(source),
+        "model_sha256": sha256(source),
+        "monthly_meters": ["Electricity:Facility", "NaturalGas:Facility"],
+        "simulation_evidence": dict(SIMULATION_EVIDENCE),
+        "domain_capabilities": groups,
+    }
+
+
+async def inspect_parameter_from_capabilities(
+    session: ClientSession,
+    audit: Audit,
+    capabilities: dict[str, Any],
+    idf_path: Path,
+    parameter: str,
+) -> dict[str, Any]:
+    """Inspect a legacy semantic target through its advertised domain route."""
+    declaration = require_complete_capability(capabilities, parameter)
+    action = declaration.get("inspect_action", "inspect_parameter")
+    if action != "inspect_parameter":
+        raise RuntimeError(f"{parameter} does not expose a generic inspect_parameter route")
+    source = idf_path.resolve()
+    inspection = tool_data(await call(
+        session, audit, "energyplus", declaration["tool"],
+        action=action, idf_path=str(source), parameter=parameter,
+    ))
+    inspected_hash = inspection.get("model_sha256") or inspection.get("input_sha256")
+    actual_hash = sha256(source)
+    if inspected_hash != actual_hash:
+        raise RuntimeError(
+            f"{parameter} inspection did not retain the current source-model SHA-256"
+        )
+    return inspection
+
+
+def materialize_provider_recipe(
+    recipe: dict[str, Any],
+    *,
+    input_path: Path,
+    output_path: Path,
+    source_sha256: str,
+) -> tuple[str, dict[str, Any]]:
+    """Add only per-run paths and declared hash placeholders to a CalMCP recipe."""
+    tool_name = recipe.get("tool_name")
+    arguments = recipe.get("arguments")
+    if not isinstance(tool_name, str) or not tool_name:
+        raise RuntimeError("Calibration-MCP recipe does not name an EnergyPlus domain manager")
+    if not isinstance(arguments, dict) or not isinstance(arguments.get("action"), str):
+        raise RuntimeError("Calibration-MCP recipe does not contain a generic action")
+    materialized = dict(arguments)
+    for key, value in (("idf_path", str(input_path.resolve())), ("output_path", str(output_path.resolve()))):
+        existing = materialized.get(key)
+        if existing is None or (
+            isinstance(existing, str) and existing in _HASH_PLACEHOLDERS
+        ):
+            materialized[key] = value
+        elif existing != value:
+            raise RuntimeError(f"Calibration-MCP recipe supplied a different {key}")
+    expected_hash = materialized.get("expected_model_sha256")
+    if isinstance(expected_hash, str) and expected_hash in _HASH_PLACEHOLDERS:
+        materialized["expected_model_sha256"] = source_sha256
+    elif expected_hash is not None and expected_hash != source_sha256:
+        raise RuntimeError("Calibration-MCP recipe source hash does not match the inspected model")
+    required_args = recipe.get("required_args", [])
+    if not isinstance(required_args, list) or any(
+        not isinstance(name, str) or name not in materialized for name in required_args
+    ):
+        raise RuntimeError("Calibration-MCP recipe is missing a required provider argument")
+    return tool_name, materialized
+
+
+async def execute_provider_recipe(
+    session: ClientSession,
+    audit: Audit,
+    recipe: dict[str, Any],
+    *,
+    input_path: Path,
+    output_path: Path,
+    source_sha256: str,
+) -> dict[str, Any]:
+    """Execute CalMCP's chosen generic route without modifying its semantics."""
+    tool_name, arguments = materialize_provider_recipe(
+        recipe,
+        input_path=input_path,
+        output_path=output_path,
+        source_sha256=source_sha256,
+    )
+    return await call(session, audit, "energyplus", tool_name, **arguments)
+
+
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     manifest_path = args.manifest.resolve()
     manifest = load_manifest(manifest_path)
@@ -282,7 +523,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         cal_tools = {item.name for item in (await cal.list_tools()).tools}
         for needed, available, label in (
             (
-                {"calibration_manager", "simulation_manager", "model_preflight"},
+                {
+                    *GENERIC_CAPABILITY_MANAGERS,
+                    "simulation_manager",
+                    "model_preflight",
+                },
                 ep_tools,
                 "EnergyPlus-MCP",
             ),
@@ -310,16 +555,13 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         run_periods = validate_run_period_calendar(
             preflight, manifest["weather"]["calendar_year"],
         )
-        caps = await call(
-            ep, audit, "energyplus", "calibration_manager",
-            action="capabilities", idf_path=str(current_model),
-        )
-        supported = {
-            name for name, declaration in caps["parameters"].items()
-            if declaration.get("supported") and declaration.get("coverage") == "complete"
-        }
-        if supported != REQUIRED_PARAMETERS:
-            raise RuntimeError(f"unexpected model-specific calibration coverage: {sorted(supported)}")
+        caps = await collect_domain_capabilities(ep, audit, current_model)
+        missing_legacy = REQUIRED_PARAMETERS - supported_parameters(caps)
+        if missing_legacy:
+            raise RuntimeError(
+                "legacy native-IDF calibration coverage is incomplete: "
+                f"{sorted(missing_legacy)}"
+            )
 
         created = await call(
             cal, audit, "calibration", "create_project",
@@ -352,9 +594,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 
         repairs: list[dict[str, Any]] = []
         for index, parameter in enumerate(sorted(REQUIRED_PARAMETERS), start=1):
-            inspection = await call(
-                ep, audit, "energyplus", "calibration_manager",
-                action="inspect", idf_path=str(current_model), parameter=parameter,
+            inspection = await inspect_parameter_from_capabilities(
+                ep, audit, caps, current_model, parameter,
             )
             repair = await call(
                 cal, audit, "calibration", "get_bound_repair_recipe",
@@ -364,10 +605,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if recipe_list:
                 candidate = models / f"baseline-repair-{index:02d}-{parameter}.idf"
                 recipe = recipe_list[0]
-                mutation_args = dict(recipe["arguments"])
-                mutation_args.update(idf_path=str(current_model), output_path=str(candidate))
-                changed = await call(
-                    ep, audit, "energyplus", recipe["tool_name"], **mutation_args,
+                changed = await execute_provider_recipe(
+                    ep, audit, recipe,
+                    input_path=current_model,
+                    output_path=candidate,
+                    source_sha256=inspection["model_sha256"],
                 )
                 repairs.append({
                     "parameter": parameter,
@@ -376,10 +618,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     "changes": changed.get("changes", []),
                 })
                 current_model = candidate
-                caps = await call(
-                    ep, audit, "energyplus", "calibration_manager",
-                    action="capabilities", idf_path=str(current_model),
-                )
+                caps = await collect_domain_capabilities(ep, audit, current_model)
                 await call(
                     cal, audit, "calibration", "check_measure_reach",
                     project_id=project_id, capabilities=caps, model_path=str(current_model),
@@ -464,9 +703,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     if not budget.get("can_start_batch"):
                         raise RuntimeError("the physical-run budget cannot fit the complete ladder")
                     candidates: list[dict[str, Any]] = []
-                    inspection = await call(
-                        ep, audit, "energyplus", "calibration_manager",
-                        action="inspect", idf_path=str(current_model), parameter=parameter,
+                    inspection = await inspect_parameter_from_capabilities(
+                        ep, audit, caps, current_model, parameter,
                     )
                     for rung, value in enumerate(expected_values, start=1):
                         progress = tool_data(await call(
@@ -489,12 +727,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                             )
                         recipe = recipe_list[0]
                         candidate_model = models / f"sweep-01-{parameter}-{rung:02d}-{value}.idf"
-                        mutation_args = dict(recipe["arguments"])
-                        mutation_args.update(
-                            idf_path=str(current_model), output_path=str(candidate_model)
-                        )
-                        mutation = await call(
-                            ep, audit, "energyplus", recipe["tool_name"], **mutation_args,
+                        mutation = await execute_provider_recipe(
+                            ep, audit, recipe,
+                            input_path=current_model,
+                            output_path=candidate_model,
+                            source_sha256=inspection["model_sha256"],
                         )
                         if not mutation.get("changes"):
                             raise RuntimeError(f"{parameter} rung {value} made no model change")
@@ -572,7 +809,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--calibration-repo", type=Path,
-        default=Path("/Users/hanli/Documents/projects/Openstudio-AI/pattern-based-BEM-calibration-mcp"),
+        default=Path("/Users/hanli/Documents/GitHub/BEM-AI/BEM-calibration-mcp"),
     )
     parser.add_argument(
         "--image", default="energyplus-mcp-dev:26.1.0-upgrade-20260910",

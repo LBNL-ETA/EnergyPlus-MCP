@@ -95,6 +95,7 @@ def capabilities(idf=None):
             "tool": "domain_manager",
             "action": "adjust_percentage",
             "required_args": ["idf_path", "parameter", "value", "output_path"],
+            "optional_args": ["expected_model_sha256"],
             "returns": ["output_file", "before", "after", "changes"],
             "value_semantics": "signed percentage change relative to idf_path",
             "minimum_value": -100,

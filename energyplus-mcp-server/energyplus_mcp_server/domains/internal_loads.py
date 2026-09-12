@@ -1,6 +1,12 @@
 from typing import Any, Dict, List, Optional, Literal
 import json
 import logging
+from hashlib import sha256
+from pathlib import Path
+
+from eppy.modeleditor import IDF
+
+from ..utils import coupled_occupancy
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,55 @@ def _parameter_capabilities(ep_manager: Any, idf_path: Optional[str]) -> Dict[st
         detail["absolute_set"]["tool"] = "internal_load_manager"
         detail["absolute_set"]["manager"] = "internal_load_manager"
         detail["absolute_set"]["action"] = "set_parameter"
+    if idf_path and hasattr(ep_manager, "_resolve_idf_path"):
+        resolved = ep_manager._resolve_idf_path(idf_path)
+        ep_manager._assert_simulation_version_matches(resolved)
+        detail = coupled_occupancy.capabilities(IDF(resolved))
+        detail.update({
+            "parameter": "coupled_occupancy",
+            "tool": "internal_load_manager",
+            "manager": "internal_load_manager",
+            "action": "set_occupancy_ratio",
+            "capability_action": "parameter_capabilities",
+            "inspect_action": "inspect_coupled_occupancy",
+            "required_args": ["idf_path", "value", "output_path"],
+            "returns": ["output_file", "before", "after", "changes", "skipped", "ambiguous"],
+            "operations": ["set_occupancy_ratio"],
+            "units": "fraction",
+            "value_semantics": "absolute coupled occupancy ratio",
+            "minimum_value": 0.5,
+            "minimum_inclusive": True,
+            "maximum_value": 1.0,
+            "maximum_inclusive": True,
+            "applicable_field_count": len(detail.get("applicable_targets", [])),
+            "affected_semantics": ["people", "lighting", "electric_equipment"],
+            "input_file": resolved,
+            "input_sha256": sha256(Path(resolved).read_bytes()).hexdigest(),
+        })
+    else:
+        detail = {
+            "parameter": "coupled_occupancy",
+            "operation": "set_occupancy_ratio",
+            "tool": "internal_load_manager",
+            "manager": "internal_load_manager",
+            "action": "set_occupancy_ratio",
+            "capability_action": "parameter_capabilities",
+            "inspect_action": "inspect_coupled_occupancy",
+            "coverage": "unverified",
+            "supported": False,
+            "required_args": ["idf_path", "value", "output_path"],
+            "returns": ["output_file", "before", "after", "changes", "skipped", "ambiguous"],
+            "operations": ["set_occupancy_ratio"],
+            "units": "fraction",
+            "value_semantics": "absolute coupled occupancy ratio",
+            "minimum_value": 0.5,
+            "minimum_inclusive": True,
+            "maximum_value": 1.0,
+            "maximum_inclusive": True,
+            "applicable_field_count": 0,
+            "affected_semantics": ["people", "lighting", "electric_equipment"],
+        }
+    result.setdefault("parameters", {})["coupled_occupancy"] = detail
     return result
 
 
@@ -45,6 +100,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         action: Literal[
             "inspect", "modify", "capabilities", "parameter_capabilities",
             "inspect_parameter", "adjust_percentage", "set_parameter",
+            "coupled_occupancy_capabilities", "inspect_coupled_occupancy",
+            "set_occupancy_ratio",
         ],
         idf_path: Optional[str] = None,
         # Inspect
@@ -81,8 +138,11 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                         {"name": "modify", "required": ["idf_path", "op", "modifications"], "optional": ["output_path", "mode"]},
                         {"name": "parameter_capabilities", "required": [], "optional": ["idf_path"]},
                         {"name": "inspect_parameter", "required": ["idf_path", "parameter"]},
-                        {"name": "adjust_percentage", "required": ["idf_path", "parameter", "value", "output_path"]},
+                        {"name": "adjust_percentage", "required": ["idf_path", "parameter", "value", "output_path"], "optional": ["expected_model_sha256"]},
                         {"name": "set_parameter", "required": ["idf_path", "parameter", "output_path"], "optional": ["value", "target_ids", "assignments", "expected_model_sha256"]},
+                        {"name": "coupled_occupancy_capabilities", "required": [], "optional": ["idf_path"]},
+                        {"name": "inspect_coupled_occupancy", "required": ["idf_path"]},
+                        {"name": "set_occupancy_ratio", "required": ["idf_path", "value", "output_path"], "optional": ["mode", "expected_model_sha256"]},
                     ],
                     "ops": [
                         {"op": "people.update", "params": {"modifications": [{"target": "all", "field_updates": {"Number_of_People": 10}}]}},
@@ -97,6 +157,37 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             if not idf_path:
                 return "Missing required parameter: idf_path"
 
+            if action in {"coupled_occupancy_capabilities", "inspect_coupled_occupancy", "set_occupancy_ratio"}:
+                resolved = ep_manager._resolve_idf_path(idf_path)
+                ep_manager._assert_simulation_version_matches(resolved)
+                idf = IDF(resolved)
+                if action == "coupled_occupancy_capabilities":
+                    payload = coupled_occupancy.capabilities(idf)
+                    payload.update({
+                        "input_file": resolved,
+                        "input_sha256": sha256(Path(resolved).read_bytes()).hexdigest(),
+                        "mode": "inspect",
+                    })
+                elif action == "inspect_coupled_occupancy":
+                    payload = coupled_occupancy.inspect(idf)
+                    payload.update({
+                        "input_file": resolved,
+                        "input_sha256": sha256(Path(resolved).read_bytes()).hexdigest(),
+                        "mode": "inspect",
+                    })
+                else:
+                    if value is None or not output_path:
+                        return json.dumps({"success": False, "error": "set_occupancy_ratio requires value and output_path"})
+                    payload = coupled_occupancy.execute(
+                        idf,
+                        input_path=resolved,
+                        output_path=output_path,
+                        ratio=value,
+                        mode=mode,
+                        expected_model_sha256=expected_model_sha256,
+                    )
+                return json.dumps(_tag_parameter_response(payload, action), indent=2)
+
             if action == "inspect_parameter":
                 normalized = _require_owned_parameter(parameter)
                 return json.dumps(_tag_parameter_response(
@@ -108,7 +199,9 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 if value is None or not output_path:
                     return json.dumps({"error": "Missing required parameters: idf_path, parameter, value, output_path"})
                 return json.dumps(_tag_parameter_response(
-                    ep_manager.adjust_parameter_percentage(idf_path, normalized, value, output_path), action
+                    ep_manager.adjust_parameter_percentage(
+                        idf_path, normalized, value, output_path, expected_model_sha256, mode
+                    ), action
                 ), indent=2)
 
             if action == "set_parameter":
@@ -118,7 +211,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 return json.dumps(_tag_parameter_response(
                     ep_manager.set_parameter(
                         idf_path, normalized, value, output_path, target_ids,
-                        assignments, expected_model_sha256,
+                        assignments, expected_model_sha256, mode,
                     ), action
                 ), indent=2)
 

@@ -6,7 +6,9 @@ tool_surface:
   domains:
     envelope: true
     internal_loads: true
+    schedules: true
     hvac: true
+    service_water: true
     outputs: true
     geometry: true
 

@@ -40,14 +40,23 @@ class ParameterManager:
         self.calls.append(("inspect_parameter", idf_path, parameter))
         return {"success": True, "parameter": parameter, "targets": []}
 
-    def adjust_parameter_percentage(self, idf_path, parameter, value, output_path):
-        self.calls.append(("adjust_percentage", idf_path, parameter, value, output_path))
+    def adjust_parameter_percentage(
+        self, idf_path, parameter, value, output_path, expected_model_sha256=None,
+        mode="apply",
+    ):
+        self.calls.append((
+            "adjust_percentage", idf_path, parameter, value, output_path,
+            expected_model_sha256, mode,
+        ))
         return {"success": True, "parameter": parameter, "output_file": output_path}
 
-    def set_parameter(self, idf_path, parameter, value, output_path, target_ids, assignments, model_hash):
+    def set_parameter(
+        self, idf_path, parameter, value, output_path, target_ids, assignments,
+        model_hash, mode="apply",
+    ):
         self.calls.append((
             "set_parameter", idf_path, parameter, value, output_path,
-            target_ids, assignments, model_hash,
+            target_ids, assignments, model_hash, mode,
         ))
         return {"success": True, "parameter": parameter, "output_file": output_path}
 
@@ -68,9 +77,10 @@ def test_domain_managers_expose_and_route_owned_semantic_parameters(module, para
     capability = json.loads(asyncio.run(registry.call(
         action="parameter_capabilities", idf_path="source.idf"
     )))
-    assert set(capability["parameters"]) == set(parameters)
+    assert set(parameters) <= set(capability["parameters"])
     assert capability["tool"] == capability["manager"]
-    for detail in capability["parameters"].values():
+    for owned_parameter in parameters:
+        detail = capability["parameters"][owned_parameter]
         assert detail["tool"] == capability["tool"]
         assert detail["action"] == "adjust_percentage"
         assert detail["absolute_set"]["action"] == "set_parameter"
@@ -84,7 +94,7 @@ def test_domain_managers_expose_and_route_owned_semantic_parameters(module, para
     adjusted = json.loads(asyncio.run(
         registry.call(
             action="adjust_percentage", idf_path="source.idf", parameter=parameter,
-            value=10, output_path="candidate.idf",
+            value=10, output_path="candidate.idf", expected_model_sha256="hash", mode="apply",
         )
     ))
     assert adjusted["output_file"] == "candidate.idf"
@@ -93,14 +103,14 @@ def test_domain_managers_expose_and_route_owned_semantic_parameters(module, para
     absolute = json.loads(asyncio.run(registry.call(
         action="set_parameter", idf_path="source.idf", parameter=parameter,
         value=None, output_path="candidate.idf", target_ids=None,
-        assignments={"target-1": 1.0}, expected_model_sha256="hash",
+        assignments={"target-1": 1.0}, expected_model_sha256="hash", mode="apply",
     )))
     assert absolute["action"] == "set_parameter"
     assert manager.calls == [
         ("parameter_capabilities", "source.idf", parameters),
         ("inspect_parameter", "source.idf", parameter),
-        ("adjust_percentage", "source.idf", parameter, 10, "candidate.idf"),
-        ("set_parameter", "source.idf", parameter, None, "candidate.idf", None, {"target-1": 1.0}, "hash"),
+        ("adjust_percentage", "source.idf", parameter, 10, "candidate.idf", "hash", "apply"),
+        ("set_parameter", "source.idf", parameter, None, "candidate.idf", None, {"target-1": 1.0}, "hash", "apply"),
     ]
 
 

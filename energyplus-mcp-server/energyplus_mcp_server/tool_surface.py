@@ -19,7 +19,9 @@ SUPPORTED_MODES = frozenset({"domains", "masters", "hybrid"})
 DOMAIN_TOOLS = {
     "envelope": "envelope_manager",
     "internal_loads": "internal_load_manager",
+    "schedules": "schedule_manager",
     "hvac": "hvac_manager",
+    "service_water": "service_water_manager",
     "outputs": "outputs_manager",
     "geometry": "geometry_manager",
 }

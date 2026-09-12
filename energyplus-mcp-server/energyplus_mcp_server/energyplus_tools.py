@@ -3368,22 +3368,25 @@ class EnergyPlusManager:
 
     def adjust_parameter_percentage(
         self, idf_path: str, parameter: str, percentage_change: float, output_path: str,
+        expected_model_sha256: str | None = None, mode: str = "apply",
     ) -> Dict[str, Any]:
         """Apply a complete, signed percentage plan to a separate IDF copy."""
         return self._apply_parameter_edit(
             idf_path, parameter, percentage_change, output_path,
-            operation="adjust_percentage",
+            operation="adjust_percentage", expected_model_sha256=expected_model_sha256,
+            mode=mode,
         )
 
     def set_parameter(
         self, idf_path, parameter, value, output_path, target_ids=None,
-        assignments=None, expected_model_sha256=None,
+        assignments=None, expected_model_sha256=None, mode="apply",
     ) -> Dict[str, Any]:
         """Set inspected semantic targets to absolute values in a separate IDF copy."""
         return self._apply_parameter_edit(
             idf_path, parameter, value, output_path, operation="set_parameter",
             target_ids=target_ids, assignments=assignments,
             expected_model_sha256=expected_model_sha256,
+            mode=mode,
         )
 
     # Deprecated compatibility aliases.  The workflow facade calls these so
@@ -3409,11 +3412,13 @@ class EnergyPlusManager:
 
     def _apply_parameter_edit(
         self, idf_path, parameter, value, output_path, operation="perturb",
-        target_ids=None, assignments=None, expected_model_sha256=None,
+        target_ids=None, assignments=None, expected_model_sha256=None, mode="apply",
     ) -> Dict[str, Any]:
         """Validate and apply a complete plan to a separate candidate IDF."""
         from .utils import model_parameters
 
+        if mode not in {"apply", "dry_run"}:
+            raise ValueError("mode must be 'apply' or 'dry_run'")
         percentage = model_parameters.percentage_value(value) if operation in ("perturb", "adjust_percentage") else None
         if parameter not in model_parameters.PARAMETERS:
             raise ValueError(f"Unsupported semantic parameter: {parameter}")
@@ -3448,8 +3453,9 @@ class EnergyPlusManager:
         for change in planned:
             if isinstance(change["after"], (int, float)):
                 model_parameters.check_numeric_range(change["object"], change["field"], change["after"])
-            setattr(change["object"], change["field"], change["after"])
-        if operation in ("set", "set_parameter"):
+            if mode == "apply":
+                setattr(change["object"], change["field"], change["after"])
+        if mode == "apply" and operation in ("set", "set_parameter"):
             updated = model_parameters.inspect_absolute(idf, parameter)
             actual = {target["target_id"]: target["value"] for target in updated["targets"]}
             expected = assignments if assignments is not None else {
@@ -3463,9 +3469,10 @@ class EnergyPlusManager:
                 raise ValueError("Absolute target verification failed; no candidate saved")
         changes = [{key: value for key, value in change.items() if key != "object"}
                    for change in planned]
-        resolved_output.parent.mkdir(parents=True, exist_ok=True)
-        idf.save(str(resolved_output))
-        return {
+        if mode == "apply":
+            resolved_output.parent.mkdir(parents=True, exist_ok=True)
+            idf.save(str(resolved_output))
+        result = {
             "success": True, "parameter": parameter, "action": operation,
             "requested_percent": percentage,
             "requested_value": value if operation in ("set", "set_parameter") else None,
@@ -3475,7 +3482,11 @@ class EnergyPlusManager:
             "after": [{"object_name": c["object_name"], "field": c["field"], "value": c["after"]} for c in changes],
             "changes": changes, "skipped": [], "coverage": "complete",
             "changed": any(change["before"] != change["after"] for change in changes),
+            "mode": mode,
         }
+        if mode == "apply":
+            result["output_sha256"] = sha256(resolved_output.read_bytes()).hexdigest()
+        return result
 
     def parameter_capabilities(
         self, idf_path: Optional[str] = None, parameters: Optional[List[str]] = None,
