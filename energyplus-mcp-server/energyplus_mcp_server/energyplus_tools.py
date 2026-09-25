@@ -517,7 +517,13 @@ class EnergyPlusManager:
             
             # Check for materials referenced in constructions
             constructions = idf.idfobjects.get("Construction", [])
-            materials = idf.idfobjects.get("Material", []) + idf.idfobjects.get("Material:NoMass", [])
+            materials = [
+                material
+                for object_type, objects in idf.idfobjects.items()
+                if object_type.upper() == "MATERIAL"
+                or object_type.upper().startswith(("MATERIAL:", "WINDOWMATERIAL:"))
+                for material in objects
+            ]
             material_names = {getattr(mat, 'Name', '') for mat in materials}
             
             for construction in constructions:

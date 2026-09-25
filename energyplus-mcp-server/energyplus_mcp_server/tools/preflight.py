@@ -119,7 +119,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 try:
                     validation = ep_manager.validate_idf(idf_path)
                     validation_obj = json.loads(validation) if isinstance(validation, str) else validation
-                    err_cnt = validation_obj.get("errors_count") if isinstance(validation_obj, dict) else None
+                    err_cnt = validation_obj.get("summary", {}).get("total_errors") if isinstance(validation_obj, dict) else None
                     if isinstance(err_cnt, int) and err_cnt > 0:
                         issues.append(f"Validation errors: {err_cnt}")
                         verdict = False
@@ -139,4 +139,3 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             return f"File not found: {str(e)}"
         except Exception as e:
             return f"Error in model_preflight: {str(e)}"
-
