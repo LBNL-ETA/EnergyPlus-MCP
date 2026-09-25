@@ -73,7 +73,8 @@ operation; it must not substitute a percentage for an absolute setter.
 Calibration runs add monthly electricity/gas meters and SQLite output to a
 working copy, leaving the source untouched. Each unique run has `in.idf`,
 `run_record.json`, and `run/eplusout.sql`. The calibration service consumes
-those artifacts; neither MCP calls the other. Execution is still synchronous.
+those artifacts; neither MCP calls the other. Simulations are queued and can
+run in parallel (`simulation_manager` `run_batch`, or parallel `run` calls).
 
 ## Expanded-operation verification
 

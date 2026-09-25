@@ -37,6 +37,20 @@ values inside `sample_files` or the EnergyPlus installation; new default
 outputs should use `path_utils.derived_model_path` or `report_path`.
 `tests/test_workspace_layout.py` enforces the layout.
 
+## Simulation queue
+
+`simulation_manager` runs every simulation through
+`utils/simulation_queue.py`: staged run directories, a thread pool capped by
+`MCP_MAX_CONCURRENT_SIMULATIONS`, and one EnergyPlus process per run launched
+by `utils/energyplus_process.py` with its own working directory and process
+group. Do not reintroduce eppy's `IDF.run`: it changes the process-wide
+working directory and `sys.stderr`, which breaks concurrent runs and the stdio
+transport. `run_record.json` is written at submission and at each status
+change; calibration-MCP counts every `<runs_dir>/<run_id>/run_record.json`
+against the budget and accepts `completed` as success.
+`tests/test_simulation_queue.py` uses a fake `energyplus` executable to check
+overlap, the cap, cancel, timeout, and the calibration layout.
+
 ## Ownership and local repository map
 
 Han Li explicitly clarified that the existing calibration evaluation framework

@@ -458,7 +458,7 @@ The `mode` field in `config.yaml` controls how tools are organized and registere
 ### Core Tools (Always Available)
 - `model_preflight` — Load, validate, info, resolve_paths, readiness (preflight)
 - `model_upgrade` — Read-only transition planning and copy-only one-model IDF upgrades
-- `simulation_manager` — Run/update simulations, status
+- `simulation_manager` — Run simulations (one, several in parallel, or a batch), check/wait/cancel queued runs, update SimulationControl/RunPeriod
 - `idf_modification` — Direct IDD-validated object changes when no semantic domain operation exists
 - `example_library` — Read-only search of the installed EnergyPlus ExampleFiles and DataSets, returning objects with `idf_modification` field names
 - `list_skills` / `get_skill` — Step-by-step agent skills bundled with the server
@@ -547,7 +547,7 @@ bounds and bounded-trial recipes. See [absolute setters and bounds](docs/calibra
 [percentage-slice verification](docs/calibration-idf-mvp.md), and the
 [migration map](docs/tool-surface-migration.md).
 
-For calibration evidence, opt into the existing synchronous `simulation_manager` with `action: "run"` and `runs_dir`. It creates one unique run directory at `<runs_dir>/<run_id>/`, writes `run_record.json` for each launched success or failure, snapshots the staged input as `in.idf`, and produces monthly `Electricity:Facility` and `NaturalGas:Facility` meters in `run/eplusout.sql`. Normal simulation calls that omit `runs_dir` retain their existing behavior.
+For calibration evidence, pass `runs_dir` to `simulation_manager` (`run`, `submit`, or `run_batch`). Each run gets one unique directory at `<runs_dir>/<run_id>/`, with the staged input as `in.idf`, monthly `Electricity:Facility` and `NaturalGas:Facility` meters in `run/eplusout.sql`, and a `run_record.json` written when the run is queued and updated as it runs and finishes (`queued`, `running`, then `completed`, `failed`, or `cancelled`). Because the record exists from submission, a queued candidate already counts against the calibration budget. Use `run_batch` to simulate a sweep's candidates in parallel; see [Concurrent simulations](#concurrent-simulations).
 
 The first qualified measured-bill SF pilot is documented in
 [SF native-IDF calibration pilot](docs/sf-native-idf-calibration-pilot.md).
@@ -592,6 +592,48 @@ so a different `EPLUS_VER` needs no inventory update. Set
 `EPLUS_EXAMPLE_INVENTORY_CACHE` to a writable directory to reuse the
 inventory across stdio sessions. Library files are only read; `get_objects`
 accepts only files in the inventory.
+
+### Concurrent simulations
+
+`simulation_manager` sends every simulation through one queue that runs up to
+`MCP_MAX_CONCURRENT_SIMULATIONS` EnergyPlus processes at once (default: one
+fewer than the CPU count). Each run is a separate EnergyPlus process with its
+own run directory, working directory, and log file (`energyplus.log`), so
+simulations do not interfere with each other and the server keeps answering
+other tool calls while they run.
+
+| Action | Behavior |
+|---|---|
+| `run` | Runs one simulation and returns the result when it finishes. Parallel `run` calls from an agent execute concurrently. |
+| `submit` | Queues one simulation and returns its `run_id` immediately. |
+| `run_batch` | Queues a list of runs (`runs`: dicts with `idf_path` and optional `weather_file`, `output_directory`, `runs_dir`, `run_id`, `annual`, `design_day`, ...; missing keys come from the call) and waits for them, up to `timeout_seconds` if given (`0` returns the run IDs at once). |
+| `status` | With `run_id`/`run_ids`: each run's state and, once finished, its result and an error summary. Without ids: the queue (limit, running, queued, recently finished). |
+| `wait` | Waits for `run_ids` (`wait_for`: `all` or `any`) up to `timeout_seconds` (default 600) and reports finished and pending runs. |
+| `cancel` | Cancels queued or running runs; a running EnergyPlus is stopped with its helper processes. |
+
+```json
+{
+  "tool": "simulation_manager",
+  "arguments": {
+    "action": "run_batch",
+    "runs_dir": "work/runs/campaign-01",
+    "weather_file": "USA_IL_Chicago-OHare.Intl.AP.725300_TMY3.epw",
+    "runs": [
+      {"idf_path": "work/models/derived/cand_lpd_minus10.idf", "run_id": "lpd-m10"},
+      {"idf_path": "work/models/derived/cand_lpd_plus10.idf", "run_id": "lpd-p10"}
+    ]
+  }
+}
+```
+
+Every run writes `run_record.json` (in its run directory, or at
+`<runs_dir>/<run_id>/` for calibration runs) and updates it at each status
+change. When a server starts, records left `queued` or `running` by a server
+process that no longer exists are marked `interrupted`. The limit applies per
+server process: two stdio sessions each run their own queue, so lower the
+limit when several agents simulate on the same machine.
+`MCP_SIMULATION_TIMEOUT_SECONDS` (default 0, no limit) stops runs that exceed
+a wall-clock limit.
 
 ### Sample files and the work area
 
@@ -913,6 +955,8 @@ The server auto-detects EnergyPlus installation and uses sensible defaults.
 - `MCP_EXPOSE_MASTERS`, `MCP_EXPOSE_DOMAIN_MANAGERS`: mode controls when no YAML mode is supplied
 - `MCP_ENABLE_WORKFLOW_COMPATIBILITY`: opt in to deprecated workflow-manager aliases
 - `EPLUS_EXAMPLE_INVENTORY_CACHE`: optional directory for persisting the `example_library` inventory across sessions
+- `MCP_MAX_CONCURRENT_SIMULATIONS`: EnergyPlus processes allowed at once (default: CPU count minus one)
+- `MCP_SIMULATION_TIMEOUT_SECONDS`: wall-clock limit per simulation; `0` (default) means no limit
 
 ### Tool Surface Profiles (config.yaml)
 

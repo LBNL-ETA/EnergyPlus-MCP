@@ -31,6 +31,17 @@ branch since the README/install-instructions cleanup.
   or the EnergyPlus installation are rejected. A bare filename or the older
   `sample_files/<name>` path still resolves.
 
+- **Concurrent simulations.** `simulation_manager` queues runs and executes
+  up to `MCP_MAX_CONCURRENT_SIMULATIONS` (default: CPU count minus one) at
+  once, each as its own EnergyPlus process with its own run and working
+  directory. New actions: `submit`, `run_batch`, `wait`, `cancel`, and a real
+  `status` (per run, or the whole queue). `run` keeps returning the finished
+  result but no longer blocks the server, so parallel `run` calls overlap.
+  `MCP_SIMULATION_TIMEOUT_SECONDS` optionally stops runs that exceed a
+  wall-clock limit. Every run writes `run_record.json` at submission and at
+  each status change; records orphaned by a stopped server are marked
+  `interrupted` on the next start.
+
 ### Changed
 - Edits without an explicit `output_path` write to `work/models/derived/`
   instead of beside the source model; HVAC diagrams and geometry viewers
@@ -39,6 +50,15 @@ branch since the README/install-instructions cleanup.
 - Bare filenames resolve in the workspace (including `sample_files`
   categories and `work/models`) before EnergyPlus `ExampleFiles`.
 - `idf_modification` resolves `idf_path` like the other tools.
+- Simulations and the output variable/meter discovery runs launch the
+  EnergyPlus command line directly instead of eppy's `IDF.run`, which changed
+  the server's working directory and `sys.stderr` and (for meter discovery)
+  printed to stdout, corrupting the stdio transport. Default run directories
+  now carry a random suffix, so two runs of one model in the same second no
+  longer share a directory.
+- Calibration run records start as `queued` (with `started_at` updated when
+  EnergyPlus launches) instead of `running`.
+- `simulation_timeout` now defaults to 0 (no limit); it was never enforced.
 - `illustrative examples/` is gone: its two models are now
   `sample_files/mcp_paper/5ZoneAirCooled_baseline.idf` and
   `5ZoneAirCooled_improved.idf`, its weather file is in `sample_files/weather/`,
@@ -70,6 +90,8 @@ branch since the README/install-instructions cleanup.
   (if the agent sees a flat list like `modify_lights`, the user is on `main`).
 
 ### Fixed
+- The `.err` parser matched only unindented lines, but EnergyPlus indents
+  every message, so warning, severe, and fatal counts were always zero.
 - Repo URL and folder name across all install snippets
   (`tsbyq/EnergyPlus_MCP` → `LBNL-ETA/EnergyPlus-MCP`).
 - VS Code client config updated from the outdated `"mcp.servers"` key in

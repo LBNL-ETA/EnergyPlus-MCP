@@ -61,7 +61,9 @@ class ErrorParser:
                 lines = f.readlines()
                 
             for line_num, line in enumerate(lines, 1):
-                line = line.rstrip()
+                # EnergyPlus indents every message ("   ** Severe  ** ..."),
+                # and the patterns below match from the start of the line.
+                line = line.strip()
                 
                 # Skip empty lines
                 if not line:

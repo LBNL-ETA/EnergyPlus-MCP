@@ -70,29 +70,6 @@ def test_registered_dispatch_passes_parameter_and_reports_errors():
     assert calls == [("source.idf", "COP", 10, "candidate.idf")]
 
 
-def test_simulation_keeps_eppy_temporary_input_in_staged_run(monkeypatch, tmp_path):
-    class FakeIDF:
-        def __init__(self, path):
-            self.idfname = path
-
-        def save(self, path):
-            from pathlib import Path
-            Path(path).write_text("Version,25.1;")
-
-        def run(self, **kwargs):
-            assert self.idfname == str(tmp_path / "runs" / "staged" / "in.idf")
-            assert kwargs["verbose"] == "q"
-            raise RuntimeError("staging checked; simulator deliberately not launched")
-
-    manager = EnergyPlusManager.__new__(EnergyPlusManager)
-    monkeypatch.setattr(manager, "_resolve_idf_path", lambda path: path)
-    monkeypatch.setattr(manager, "_assert_simulation_version_matches", lambda path: {})
-    monkeypatch.setattr(manager, "_ensure_calibration_outputs", lambda idf: None)
-    monkeypatch.setattr("energyplus_mcp_server.energyplus_tools.IDF", FakeIDF)
-    result = json.loads(manager.run_simulation("/read-only/source.idf", runs_dir=str(tmp_path / "runs"), run_id="staged"))
-    assert "staging checked" in result["error"]
-
-
 def test_absolute_batch_rejects_conflicting_shared_fields(monkeypatch):
     shared = object()
     fake = SimpleNamespace(plan_set=lambda idf, parameter, value, ids: ([{

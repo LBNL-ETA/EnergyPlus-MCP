@@ -4,6 +4,7 @@ Handles discovery, validation, and addition of EnergyPlus output variables.
 """
 
 import os
+import uuid
 import json
 import logging
 import time
@@ -14,6 +15,8 @@ import shutil
 from difflib import get_close_matches
 
 from eppy.modeleditor import IDF
+
+from . import energyplus_process
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +217,7 @@ class OutputVariableManager:
         # Create temporary file
         temp_path = os.path.join(
             self.config.paths.temp_dir, 
-            f"temp_variable_discovery_{datetime.now().strftime('%Y%m%d_%H%M%S')}.idf"
+            f"temp_variable_discovery_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.idf"
         )
         idf.save(temp_path)
         
@@ -225,7 +228,7 @@ class OutputVariableManager:
         try:
             # Create output directory
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_dir = os.path.join(self.config.paths.temp_dir, f"variable_discovery_{timestamp}")
+            output_dir = os.path.join(self.config.paths.temp_dir, f"variable_discovery_{timestamp}_{uuid.uuid4().hex[:8]}")
             os.makedirs(output_dir, exist_ok=True)
             
             # Check for weather file
@@ -235,12 +238,6 @@ class OutputVariableManager:
                 logger.info(f"Using default weather file: {weather_file}")
             else:
                 logger.warning("Default weather file not found, running without weather data")
-            
-            # Load IDF for simulation (with weather file if available)
-            if weather_file:
-                idf = IDF(temp_idf_path, weather_file)
-            else:
-                idf = IDF(temp_idf_path)
             
             # Run simulation with minimal options
             simulation_options = {
@@ -258,7 +255,27 @@ class OutputVariableManager:
                 simulation_options['weather'] = weather_file
             
             start_time = datetime.now()
-            result = idf.run(**simulation_options)
+            # A separate EnergyPlus process with its own working directory;
+            # eppy's IDF.run would change the server's cwd and stdout.
+            command = energyplus_process.build_command(
+                self.config.energyplus.executable_path,
+                temp_idf_path,
+                output_dir,
+                weather=simulation_options.get('weather'),
+                idd=self.config.energyplus.idd_path,
+                annual=simulation_options['annual'],
+                design_day=simulation_options['design_day'],
+                readvars=simulation_options['readvars'],
+                expandobjects=simulation_options['expandobjects'],
+                output_prefix=simulation_options['output_prefix'],
+                output_suffix=simulation_options['output_suffix'],
+            )
+            exit_code = energyplus_process.run(
+                command, output_dir, os.path.join(output_dir, "energyplus.log"),
+                timeout_seconds=self.config.server.simulation_timeout,
+            )
+            if exit_code != 0:
+                raise RuntimeError(f"EnergyPlus exited with code {exit_code}; see {output_dir}")
             end_time = datetime.now()
             
             return {
@@ -266,7 +283,7 @@ class OutputVariableManager:
                 "output_directory": output_dir,
                 "duration": str(end_time - start_time),
                 "weather_file": weather_file,
-                "result": str(result) if result else "Completed"
+                "result": "Completed"
             }
             
         except Exception as e:

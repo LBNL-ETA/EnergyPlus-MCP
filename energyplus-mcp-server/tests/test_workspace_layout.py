@@ -2,14 +2,12 @@
 
 import asyncio
 import inspect
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from energyplus_mcp_server.config import PathConfig
-from energyplus_mcp_server.energyplus_tools import EnergyPlusManager
 from energyplus_mcp_server.tool_surface import load_tool_surface, register_tool_surface
 from energyplus_mcp_server.utils.idf_modifier import IDFModifier
 from energyplus_mcp_server.utils.output_guard import guard_tool
@@ -208,27 +206,3 @@ def test_registered_tools_are_guarded(tmp_path):
         asyncio.run(tools["simulation_manager"](action="run", idf_path="Box.idf",
                                                 output_directory="sample_files/runs"))
 
-
-def test_simulation_stages_eppy_temporary_input_in_run_directory(monkeypatch, tmp_path):
-    source = _write(tmp_path / "sample_files" / "basic" / "Box.idf")
-    run_dir = tmp_path / "work" / "runs" / "box"
-
-    class FakeIDF:
-        def __init__(self, path):
-            self.idfname = path
-
-        def save(self, path):
-            Path(path).write_text("Version,26.1;")
-
-        def run(self, **kwargs):
-            assert self.idfname == str(run_dir / "in.idf")
-            raise RuntimeError("staging checked; simulator deliberately not launched")
-
-    manager = EnergyPlusManager.__new__(EnergyPlusManager)
-    monkeypatch.setattr(manager, "_resolve_idf_path", lambda path: path)
-    monkeypatch.setattr("energyplus_mcp_server.energyplus_tools.IDF", FakeIDF)
-    result = json.loads(manager.run_simulation(str(source), output_directory=str(run_dir),
-                                               include_sqlite_output=False))
-
-    assert "staging checked" in result["error"]
-    assert sorted(p.name for p in source.parent.iterdir()) == ["Box.idf"]

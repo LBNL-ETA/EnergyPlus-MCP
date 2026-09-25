@@ -9,6 +9,8 @@ import math
 import re
 import shutil
 import subprocess
+import functools
+import threading
 import time
 import uuid
 from hashlib import sha256
@@ -20,7 +22,7 @@ from eppy.modeleditor import IDF
 from eppy import hvacbuilder
 from eppy.useful_scripts import loopdiagram
 from eppy import walk_hvac
-from datetime import datetime
+from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.patches import FancyBboxPatch
@@ -36,7 +38,9 @@ from plotly.subplots import make_subplots
 
 from .config import get_config, Config
 from .utils.diagrams import HVACDiagramGenerator
-from .utils.path_utils import derived_model_path, report_path
+from .utils.path_utils import check_writable_path, derived_model_path, report_path
+from .utils import energyplus_process
+from .utils.simulation_queue import SimulationJob, SimulationQueue, mark_interrupted_runs, server_identity
 from .utils.schedules import ScheduleValueParser
 from .utils.output_variables import OutputVariableManager
 from .utils.output_meters import OutputMeterManager
@@ -64,6 +68,13 @@ class EnergyPlusManager:
         self.lights_manager = LightsManager()
         self.electric_equipment_manager = ElectricEquipmentManager()
         self.error_parser = ErrorParser()
+        self.simulation_queue = SimulationQueue(
+            self.config.server.max_concurrent_simulations,
+            self.config.server.simulation_timeout,
+        )
+        interrupted = mark_interrupted_runs(self.config.paths.output_dir)
+        if interrupted:
+            logger.warning("Marked %d run(s) left by a stopped server as interrupted", len(interrupted))
         
         logger.info(f"EnergyPlus Manager initialized with IDD: {self.config.energyplus.idd_path}")
     
@@ -451,6 +462,7 @@ class EnergyPlusManager:
                     "version": self.config.server.version,
                     "log_level": self.config.server.log_level,
                     "simulation_timeout": self.config.server.simulation_timeout,
+                    "max_concurrent_simulations": self.simulation_queue.max_concurrency,
                     "tool_timeout": self.config.server.tool_timeout
                 },
                 "debug_mode": self.config.debug_mode
@@ -3242,7 +3254,8 @@ class EnergyPlusManager:
         record = {
             "run_id": resolved_run_id,
             "name": Path(idf_path).stem,
-            "status": "running",
+            "status": "queued",
+            # Reservation time; replaced by the process start once it launches.
             "started_at": time.time(),
             "input_idf": idf_path,
             "run_directory": str(output_dir),
@@ -3591,182 +3604,269 @@ class EnergyPlusManager:
         return payload
 
     # ------------------------ Simulation Execution ------------------------
-    def run_simulation(self, idf_path: str, weather_file: str = None, 
-                       output_directory: str = None, annual: bool = True,
-                       design_day: bool = False, readvars: bool = True,
-                       expandobjects: bool = True, include_sqlite_output: bool = True,
-                       runs_dir: str = None, run_id: str = None) -> str:
-        """Run EnergyPlus; ``runs_dir`` opts into the calibration evidence layout."""
+    # eppy parses IDFs against class-level IDD state; staging runs from several
+    # worker threads at once must not interleave those parses.
+    _EPPY_LOCK = threading.Lock()
+
+    def submit_simulation(self, idf_path: str, weather_file: str = None,
+                          output_directory: str = None, annual: bool = True,
+                          design_day: bool = False, readvars: bool = True,
+                          expandobjects: bool = True, include_sqlite_output: bool = True,
+                          runs_dir: str = None, run_id: str = None) -> SimulationJob:
+        """Stage a run, queue it, and return the queued job without waiting.
+
+        ``runs_dir`` opts into the calibration evidence layout
+        ``<runs_dir>/<run_id>/{run_record.json, in.idf, run/}``. Otherwise the
+        run directory is ``output_directory`` (default
+        ``work/runs/<model>_simulation_<time>_<id>``) and holds the outputs,
+        the staged ``in.idf``, and ``run_record.json``.
+        """
+        if not idf_path:
+            raise ValueError("Missing required parameter: idf_path")
+        queue = self.simulation_queue
         calibration_context: Optional[Dict[str, Any]] = None
         resolved_idf_path = idf_path
         resolved_weather_path = None
-        simulation_options: Dict[str, Any] = {}
+        version_info: Optional[Dict[str, str]] = None
         try:
             if runs_dir:
                 if output_directory is not None:
                     raise ValueError("runs_dir owns the calibration output directory; omit output_directory")
-                if not idf_path:
-                    raise ValueError("Missing required parameter: idf_path")
+                check_writable_path(self.config, runs_dir, "runs_dir")
                 # Reject bad paths, incompatible models, and invalid IDFs before
                 # reserving a physical-run record.
                 resolved_idf_path = self._resolve_idf_path(idf_path)
                 version_info = self._assert_simulation_version_matches(resolved_idf_path)
                 if weather_file:
                     resolved_weather_path = self._resolve_weather_file_path(weather_file)
-                idf = IDF(resolved_idf_path, resolved_weather_path) if resolved_weather_path else IDF(resolved_idf_path)
+                with self._EPPY_LOCK:
+                    idf = IDF(resolved_idf_path, resolved_weather_path) if resolved_weather_path else IDF(resolved_idf_path)
                 calibration_context = self._start_calibration_run(runs_dir, run_id, resolved_idf_path)
-                output_directory = str(calibration_context["output_dir"])
-                self._ensure_calibration_outputs(idf)
+                job_id = calibration_context["run_id"]
+                output_dir = Path(calibration_context["output_dir"])
                 run_input_idf = calibration_context["run_root"] / "in.idf"
-                idf.save(str(run_input_idf))
-                # eppy.run creates a temporary IDF beside idfname. Keep that
-                # write in the staged run, not beside a read-only source model.
-                idf.idfname = str(run_input_idf)
-                calibration_context["record"].update({
-                    "input_idf": resolved_idf_path,
+                with self._EPPY_LOCK:
+                    self._ensure_calibration_outputs(idf)
+                    idf.save(str(run_input_idf))
+                record_path = calibration_context["record_path"]
+                record = calibration_context["record"]
+                record.update({
                     "model_path": resolved_idf_path,
                     "run_input_idf": str(run_input_idf),
                     **version_info,
                 })
-                calibration_context["record_path"].write_text(json.dumps(calibration_context["record"], indent=2))
+                # No prefix plus the legacy suffix gives the calibration
+                # contract's names: eplusout.sql, eplusout.err, ...
+                output_prefix, output_suffix = None, "L"
             else:
                 resolved_idf_path = self._resolve_idf_path(idf_path)
                 if weather_file:
                     resolved_weather_path = self._resolve_weather_file_path(weather_file)
+                stem = Path(resolved_idf_path).stem
+                job_id = run_id or f"{stem}_{uuid.uuid4().hex[:12]}"
+                if Path(job_id).name != job_id:
+                    raise ValueError("run_id must be a single directory name")
                 if output_directory is None:
-                    idf_name = Path(resolved_idf_path).stem
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    output_directory = str(Path(self.config.paths.output_dir) / f"{idf_name}_simulation_{timestamp}")
-                idf = IDF(resolved_idf_path, resolved_weather_path) if resolved_weather_path else IDF(resolved_idf_path)
-                if include_sqlite_output:
-                    self._ensure_output_sqlite(idf)
-                version_info = None
-
-            logger.info(f"Starting simulation for: {resolved_idf_path}")
-            if resolved_weather_path:
-                logger.info(f"Using weather file: {resolved_weather_path}")
-            os.makedirs(output_directory, exist_ok=True)
-            if not calibration_context:
-                # eppy.run creates a temporary IDF beside idfname. Stage the
-                # input in the run directory so nothing is written beside a
-                # read-only source model (sample_files or ExampleFiles).
-                run_input_idf = Path(output_directory) / "in.idf"
-                idf.save(str(run_input_idf))
-                idf.idfname = str(run_input_idf)
-
+                    output_dir = Path(self.config.paths.output_dir) / f"{stem}_simulation_{timestamp}_{uuid.uuid4().hex[:6]}"
+                else:
+                    check_writable_path(self.config, output_directory, "output_directory")
+                    output_dir = Path(output_directory).expanduser()
+                    if not output_dir.is_absolute():
+                        output_dir = Path(self.config.paths.workspace_root) / output_dir
+                # Check before staging so a busy directory's in.idf is never replaced.
+                queue.ensure_available(job_id, output_dir)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                run_input_idf = output_dir / "in.idf"
+                with self._EPPY_LOCK:
+                    idf = IDF(resolved_idf_path, resolved_weather_path) if resolved_weather_path else IDF(resolved_idf_path)
+                    if include_sqlite_output:
+                        self._ensure_output_sqlite(idf)
+                    idf.save(str(run_input_idf))
+                record_path = output_dir / "run_record.json"
+                record = {
+                    "run_id": job_id,
+                    "name": stem,
+                    "input_idf": resolved_idf_path,
+                    "run_input_idf": str(run_input_idf),
+                    "run_directory": str(output_dir),
+                }
+                output_prefix, output_suffix = stem, "C"
+            record.update({"weather_file": resolved_weather_path, **server_identity()})
             simulation_options = {
-                "output_directory": output_directory,
+                "output_directory": str(output_dir),
                 "annual": annual,
                 "design_day": design_day,
                 "readvars": readvars,
                 "expandobjects": expandobjects,
-                "output_prefix": "eplusout" if calibration_context else Path(resolved_idf_path).stem,
-                "output_suffix": "L" if calibration_context else "C",
-                # stdout is the JSON-RPC transport when the server runs over
-                # stdio. Eppy's verbose mode forwards EnergyPlus progress to
-                # stdout and corrupts that protocol, so keep simulations quiet;
-                # errors remain available in the staged .err artifact.
-                "verbose": "q",
+                "output_prefix": output_prefix or "eplus",
+                "output_suffix": output_suffix,
             }
-            if resolved_weather_path:
-                simulation_options["weather"] = resolved_weather_path
-
-            start_time = datetime.now()
-            try:
-                result = idf.run(**simulation_options)
-                end_time = datetime.now()
-                duration = end_time - start_time
-                output_files = self._find_simulation_outputs(output_directory)
-                simulation_result: Dict[str, Any] = {
-                    "success": True,
-                    "input_idf": resolved_idf_path,
-                    "weather_file": resolved_weather_path,
-                    "output_directory": output_directory,
-                    "simulation_duration": str(duration),
-                    "simulation_options": simulation_options,
-                    "include_sqlite_output": include_sqlite_output,
-                    "output_files": output_files,
-                    "energyplus_result": str(result) if result else "Simulation completed",
-                    "timestamp": end_time.isoformat(),
-                }
-                if calibration_context:
-                    sql_path = self._canonical_calibration_sql(output_directory)
-                    self._finish_calibration_run(
-                        calibration_context,
-                        "completed",
-                        input_idf=resolved_idf_path,
-                        weather_file=resolved_weather_path,
-                        eplusout_sql=sql_path,
-                        **(version_info or {}),
-                    )
-                    simulation_result.update({
-                        "run_id": calibration_context["run_id"],
-                        "run_record": str(calibration_context["record_path"]),
-                        "eplusout_sql": sql_path,
-                        "model_path": resolved_idf_path,
-                        "run_input_idf": calibration_context["record"]["run_input_idf"],
-                    })
-                logger.info(f"Simulation completed successfully in {duration}")
-                return json.dumps(simulation_result, indent=2)
-            except Exception as error:
-                error_prefix = "eplusout" if calibration_context else Path(resolved_idf_path).stem
-                error_file = Path(output_directory) / f"{error_prefix}.err"
-                if calibration_context and not error_file.exists():
-                    # Eppy's legacy ``L`` suffix turns the canonical prefix
-                    # into ``eplusoutout``. Preserve the public run layout but
-                    # surface the actual simulator error instead of claiming
-                    # its .err artifact is absent.
-                    error_file = Path(output_directory) / "eplusoutout.err"
-                error_details = ""
-                if error_file.exists():
-                    try:
-                        error_details = error_file.read_text()
-                    except OSError:
-                        error_details = "Could not read error file"
-                simulation_result = {
-                    "success": False,
-                    "input_idf": resolved_idf_path,
-                    "weather_file": resolved_weather_path,
-                    "output_directory": output_directory,
-                    "error": str(error),
-                    "error_details": error_details,
-                    "simulation_options": simulation_options,
-                    "timestamp": datetime.now().isoformat(),
-                }
-                if calibration_context:
-                    self._finish_calibration_run(
-                        calibration_context,
-                        "failed",
-                        input_idf=resolved_idf_path,
-                        weather_file=resolved_weather_path,
-                        error=str(error),
-                        **(version_info or {}),
-                    )
-                    simulation_result.update({
-                        "run_id": calibration_context["run_id"],
-                        "run_record": str(calibration_context["record_path"]),
-                    })
-                logger.error(f"Simulation failed: {error}")
-                return json.dumps(simulation_result, indent=2)
+            command = energyplus_process.build_command(
+                self.config.energyplus.executable_path,
+                run_input_idf,
+                output_dir,
+                weather=resolved_weather_path,
+                idd=self.config.energyplus.idd_path,
+                annual=annual,
+                design_day=design_day,
+                readvars=readvars,
+                expandobjects=expandobjects,
+                output_prefix=output_prefix,
+                output_suffix=output_suffix,
+            )
+            job = SimulationJob(
+                run_id=job_id,
+                name=Path(resolved_idf_path).stem,
+                command=command,
+                output_directory=output_dir,
+                record_path=Path(record_path),
+                record=record,
+                finalize=functools.partial(
+                    self._finalize_simulation,
+                    input_idf=resolved_idf_path,
+                    weather_file=resolved_weather_path,
+                    simulation_options=simulation_options,
+                    include_sqlite_output=include_sqlite_output,
+                    calibration=calibration_context is not None,
+                ),
+            )
+            return queue.submit(job)
         except Exception as error:
             if calibration_context:
+                # The reserved run record stays, marked failed, so the
+                # calibration budget sees the attempt.
                 self._finish_calibration_run(
-                    calibration_context,
-                    "failed",
-                    input_idf=str(resolved_idf_path),
+                    calibration_context, "failed", input_idf=str(resolved_idf_path), error=str(error),
+                )
+                job = SimulationJob(
+                    run_id=calibration_context["run_id"],
+                    name=Path(str(resolved_idf_path)).stem,
+                    command=[],
+                    output_directory=Path(calibration_context["output_dir"]),
+                    record_path=Path(calibration_context["record_path"]),
+                    record=calibration_context["record"],
+                    finalize=lambda job: job.result or {},
+                    status="failed",
                     error=str(error),
                 )
-                return json.dumps({
+                job.ended_at = time.time()
+                job.result = {
                     "success": False,
                     "input_idf": str(resolved_idf_path),
                     "output_directory": str(calibration_context["output_dir"]),
                     "error": str(error),
                     "run_id": calibration_context["run_id"],
+                    "status": "failed",
                     "run_record": str(calibration_context["record_path"]),
                     "timestamp": datetime.now().isoformat(),
-                }, indent=2)
+                }
+                return queue.add_finished(job)
             logger.error(f"Error setting up simulation for {resolved_idf_path}: {error}")
             raise RuntimeError(f"Error running simulation: {error}")
+
+    def _finalize_simulation(self, job: SimulationJob, *, input_idf: str, weather_file: Optional[str],
+                             simulation_options: Dict[str, Any], include_sqlite_output: bool,
+                             calibration: bool) -> Dict[str, Any]:
+        """Build the tool result for a run whose process has ended (or never started)."""
+        output_directory = str(job.output_directory)
+        common = {
+            "input_idf": input_idf,
+            "weather_file": weather_file,
+            "output_directory": output_directory,
+            "simulation_options": simulation_options,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if job.error is None and job.exit_code == 0:
+            result: Dict[str, Any] = {
+                "success": True,
+                **common,
+                "simulation_duration": str(timedelta(seconds=round((job.ended_at or time.time()) - (job.started_at or job.created_at), 3))),
+                "include_sqlite_output": include_sqlite_output,
+                "output_files": self._find_simulation_outputs(output_directory),
+                "energyplus_result": "Simulation completed",
+            }
+            if calibration:
+                sql_path = self._canonical_calibration_sql(output_directory)
+                job.record["eplusout_sql"] = sql_path
+                result.update({
+                    "eplusout_sql": sql_path,
+                    "model_path": input_idf,
+                    "run_input_idf": job.record.get("run_input_idf"),
+                })
+            logger.info("Simulation %s completed", job.run_id)
+            return result
+
+        error_prefix = "eplusout" if calibration else Path(input_idf).stem
+        error_file = Path(output_directory) / f"{error_prefix}.err"
+        if calibration and not error_file.exists():
+            error_file = Path(output_directory) / "eplusoutout.err"
+        error_details = ""
+        if error_file.exists():
+            try:
+                error_details = error_file.read_text(errors="replace")
+            except OSError:
+                error_details = "Could not read error file"
+        error = job.error or f"EnergyPlus exited with code {job.exit_code}"
+        fatal = [line.strip() for line in error_details.splitlines() if re.search(r"\*\*\s*Fatal\s*\*\*", line)]
+        if fatal and job.error is None:
+            error = f"{error}: {fatal[0]}"
+        logger.error("Simulation %s failed: %s", job.run_id, error)
+        return {"success": False, **common, "error": error, "error_details": error_details}
+
+    def run_simulation(self, idf_path: str, weather_file: str = None, 
+                       output_directory: str = None, annual: bool = True,
+                       design_day: bool = False, readvars: bool = True,
+                       expandobjects: bool = True, include_sqlite_output: bool = True,
+                       runs_dir: str = None, run_id: str = None) -> str:
+        """Run EnergyPlus and wait for it; ``runs_dir`` opts into the calibration evidence layout.
+
+        The run goes through the shared queue, so it counts toward the
+        concurrency limit alongside runs submitted by other tool calls.
+        """
+        job = self.submit_simulation(
+            idf_path, weather_file, output_directory, annual, design_day, readvars,
+            expandobjects, include_sqlite_output=include_sqlite_output,
+            runs_dir=runs_dir, run_id=run_id,
+        )
+        self.simulation_queue.wait_sync(job)
+        return json.dumps(job.result, indent=2)
+
+    def simulation_status(self, job: SimulationJob) -> Dict[str, Any]:
+        """Summarize a tracked run; finished runs include their result."""
+        status = job.summary()
+        if job.result is not None:
+            result = dict(job.result)
+            result.pop("error_details", None)
+            status["result"] = result
+            if not result.get("success"):
+                err_files = sorted(Path(job.output_directory).glob("*.err"))
+                if err_files:
+                    parsed = self.error_parser.parse_error_file(str(err_files[0]))
+                    if parsed.get("exists"):
+                        status["error_summary"] = {
+                            "err_file": str(err_files[0]),
+                            "counts": parsed.get("counts"),
+                            "first_fatal": (parsed.get("fatal_errors") or [None])[0],
+                            "first_severe": (parsed.get("severe_errors") or [None])[0],
+                        }
+        return status
+
+    def find_run_record(self, run_id: str, runs_dir: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Read a run's record from disk, for runs this server process is not tracking."""
+        if runs_dir:
+            candidates = [Path(runs_dir).expanduser() / run_id / "run_record.json"]
+        else:
+            output_root = Path(self.config.paths.output_dir)
+            candidates = [output_root / run_id / "run_record.json", *output_root.glob("*/run_record.json")]
+        for path in candidates:
+            try:
+                record = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if record.get("run_id") == run_id:
+                return {"run_record": str(path), **record}
+        return None
         
 
     def _resolve_weather_file_path(self, weather_file: str) -> str:

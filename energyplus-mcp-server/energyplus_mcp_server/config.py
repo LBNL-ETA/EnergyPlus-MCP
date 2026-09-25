@@ -75,8 +75,13 @@ class ServerConfig:
     name: str = "energyplus-mcp-server"
     version: str = "0.1.0"
     log_level: str = "INFO"
-    simulation_timeout: int = 300  # seconds
+    # Wall-clock limit per EnergyPlus run; 0 means no limit.
+    # Env: MCP_SIMULATION_TIMEOUT_SECONDS.
+    simulation_timeout: int = 0  # seconds
     tool_timeout: int = 60  # seconds
+    # EnergyPlus processes allowed at once; 0 means one fewer than the CPU
+    # count. Env: MCP_MAX_CONCURRENT_SIMULATIONS.
+    max_concurrent_simulations: int = 0
 
 
 @dataclass
@@ -111,6 +116,7 @@ class Config:
     def __post_init__(self):
         """Set up configuration after initialization"""
         self._setup_transport()
+        self._setup_simulation()
         self._setup_auth()
         self._setup_energyplus_paths()
         self._setup_logging()
@@ -133,6 +139,23 @@ class Config:
             except ValueError:
                 raise ValueError(f"MCP_HTTP_PORT/PORT must be an integer, got: {port_str!r}")
         self.transport.http_path = os.getenv("MCP_HTTP_PATH", self.transport.http_path)
+
+    def _setup_simulation(self):
+        """Read simulation concurrency and timeout env vars; fail closed on bad values."""
+        for env_name, attribute in (
+            ("MCP_MAX_CONCURRENT_SIMULATIONS", "max_concurrent_simulations"),
+            ("MCP_SIMULATION_TIMEOUT_SECONDS", "simulation_timeout"),
+        ):
+            raw = os.getenv(env_name)
+            if raw is None or not raw.strip():
+                continue
+            try:
+                value = int(raw)
+            except ValueError:
+                raise ValueError(f"{env_name} must be a non-negative integer, got: {raw!r}")
+            if value < 0:
+                raise ValueError(f"{env_name} must be a non-negative integer, got: {raw!r}")
+            setattr(self.server, attribute, value)
 
     _LABEL_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
     _MIN_TOKEN_LEN = 32
