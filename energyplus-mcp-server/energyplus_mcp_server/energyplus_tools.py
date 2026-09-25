@@ -36,6 +36,7 @@ from plotly.subplots import make_subplots
 
 from .config import get_config, Config
 from .utils.diagrams import HVACDiagramGenerator
+from .utils.path_utils import derived_model_path, report_path
 from .utils.schedules import ScheduleValueParser
 from .utils.output_variables import OutputVariableManager
 from .utils.output_meters import OutputMeterManager
@@ -283,7 +284,9 @@ class EnergyPlusManager:
             logger.debug(f"Resolved source path: {resolved_source_path}")
             
             # Resolve target path (for creation)
-            resolved_target_path = resolve_path(self.config, target_path, must_exist=False, description="target file")
+            # A bare target filename becomes a working copy in work/models/derived.
+            resolved_target_path = resolve_path(self.config, target_path, must_exist=False, description="target file",
+                                                default_dir=self.config.paths.derived_models_dir)
             logger.debug(f"Resolved target path: {resolved_target_path}")
             
             # Check if source file is readable
@@ -1162,7 +1165,7 @@ class EnergyPlusManager:
             # Determine output path
             if output_path is None:
                 path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             # Save modified IDF
             idf.save(output_path)
@@ -1248,7 +1251,7 @@ class EnergyPlusManager:
             # Determine output path
             if output_path is None:
                 path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             # Save modified IDF
             idf.save(output_path)
@@ -1374,7 +1377,7 @@ class EnergyPlusManager:
             # Determine output path
             if output_path is None:
                 path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             # Apply modifications
             result = self.people_manager.modify_people_objects(
@@ -1451,7 +1454,7 @@ class EnergyPlusManager:
             # Determine output path
             if output_path is None:
                 path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             # Apply modifications
             result = self.lights_manager.modify_lights_objects(
@@ -1528,7 +1531,7 @@ class EnergyPlusManager:
             # Determine output path
             if output_path is None:
                 path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             # Apply modifications
             result = self.electric_equipment_manager.modify_electric_equipment_objects(
@@ -1617,7 +1620,7 @@ class EnergyPlusManager:
             # Determine output path
             if output_path is None:
                 path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_with_outputs{path_obj.suffix}")
+                output_path = derived_model_path(self.config, str(path_obj), "_with_outputs")
             
             # Add variables to IDF
             addition_result = self.output_var_manager.add_variables_to_idf(
@@ -1732,7 +1735,7 @@ class EnergyPlusManager:
             # Determine output path
             if output_path is None:
                 path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_with_meters{path_obj.suffix}")
+                output_path = derived_model_path(self.config, str(path_obj), "_with_meters")
             
             # Add meters to IDF
             addition_result = self.output_meter_manager.add_meters_to_idf(
@@ -2619,7 +2622,7 @@ class EnergyPlusManager:
             if output_path is None:
                 path_obj = Path(resolved_path)
                 diagram_name = f"{path_obj.stem}_hvac_diagram" if not loop_name else f"{path_obj.stem}_{loop_name}_diagram"
-                output_path = str(path_obj.parent / f"{diagram_name}.{format}")
+                output_path = report_path(self.config, f"{diagram_name}.{format}")
             
             # Method 1: Use topology data for custom diagram (PRIMARY)
             try:
@@ -2779,7 +2782,7 @@ class EnergyPlusManager:
             # Determine output path
             if output_path is None:
                 path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             modifications_made = []
             
@@ -2900,7 +2903,7 @@ class EnergyPlusManager:
             # Determine output path
             if output_path is None:
                 path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             all_surfs = idf.idfobjects['BuildingSurface:Detailed']
             if location.casefold() == "wall":
@@ -3000,7 +3003,7 @@ class EnergyPlusManager:
             # Determine output path
             if output_path is None:
                 path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             window_surfs = idf.idfobjects['FenestrationSurface:Detailed']
             window_surfs = [x for x in window_surfs if x.Surface_Type.casefold() == "Window".casefold()]
@@ -3086,7 +3089,7 @@ class EnergyPlusManager:
             # Determine output path
             if output_path is None:
                 path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             object_type = "ZoneInfiltration:DesignFlowRate"
             infiltration_objs = idf.idfobjects[object_type]
@@ -3643,6 +3646,13 @@ class EnergyPlusManager:
             if resolved_weather_path:
                 logger.info(f"Using weather file: {resolved_weather_path}")
             os.makedirs(output_directory, exist_ok=True)
+            if not calibration_context:
+                # eppy.run creates a temporary IDF beside idfname. Stage the
+                # input in the run directory so nothing is written beside a
+                # read-only source model (sample_files or ExampleFiles).
+                run_input_idf = Path(output_directory) / "in.idf"
+                idf.save(str(run_input_idf))
+                idf.idfname = str(run_input_idf)
 
             simulation_options = {
                 "output_directory": output_directory,
@@ -5227,7 +5237,7 @@ class EnergyPlusManager:
             base_name = path_obj.stem
             
             if output_path is None:
-                output_dir = path_obj.parent
+                output_dir = Path(report_path(self.config, ""))
             else:
                 output_dir = Path(output_path).parent
                 if Path(output_path).suffix == '.html':

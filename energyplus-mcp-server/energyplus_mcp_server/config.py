@@ -33,23 +33,40 @@ class EnergyPlusConfig:
 
 @dataclass
 class PathConfig:
-    """Path configuration"""
+    """Path configuration.
+
+    ``sample_files`` holds read-only curated inputs. Everything the server
+    writes goes under ``work/``: uploaded and derived models, simulation runs
+    (``output_dir``), and reports.
+    """
     workspace_root: str = "/workspace/energyplus-mcp-server"
     sample_files_path: str = ""
     temp_dir: str = "/tmp"
-    output_dir: str = "/workspace/energyplus-mcp-server/outputs"
-    
+    output_dir: str = ""
+    work_dir: str = ""
+    uploads_dir: str = ""
+    derived_models_dir: str = ""
+    reports_dir: str = ""
+
     def __post_init__(self):
         """Set default paths after initialization"""
         # Override workspace_root from environment if set
         workspace_env = os.getenv('WORKSPACE_ROOT')
         if workspace_env:
             self.workspace_root = workspace_env
-            # Update output_dir to use the new workspace_root
-            self.output_dir = os.path.join(self.workspace_root, "outputs")
-        
+
         if not self.sample_files_path:
             self.sample_files_path = os.path.join(self.workspace_root, "sample_files")
+        if not self.work_dir:
+            self.work_dir = os.path.join(self.workspace_root, "work")
+        if not self.uploads_dir:
+            self.uploads_dir = os.path.join(self.work_dir, "models", "uploads")
+        if not self.derived_models_dir:
+            self.derived_models_dir = os.path.join(self.work_dir, "models", "derived")
+        if not self.output_dir:
+            self.output_dir = os.path.join(self.work_dir, "runs")
+        if not self.reports_dir:
+            self.reports_dir = os.path.join(self.work_dir, "reports")
 
 
 @dataclass
@@ -244,11 +261,17 @@ class Config:
         if not os.path.exists(self.paths.sample_files_path):
             logger.warning(f"Sample files directory not found: {self.paths.sample_files_path}")
         
-        # Create output directory if it doesn't exist (tolerant in dev/test)
-        try:
-            os.makedirs(self.paths.output_dir, exist_ok=True)
-        except OSError:
-            logger.warning("Could not create output dir %s", self.paths.output_dir)
+        # Create the writable work area if it doesn't exist (tolerant in dev/test)
+        for directory in (
+            self.paths.output_dir,
+            self.paths.uploads_dir,
+            self.paths.derived_models_dir,
+            self.paths.reports_dir,
+        ):
+            try:
+                os.makedirs(directory, exist_ok=True)
+            except OSError:
+                logger.warning("Could not create work directory %s", directory)
 
         logger.info("Configuration loaded and validated successfully")
 

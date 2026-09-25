@@ -175,6 +175,12 @@ cython_debug/
 
 # For simulation outputs
 energyplus-mcp-server/outputs/
+# Writable work area: keep its README and .gitkeep scaffolding, ignore
+# every generated model, upload, run, and report.
+energyplus-mcp-server/work/**
+!energyplus-mcp-server/work/**/
+!energyplus-mcp-server/work/README.md
+!energyplus-mcp-server/work/**/.gitkeep
 docs/energyplus_mcp_strategy/output/
 docs/energyplus_mcp_strategy/previews/
 energyplus-mcp-server/.DS_Store

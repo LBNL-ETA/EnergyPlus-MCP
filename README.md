@@ -593,6 +593,30 @@ so a different `EPLUS_VER` needs no inventory update. Set
 inventory across stdio sessions. Library files are only read; `get_objects`
 accepts only files in the inventory.
 
+### Sample files and the work area
+
+The server separates the inputs it ships from everything it writes:
+
+| Location | Contents | Writable |
+|---|---|---|
+| `sample_files/basic/` | Compact EnergyPlus models for general workflows | No |
+| `sample_files/mcp_paper/` | EnergyPlus-MCP paper case studies (`5ZoneAirCooled_baseline`/`_improved`, `iUnit_Golden`) | No |
+| `sample_files/weather/` | Weather files for the samples | No |
+| `work/models/uploads/` | User-provided models | Yes |
+| `work/models/derived/` | Copies and edited models; the default for edits without `output_path` | Yes |
+| `work/runs/` | Simulation outputs (the default `output_directory`) | Yes |
+| `work/reports/` | HVAC diagrams, geometry viewers, and other reports | Yes |
+
+Every tool's `output_path`, `output_directory`, `target_path`, and `runs_dir`
+is checked when it is called: a destination inside `sample_files/` or the
+EnergyPlus installation (including `ExampleFiles/`, `DataSets/`, and
+`WeatherData/`) is rejected. Simulations stage their input copy in the run
+directory, so running a sample does not write beside it. A bare filename such
+as `5ZoneAirCooled.idf` resolves in `sample_files` (any category),
+`work/models/uploads`, and `work/models/derived` before the EnergyPlus
+installation, and the older `sample_files/<name>` form still works.
+`work/` is ignored by Git apart from its README and `.gitkeep` placeholders.
+
 ## Usage Examples
 
 ### Basic Workflow
@@ -603,7 +627,7 @@ accepts only files in the inventory.
      "tool": "model_preflight",
      "arguments": {
        "action": "load",
-       "idf_path": "sample_files/1ZoneUncontrolled.idf"
+       "idf_path": "sample_files/basic/1ZoneUncontrolled.idf"
      }
    }
    ```
@@ -614,7 +638,7 @@ accepts only files in the inventory.
      "tool": "geometry_manager",
      "arguments": {
        "action": "extract_and_summary",
-       "idf_path": "sample_files/1ZoneUncontrolled.idf"
+       "idf_path": "sample_files/basic/1ZoneUncontrolled.idf"
      }
    }
    ```
@@ -625,8 +649,8 @@ accepts only files in the inventory.
      "tool": "simulation_manager",
      "arguments": {
        "action": "run",
-       "idf_path": "sample_files/1ZoneUncontrolled.idf",
-       "weather_file": "sample_files/USA_CA_San.Francisco.Intl.AP.724940_TMY3.epw",
+       "idf_path": "sample_files/basic/1ZoneUncontrolled.idf",
+       "weather_file": "sample_files/weather/USA_CA_San.Francisco.Intl.AP.724940_TMY3.epw",
        "annual": true
      }
    }
@@ -638,7 +662,7 @@ accepts only files in the inventory.
      "tool": "post_processing",
      "arguments": {
        "action": "interactive_plot",
-       "output_directory": "outputs/1ZoneUncontrolled",
+       "output_directory": "work/runs/1ZoneUncontrolled",
        "file_type": "variable"
      }
    }
@@ -650,7 +674,7 @@ accepts only files in the inventory.
      "tool": "post_processing",
      "arguments": {
        "action": "parse_errors",
-       "err_file_path": "outputs/1ZoneUncontrolled/1ZoneUncontrolled.err"
+       "err_file_path": "work/runs/1ZoneUncontrolled/1ZoneUncontrolled.err"
      }
    }
    ```
@@ -664,7 +688,7 @@ accepts only files in the inventory.
   "tool": "hvac_loop_inspect",
   "arguments": {
     "action": "discover",
-    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
     "types": "all"
   }
 }
@@ -675,7 +699,7 @@ accepts only files in the inventory.
   "tool": "hvac_loop_inspect",
   "arguments": {
     "action": "visualize",
-    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
     "loop_name": "VAV Sys 1",
     "image_format": "png"
   }
@@ -688,8 +712,8 @@ accepts only files in the inventory.
   "tool": "model_preflight",
   "arguments": {
     "action": "readiness",
-    "idf_path": "sample_files/5ZoneAirCooled.idf",
-    "weather_file": "sample_files/USA_CA_San.Francisco.Intl.AP.724940_TMY3.epw"
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
+    "weather_file": "sample_files/weather/USA_CA_San.Francisco.Intl.AP.724940_TMY3.epw"
   }
 }
 ```
@@ -699,7 +723,7 @@ accepts only files in the inventory.
 {
   "tool": "get_outputs",
   "arguments": {
-    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
     "type": "both",
     "discover_available": true,
     "run_days": 1
@@ -728,7 +752,7 @@ accepts only files in the inventory.
   "arguments": {
     "action": "copy",
     "source_path": "5ZoneAirCooled.idf",
-    "target_path": "outputs/5ZoneAirCooled_copy.idf",
+    "target_path": "work/models/derived/5ZoneAirCooled_copy.idf",
     "file_types": [".idf"],
     "mode": "dry_run"
   }
@@ -764,7 +788,7 @@ accepts only files in the inventory.
 {
   "tool": "inspect_model",
   "arguments": {
-    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
     "focus": ["summary"]
   }
 }
@@ -775,7 +799,7 @@ accepts only files in the inventory.
 {
   "tool": "modify_basic_parameters",
   "arguments": {
-    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
     "mode": "dry_run",
     "operations": [
       { "op": "people.update", "params": { "modifications": [{"target": "all", "field_updates": {"Number_of_People": 10}}] } },
@@ -790,7 +814,7 @@ accepts only files in the inventory.
 {
   "tool": "modify_basic_parameters",
   "arguments": {
-    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
     "capabilities": true,
     "detail": "summary"
   }
@@ -825,7 +849,7 @@ The Inspector opens a browser UI where you can list registered tools and invoke 
   "tool": "hvac_loop_inspect",
   "arguments": {
     "action": "discover",
-    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
     "types": "all"
   }
 }
@@ -837,7 +861,7 @@ The Inspector opens a browser UI where you can list registered tools and invoke 
   "tool": "hvac_loop_inspect",
   "arguments": {
     "action": "topology",
-    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
     "loop_name": "VAV Sys 1",
     "detail": "detailed"
   }
@@ -871,7 +895,8 @@ energyplus-mcp-server/
 │   ├── domains/                 # Domain managers (envelope, HVAC, internal loads, outputs, geometry)
 │   ├── tools/                   # Master / core tools (inspect, modify, simulation, preflight, files, post, server)
 │   └── utils/                   # Specialized utilities (idf_modifier, geometry, plots, …)
-├── sample_files/                # Sample IDF and weather files
+├── sample_files/                # Read-only curated inputs: basic/, mcp_paper/, weather/
+├── work/                        # Writable area (Git-ignored): models/uploads, models/derived, runs, reports
 ├── tests/                       # Unit tests
 └── pyproject.toml               # Dependencies
 ```
@@ -883,8 +908,7 @@ The server auto-detects EnergyPlus installation and uses sensible defaults.
 ### Environment variables
 
 - `EPLUS_IDD_PATH`: Path to EnergyPlus IDD file
-- `EPLUS_SAMPLE_PATH`: Custom sample files directory
-- `EPLUS_OUTPUT_PATH`: Output directory for results
+- `WORKSPACE_ROOT`: Server workspace; `sample_files/` and `work/` are resolved under it
 - `MCP_CONFIG_PATH`: Override path to `config.yaml` (default: `energyplus-mcp-server/config.yaml`)
 - `MCP_EXPOSE_MASTERS`, `MCP_EXPOSE_DOMAIN_MANAGERS`: mode controls when no YAML mode is supplied
 - `MCP_ENABLE_WORKFLOW_COMPATIBILITY`: opt in to deprecated workflow-manager aliases

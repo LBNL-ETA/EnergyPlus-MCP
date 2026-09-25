@@ -41,10 +41,10 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
 
         Examples:
             # Extract geometry with summary
-            {"action": "extract_and_summary", "idf_path": "sample_files/5ZoneAirCooled.idf"}
+            {"action": "extract_and_summary", "idf_path": "sample_files/basic/5ZoneAirCooled.idf"}
 
             # Generate HTML viewer string
-            {"action": "generate_html_str", "idf_path": "sample_files/5ZoneAirCooled.idf"}
+            {"action": "generate_html_str", "idf_path": "sample_files/basic/5ZoneAirCooled.idf"}
 
             # List capabilities
             {"action": "capabilities"}

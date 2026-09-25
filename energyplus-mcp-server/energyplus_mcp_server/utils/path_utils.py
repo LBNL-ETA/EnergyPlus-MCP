@@ -112,32 +112,47 @@ def resolve_path(config: Config, file_path: str, file_types: List[str] = None,
         else:
             return os.path.join(config.paths.output_dir, file_path)
     
-    # For input paths (must_exist=True), search in various locations
-    search_paths = [
+    # For input paths (must_exist=True), search the workspace first, then the
+    # EnergyPlus installation, so a curated sample wins over an ExampleFiles
+    # model with the same name.
+    workspace_paths = [
         # 1. Relative to sample files directory
         config.paths.sample_files_path,
         # 2. Relative to workspace root
         config.paths.workspace_root,
-        # 3. Relative to EnergyPlus example files (if applicable)
+        # 3. Models placed in or produced by the writable work area
+        getattr(config.paths, "uploads_dir", None),
+        getattr(config.paths, "derived_models_dir", None),
+    ]
+    installation_paths = [
+        # 5. Relative to EnergyPlus example files (if applicable)
         config.energyplus.example_files_path if file_types and '.idf' in file_types else None,
-        # 4. Relative to EnergyPlus weather data (if applicable)
+        # 6. Relative to EnergyPlus weather data (if applicable)
         config.energyplus.weather_data_path if file_types and '.epw' in file_types else None,
     ]
-    
-    # Remove None values
-    search_paths = [path for path in search_paths if path]
-    
-    # Try each search path
-    for search_path in search_paths:
-        if not search_path or not os.path.exists(search_path):
-            continue
-            
-        candidate_path = os.path.join(search_path, file_path)
-        if os.path.exists(candidate_path):
-            if file_types and not any(candidate_path.lower().endswith(ext.lower()) for ext in file_types):
+
+    def _search(search_paths: List[Optional[str]]) -> Optional[str]:
+        for search_path in search_paths:
+            if not search_path or not os.path.exists(search_path):
                 continue
-            return os.path.abspath(candidate_path)
-    
+            candidate_path = os.path.join(search_path, file_path)
+            if os.path.exists(candidate_path):
+                if file_types and not any(candidate_path.lower().endswith(ext.lower()) for ext in file_types):
+                    continue
+                return os.path.abspath(candidate_path)
+        return None
+
+    found = _search(workspace_paths)
+    if found:
+        return found
+
+    # 4. sample_files is organized in category folders (basic/, weather/, ...).
+    # A bare filename, or a pre-category "sample_files/<name>" path, still
+    # resolves by searching that tree.
+    found = _find_in_sample_files(config, file_path, file_types) or _search(installation_paths)
+    if found:
+        return found
+
     # Try as-is (relative to current directory)
     if os.path.exists(file_path):
         abs_path = os.path.abspath(file_path)
@@ -153,6 +168,99 @@ def resolve_path(config: Config, file_path: str, file_types: List[str] = None,
     
     # If we get here, the file doesn't exist anywhere we looked
     raise FileNotFoundError(f"{description} not found: {file_path}")
+
+
+def _find_in_sample_files(config: Config, file_path: str,
+                          file_types: Optional[List[str]]) -> Optional[str]:
+    """Find a bare or ``sample_files/<name>`` path anywhere under sample_files."""
+    parts = Path(file_path).parts
+    if len(parts) == 2 and parts[0] == "sample_files":
+        name = parts[1]
+    elif len(parts) == 1:
+        name = parts[0]
+    else:
+        return None
+    sample_root = config.paths.sample_files_path
+    if not sample_root or not os.path.exists(sample_root):
+        return None
+    for root, _, filenames in sorted(os.walk(sample_root)):
+        if name not in filenames:
+            continue
+        candidate = os.path.join(root, name)
+        if file_types and not any(candidate.lower().endswith(ext.lower()) for ext in file_types):
+            continue
+        return os.path.abspath(candidate)
+    return None
+
+
+def read_only_roots(config: Config) -> List[tuple[str, Path]]:
+    """Directories whose contents the server must never write or overwrite.
+
+    Curated ``sample_files`` and the EnergyPlus installation (its ExampleFiles,
+    DataSets, and WeatherData) are inputs only; outputs belong under ``work/``.
+    """
+    workspace = Path(config.paths.workspace_root).expanduser().resolve()
+    candidates = [
+        ("curated sample_files", config.paths.sample_files_path),
+        ("EnergyPlus installation", getattr(config.energyplus, "installation_path", "")),
+        ("EnergyPlus ExampleFiles", getattr(config.energyplus, "example_files_path", "")),
+        ("EnergyPlus WeatherData", getattr(config.energyplus, "weather_data_path", "")),
+    ]
+    roots: List[tuple[str, Path]] = []
+    for label, directory in candidates:
+        if not directory:
+            continue
+        root = Path(directory).expanduser().resolve()
+        # Never let a misconfigured ancestor (for example "/") lock the workspace.
+        if workspace == root or workspace.is_relative_to(root):
+            continue
+        roots.append((label, root))
+    return roots
+
+
+def check_writable_path(config: Config, path: str, description: str = "output path") -> None:
+    """Raise ValueError when ``path`` would write into a read-only input tree.
+
+    A relative path is checked against both the workspace root and the current
+    directory, because tools resolve relative outputs against either one.
+    """
+    candidate = Path(path).expanduser()
+    if candidate.is_absolute():
+        resolved = [candidate.resolve()]
+    else:
+        resolved = [
+            (Path(config.paths.workspace_root) / candidate).resolve(),
+            (Path.cwd() / candidate).resolve(),
+        ]
+    for label, root in read_only_roots(config):
+        for target in resolved:
+            if target == root or target.is_relative_to(root):
+                raise ValueError(
+                    f"{description} '{path}' is inside the read-only {label} ({root}). "
+                    "Write models under work/models/derived/, simulation outputs under "
+                    "work/runs/, and reports under work/reports/."
+                )
+
+
+def derived_model_path(config: Config, source_path: str, suffix: str = "_modified") -> str:
+    """Default output for an edited model: ``work/models/derived/<stem><suffix>.idf``.
+
+    Creates the directory so the caller can save straight to the path.
+    """
+    source = Path(source_path)
+    directory = Path(config.paths.derived_models_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    return str(directory / f"{source.stem}{suffix}{source.suffix or '.idf'}")
+
+
+def report_path(config: Config, filename: str) -> str:
+    """Default location for a generated report, diagram, or viewer.
+
+    Creates ``work/reports`` so the caller can save straight to the path.
+    """
+    directory = Path(config.paths.reports_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    return str(directory / filename)
 
 
 # Convenience functions for common use cases
@@ -197,7 +305,7 @@ def find_weather_files_by_name(config: Config, partial_name: str) -> List[str]:
             continue
             
         search_path = Path(search_dir)
-        for file_path in search_path.glob("*.epw"):
+        for file_path in search_path.rglob("*.epw"):
             file_name_lower = file_path.name.lower()
             
             # Check if partial name is in the file name (case insensitive)
@@ -296,14 +404,22 @@ def list_files(config: Config,
                extensions: Optional[List[str]] = None,
                limit: int = 100) -> List[dict]:
     """
-    List files from sample_files and optionally EnergyPlus ExampleFiles and WeatherData.
+    List files from sample_files, the work area's uploaded and derived models,
+    and optionally EnergyPlus ExampleFiles and WeatherData.
 
-    Returns a list of file info dicts (see get_file_info), each with an extra 'source' key.
+    Returns a list of file info dicts (see get_file_info), each with an extra
+    'source' key and a 'category' key (its folder relative to that source, such
+    as 'basic' or 'weather' for sample files).
     """
     roots: List[tuple[str, str]] = []
     # Always include repo sample files if configured
     if getattr(config.paths, 'sample_files_path', None):
         roots.append((config.paths.sample_files_path, 'sample'))
+    # Models the user or agent is working on
+    if getattr(config.paths, 'uploads_dir', None):
+        roots.append((config.paths.uploads_dir, 'upload'))
+    if getattr(config.paths, 'derived_models_dir', None):
+        roots.append((config.paths.derived_models_dir, 'derived'))
     if include_example_files and getattr(config.energyplus, 'example_files_path', None):
         roots.append((config.energyplus.example_files_path, 'example'))
     if include_weather_data and getattr(config.energyplus, 'weather_data_path', None):
@@ -317,8 +433,11 @@ def list_files(config: Config,
         try:
             if not root or not os.path.exists(root):
                 continue
-            for dirpath, _, filenames in os.walk(root):
-                for fname in filenames:
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames.sort()
+                for fname in sorted(filenames):
+                    if fname.startswith('.'):
+                        continue
                     fpath = os.path.join(dirpath, fname)
                     if exts and os.path.splitext(fname)[1].lower() not in exts:
                         continue
@@ -328,6 +447,8 @@ def list_files(config: Config,
                     seen.add(key)
                     info = get_file_info(fpath)
                     info['source'] = source
+                    category = os.path.relpath(dirpath, root)
+                    info['category'] = '' if category == '.' else category
                     results.append(info)
                     if limit and len(results) >= limit:
                         break

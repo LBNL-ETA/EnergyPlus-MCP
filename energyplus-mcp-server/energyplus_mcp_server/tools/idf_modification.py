@@ -18,6 +18,7 @@ import json
 import logging
 
 from energyplus_mcp_server.utils.idf_modifier import IDFModifier
+from energyplus_mcp_server.utils.path_utils import resolve_idf_path
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,9 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         - object_type: EnergyPlus object type (e.g., "OutputControl:Table:Style", "Lights", "Zone")
         - fields: Dictionary of field names and values to modify
         - target: Target filter - "all", "name:ObjectName", or "zone:ZoneName" (default: "all")
-        - output_path: Optional output path (if not specified, creates modified copy)
+        - output_path: Optional output path (if not specified, writes a timestamped copy
+          to work/models/derived/). Paths inside sample_files/ or the EnergyPlus
+          installation are rejected; those inputs are read-only.
 
         Examples:
         1. Add OutputControl:Table:Style (if doesn't exist):
@@ -173,12 +176,16 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             if not object_type:
                 return json.dumps({"error": "Missing required parameter: object_type"}, indent=2)
 
+            # Accept the same bare or relative names as the other tools, e.g. a
+            # model copied into work/models/derived.
+            idf_path = resolve_idf_path(config, idf_path)
+
             if action == "modify":
                 # Validate fields for modify action
                 if not fields:
                     return json.dumps({"error": "Missing required parameter: fields"}, indent=2)
                 # Use IDFModifier for the actual modification
-                modifier = IDFModifier()
+                modifier = IDFModifier(output_dir=config.paths.derived_models_dir)
 
                 # Convert fields dict to list format for IDFModifier
                 modifications = [{"field": k, "value": v} for k, v in fields.items()]
@@ -204,7 +211,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     return json.dumps({"error": "Missing required parameter: fields"}, indent=2)
 
                 # Use IDFModifier to add a new object
-                modifier = IDFModifier()
+                modifier = IDFModifier(output_dir=config.paths.derived_models_dir)
 
                 # Perform object creation with IDD validation
                 result = modifier.add_object(
@@ -222,7 +229,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
 
             if action == "delete":
                 # Use IDFModifier to delete objects
-                modifier = IDFModifier()
+                modifier = IDFModifier(output_dir=config.paths.derived_models_dir)
 
                 # Perform deletion
                 result = modifier.delete_objects(

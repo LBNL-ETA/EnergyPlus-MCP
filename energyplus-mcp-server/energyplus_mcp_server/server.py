@@ -74,7 +74,9 @@ SERVER_INSTRUCTIONS = (
     "list_skills before a multi-step task you have not done with this server, "
     "and get_skill('learn-from-examples') before adding an object type you have "
     "not modelled, which uses example_library to read EnergyPlus's shipped "
-    "example models and DataSets."
+    "example models and DataSets. sample_files and the EnergyPlus installation "
+    "are read-only; edited models go to work/models/derived, simulations to "
+    "work/runs, and reports to work/reports."
 )
 mcp = FastMCP(config.server.name, instructions=SERVER_INSTRUCTIONS, **_mcp_kwargs)
 

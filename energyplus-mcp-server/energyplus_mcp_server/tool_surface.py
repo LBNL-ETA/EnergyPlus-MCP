@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from energyplus_mcp_server.utils.output_guard import GuardedMCP
+
 logger = logging.getLogger(__name__)
 
 SUPPORTED_MODES = frozenset({"domains", "masters", "hybrid"})
@@ -181,7 +183,7 @@ def _register_checked(register: Any, expected: set[str], mcp: Any, ep_manager: A
     duplicates = before & expected
     if duplicates:
         raise RuntimeError(f"duplicate MCP tool registration attempted: {sorted(duplicates)}")
-    register(mcp, ep_manager, config)
+    register(GuardedMCP(mcp, config), ep_manager, config)
     added = _tool_names(mcp) - before
     if added != expected:
         raise RuntimeError(

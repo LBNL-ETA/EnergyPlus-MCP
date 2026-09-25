@@ -35,6 +35,10 @@ class IDFModifier:
     validation against the EnergyPlus IDD schema.
     """
 
+    def __init__(self, output_dir: Optional[str] = None):
+        """``output_dir`` receives auto-named outputs; None keeps them beside the input."""
+        self.output_dir = output_dir
+
     def modify_objects(
         self,
         idf_path: str,
@@ -703,4 +707,6 @@ class IDFModifier:
         """
         path_obj = Path(input_path)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return str(path_obj.parent / f"{path_obj.stem}_modified_{timestamp}.idf")
+        directory = Path(self.output_dir) if self.output_dir else path_obj.parent
+        directory.mkdir(parents=True, exist_ok=True)
+        return str(directory / f"{path_obj.stem}_modified_{timestamp}.idf")

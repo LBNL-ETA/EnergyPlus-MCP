@@ -20,9 +20,19 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
     ) -> str:
         """File utilities for managing EnergyPlus files.
 
+        When asked which models or examples are available, use ``action="list"``
+        rather than the client's local filesystem. Curated inputs live in
+        category folders under ``sample_files`` (``basic``, ``weather``,
+        ``mcp_paper``) and are read-only. Models being worked on live in
+        ``work/models/uploads`` (user-provided) and ``work/models/derived``
+        (edited copies); simulations write to ``work/runs`` and reports to
+        ``work/reports``. Copy a curated model into ``work/models/derived``
+        before modifying it; a bare filename resolves in any of these folders.
+
         Args:
             action: The action to perform. Valid values are:
-                - 'list': List available files in the workspace
+                - 'list': List sample files (with their category) and the models in
+                  work/models/uploads and work/models/derived
                 - 'copy': Copy a file from source to target
             include_example_files: Controls whether to include files from the EnergyPlus installation directory.
                 **DEFAULT IS FALSE - workspace files only.**
@@ -38,7 +48,9 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             extensions: Optional list of file extensions to filter (e.g., ['idf', 'epw']). (for 'list' action only)
             limit: Maximum number of files to return. Default 100. (for 'list' action only)
             source_path: Source file path (required for 'copy' action)
-            target_path: Target file path (required for 'copy' action)
+            target_path: Target file path (required for 'copy' action). A bare filename
+                is placed in work/models/derived; paths inside sample_files or the
+                EnergyPlus installation are rejected.
             file_types: List of file types to copy (for 'copy' action)
             overwrite: Whether to overwrite existing files (for 'copy' action)
             mode: Operation mode - 'apply' to execute, other values to preview

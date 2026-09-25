@@ -25,6 +25,18 @@ each `name` equal to its directory, and call only registered tools:
 inventory from the installed EnergyPlus tree; do not commit a generated
 inventory.
 
+## Sample files and work area
+
+`energyplus-mcp-server/sample_files/` holds read-only curated inputs in
+category folders (`basic/`, `mcp_paper/`, `weather/`); never write there or
+commit simulation outputs there. The server writes only under
+`energyplus-mcp-server/work/` (`models/uploads`, `models/derived`, `runs`,
+`reports`), which Git ignores. `utils/output_guard.py` wraps every registered
+tool and rejects `output_path`/`output_directory`/`target_path`/`runs_dir`
+values inside `sample_files` or the EnergyPlus installation; new default
+outputs should use `path_utils.derived_model_path` or `report_path`.
+`tests/test_workspace_layout.py` enforces the layout.
+
 ## Ownership and local repository map
 
 Han Li explicitly clarified that the existing calibration evaluation framework

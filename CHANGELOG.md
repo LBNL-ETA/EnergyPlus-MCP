@@ -23,8 +23,26 @@ branch since the README/install-instructions cleanup.
   the schedules, curves, constructions, and zones an object uses.
 - `idf_modification` and `file_utils` descriptions point to the skill and the
   example library.
+- **Read-only samples and a writable work area.** `sample_files/` is split
+  into `basic/`, `mcp_paper/`, and `weather/`, and everything the server
+  writes goes under `work/` (`models/uploads`, `models/derived`, `runs`,
+  `reports`), which Git ignores. Tool calls whose `output_path`,
+  `output_directory`, `target_path`, or `runs_dir` points into `sample_files/`
+  or the EnergyPlus installation are rejected. A bare filename or the older
+  `sample_files/<name>` path still resolves.
 
 ### Changed
+- Edits without an explicit `output_path` write to `work/models/derived/`
+  instead of beside the source model; HVAC diagrams and geometry viewers
+  default to `work/reports/`; simulations default to `work/runs/` (was
+  `outputs/`) and stage their input copy in the run directory.
+- Bare filenames resolve in the workspace (including `sample_files`
+  categories and `work/models`) before EnergyPlus `ExampleFiles`.
+- `idf_modification` resolves `idf_path` like the other tools.
+- `illustrative examples/` is gone: its two models are now
+  `sample_files/mcp_paper/5ZoneAirCooled_baseline.idf` and
+  `5ZoneAirCooled_improved.idf`, its weather file is in `sample_files/weather/`,
+  and its committed simulation outputs and diagram were removed.
 - **EnergyPlus default bumped from 25.1.0 to 26.1.0.** The Docker image now
   bakes in [EnergyPlus v26.1.0](https://github.com/NREL/EnergyPlus/releases/tag/v26.1.0)
   (`EPLUS_HASH=6f2e40d102`). Updated in `.devcontainer/Dockerfile`,
