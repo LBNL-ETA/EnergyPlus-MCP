@@ -10,6 +10,20 @@ branch since the README/install-instructions cleanup.
 
 ## [Unreleased]
 
+### Added
+- **Agent skills.** `list_skills` and `get_skill` serve Markdown skills from
+  `energyplus_mcp_server/skills/`, and the server now sends MCP instructions
+  pointing agents to them. First skill: `learn-from-examples`, with a
+  DataSets guide.
+- **`example_library` tool.** Read-only `status`, `object_types`, `search`,
+  `describe`, and `get_objects` over the installed EnergyPlus `ExampleFiles`
+  and `DataSets`. The inventory is rebuilt automatically when the installation
+  changes; `EPLUS_EXAMPLE_INVENTORY_CACHE` optionally persists it.
+  `get_objects` returns eppy field names and follows IDD reference lists to
+  the schedules, curves, constructions, and zones an object uses.
+- `idf_modification` and `file_utils` descriptions point to the skill and the
+  example library.
+
 ### Changed
 - **EnergyPlus default bumped from 25.1.0 to 26.1.0.** The Docker image now
   bakes in [EnergyPlus v26.1.0](https://github.com/NREL/EnergyPlus/releases/tag/v26.1.0)

@@ -65,7 +65,18 @@ else:
 _mcp_kwargs: dict = {}
 if _transport_security is not None:
     _mcp_kwargs["transport_security"] = _transport_security
-mcp = FastMCP(config.server.name, **_mcp_kwargs)
+# Hosts such as Claude Code place server instructions in the agent's context,
+# so this is where agents learn that workflow skills exist.
+SERVER_INSTRUCTIONS = (
+    "EnergyPlus-MCP inspects, edits, and simulates native EnergyPlus IDF models. "
+    "Prefer the domain managers for semantic changes; use idf_modification only "
+    "when no domain operation fits. Step-by-step guides are available: call "
+    "list_skills before a multi-step task you have not done with this server, "
+    "and get_skill('learn-from-examples') before adding an object type you have "
+    "not modelled, which uses example_library to read EnergyPlus's shipped "
+    "example models and DataSets."
+)
+mcp = FastMCP(config.server.name, instructions=SERVER_INSTRUCTIONS, **_mcp_kwargs)
 
 # Initialize EnergyPlus manager
 ep_manager = EnergyPlusManager(config)

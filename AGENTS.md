@@ -15,6 +15,16 @@ user changes. Do not launch building simulations, migrate datasets, change
 other repositories, or install/export plugins merely to answer an architecture
 question.
 
+## Agent skills
+
+Server-delivered skills live in
+`energyplus-mcp-server/energyplus_mcp_server/skills/<name>/SKILL.md` and are
+served by `list_skills`/`get_skill`. Keep them data-only (Markdown/JSON), keep
+each `name` equal to its directory, and call only registered tools:
+`tests/test_skill_catalog.py` enforces this. `example_library` derives its
+inventory from the installed EnergyPlus tree; do not commit a generated
+inventory.
+
 ## Ownership and local repository map
 
 Han Li explicitly clarified that the existing calibration evaluation framework

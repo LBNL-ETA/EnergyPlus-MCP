@@ -29,6 +29,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 ONLY set to True if user explicitly asks for "EnergyPlus installation examples" or
                 "official EnergyPlus example files". When user says "sample files" or "my files",
                 keep this False to search workspace only. (for 'list' action only)
+                To find an example that uses a given object type, or to read objects
+                from one, use the example_library tool instead of listing files.
             include_weather_data: Controls whether to include weather (.epw) files in results.
                 **DEFAULT IS FALSE.**
                 ONLY set to True if user explicitly asks about weather files or .epw files.

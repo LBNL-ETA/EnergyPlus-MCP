@@ -112,7 +112,7 @@ Choose the appropriate setup for your AI assistant or IDE:
 
 3. **Restart Claude Desktop**. The EnergyPlus server should appear in the MCP servers panel.
 
-4. **Verify**: in a new chat, ask *"List the EnergyPlus MCP tools you have access to."* With the default `domains` profile you should see the domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, …) plus core tools (`model_preflight`, `model_upgrade`, `simulation_manager`, `idf_modification`, `file_utils`, `post_processing`, `server_manager`).
+4. **Verify**: in a new chat, ask *"List the EnergyPlus MCP tools you have access to."* With the default `domains` profile you should see the domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, …) plus core tools (`model_preflight`, `model_upgrade`, `simulation_manager`, `idf_modification`, `example_library`, `list_skills`, `get_skill`, `file_utils`, `post_processing`, `server_manager`).
 
 #### Codex
 
@@ -460,6 +460,8 @@ The `mode` field in `config.yaml` controls how tools are organized and registere
 - `model_upgrade` — Read-only transition planning and copy-only one-model IDF upgrades
 - `simulation_manager` — Run/update simulations, status
 - `idf_modification` — Direct IDD-validated object changes when no semantic domain operation exists
+- `example_library` — Read-only search of the installed EnergyPlus ExampleFiles and DataSets, returning objects with `idf_modification` field names
+- `list_skills` / `get_skill` — Step-by-step agent skills bundled with the server
 - `file_utils` — List and copy sample/weather files
 - `post_processing` — Interactive plots
 - `server_manager` — Status, logs, clear logs
@@ -555,6 +557,41 @@ score, but the result did not converge. The generic operation families that
 were missing from that campaign now exist, while model-specific coverage still
 must be inspected before use. Treat the campaign as end-to-end integration proof, not as proof
 that the current parameter surface can calibrate every SF model.
+
+### Agent skills and the example library
+
+The server bundles agent skills: Markdown procedures in
+`energyplus_mcp_server/skills/<name>/SKILL.md` (Agent Skills layout, YAML
+front matter with `name` and `description`, optional Markdown/JSON supporting
+files, no scripts). Agents discover them with `list_skills` and load one with
+`get_skill(name, file=None)`; the server's MCP instructions tell agents that
+the skills exist. Tools are used because every MCP host exposes them; the same
+folder can later be published through the MCP skills extension (SEP-2640) or
+copied into a filesystem skill directory. A test fails if a skill calls a tool
+that the server does not register.
+
+| Skill | Use it to |
+|---|---|
+| `learn-from-examples` | Add an object type you have not modelled by finding a small EnergyPlus example that uses it, reading the object and everything it references, and adapting it to the target model. Includes a DataSets guide for realistic component data. |
+
+`example_library` indexes `ExampleFiles/` (about 760 runnable models for
+26.1) and `DataSets/` under the configured EnergyPlus installation:
+
+| Action | Returns |
+|---|---|
+| `status` | Installed version and library sizes |
+| `object_types` | Valid object type names matching a pattern, with file counts |
+| `search` | Files containing all requested object types, filtered by keywords, `ExampleFiles.html` features, or `max_zones`; smallest native files first |
+| `describe` | A file's description header, catalog metadata, and object counts |
+| `get_objects` | Objects with eppy field names plus the objects they reference, found through IDD reference lists |
+
+The inventory is never maintained by hand. It is built from the installed
+files with a plain-text scan on first use (about 1 s for 26.1), held in
+memory, and rebuilt when a fingerprint of the IDD and library files changes,
+so a different `EPLUS_VER` needs no inventory update. Set
+`EPLUS_EXAMPLE_INVENTORY_CACHE` to a writable directory to reuse the
+inventory across stdio sessions. Library files are only read; `get_objects`
+accepts only files in the inventory.
 
 ## Usage Examples
 
@@ -851,6 +888,7 @@ The server auto-detects EnergyPlus installation and uses sensible defaults.
 - `MCP_CONFIG_PATH`: Override path to `config.yaml` (default: `energyplus-mcp-server/config.yaml`)
 - `MCP_EXPOSE_MASTERS`, `MCP_EXPOSE_DOMAIN_MANAGERS`: mode controls when no YAML mode is supplied
 - `MCP_ENABLE_WORKFLOW_COMPATIBILITY`: opt in to deprecated workflow-manager aliases
+- `EPLUS_EXAMPLE_INVENTORY_CACHE`: optional directory for persisting the `example_library` inventory across sessions
 
 ### Tool Surface Profiles (config.yaml)
 

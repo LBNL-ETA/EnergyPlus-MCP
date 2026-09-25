@@ -118,6 +118,10 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
 
         Note: For semantic operations like "reduce lighting power density",
         use domain-specific managers (e.g., lights_manager) instead.
+
+        Before adding an object type you have not modelled, follow
+        get_skill("learn-from-examples"): example_library returns objects from
+        EnergyPlus's example models with the field names this tool accepts.
         """
         try:
             if action == "capabilities":

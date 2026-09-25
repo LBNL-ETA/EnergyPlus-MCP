@@ -39,6 +39,8 @@ CORE_MODULES = (
     ("files", "file_utils"),
     ("post", "post_processing"),
     ("idf_modification", "idf_modification"),
+    ("example_library", "example_library"),
+    ("skills", ("list_skills", "get_skill")),
 )
 WORKFLOW_COMPAT_MODULES = (
     ("calibration", "calibration_manager"),
@@ -56,6 +58,11 @@ LEGACY_WRAPPER_FLAGS = (
     "MCP_EXPOSE_MODEL_WRAPPERS",
     "MCP_EXPOSE_POST_WRAPPERS",
 )
+
+
+def _as_names(tools: str | tuple[str, ...]) -> tuple[str, ...]:
+    """A core module registers one tool name or a tuple of names."""
+    return (tools,) if isinstance(tools, str) else tools
 
 
 def _bool(value: Any, *, name: str) -> bool:
@@ -146,7 +153,7 @@ def load_tool_surface(path: str | Path | None, env: Mapping[str, str] | None = N
 
 def expected_tool_names(surface: Mapping[str, Any]) -> set[str]:
     """Return the exact tool set expected for a validated surface."""
-    names = {tool for _, tool in CORE_MODULES}
+    names = {tool for _, tools in CORE_MODULES for tool in _as_names(tools)}
     mode = surface["mode"]
     if mode in {"domains", "hybrid"}:
         names.update(
@@ -206,9 +213,9 @@ def register_tool_surface(mcp: Any, ep_manager: Any, config: Any, surface: Mappi
 
         _register_checked(register_masters, set(MASTER_TOOLS), mcp, ep_manager, config)
 
-    for module_name, tool_name in CORE_MODULES:
+    for module_name, tools in CORE_MODULES:
         module = importlib.import_module(f"energyplus_mcp_server.tools.{module_name}")
-        _register_checked(module.register, {tool_name}, mcp, ep_manager, config)
+        _register_checked(module.register, set(_as_names(tools)), mcp, ep_manager, config)
 
     if surface["compatibility"]["workflow_managers"]:
         for module_name, tool_name in WORKFLOW_COMPAT_MODULES:
