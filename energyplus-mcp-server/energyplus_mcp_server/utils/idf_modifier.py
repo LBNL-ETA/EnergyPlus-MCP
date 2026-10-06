@@ -13,6 +13,8 @@ Key Features:
 Design Philosophy: KISS - Keep It Simple and Stupid
 """
 
+import difflib
+import fnmatch
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -21,6 +23,8 @@ from datetime import datetime
 from eppy.modeleditor import IDF
 
 logger = logging.getLogger(__name__)
+
+_FIND_MAX_LIMIT = 100
 
 
 class IDDValidationError(Exception):
@@ -302,6 +306,156 @@ class IDFModifier:
         # Unknown target pattern - return all
         logger.warning(f"Unknown target pattern '{target}', returning all objects")
         return objects
+
+    def find_objects(
+        self,
+        idf_path: str,
+        object_type: Optional[str] = None,
+        references: Optional[str] = None,
+        name_contains: Optional[str] = None,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """Read-only lookup of objects in a model; the file is never written.
+
+        Args:
+            idf_path: Path to the IDF file
+            object_type: Exact type ("Lights") or wildcard ("SetpointManager:*");
+                case-insensitive. Optional when ``references`` is given.
+            references: A name (node, schedule, construction, ...) to find in any
+                field, compared case-insensitively. Objects listing it through a
+                ``*NodeList`` are also returned, marked ``via``. Each match
+                has ``role``: "defines" (its Name is the value) or "references".
+            name_contains: Case-insensitive substring of the object's Name.
+            limit: Objects returned (1-100); ``total_matches`` counts all.
+
+        Returns:
+            Dict with total_matches, type_counts, and objects using the eppy
+            field names that ``modify`` accepts.
+        """
+        if not object_type and not references:
+            return {"success": False, "error": "find needs object_type, references, or both"}
+        limit = max(1, min(int(limit or 20), _FIND_MAX_LIMIT))
+
+        try:
+            idf = IDF(idf_path)
+        except Exception as e:
+            logger.error(f"Failed to load IDF: {e}")
+            return {"success": False, "error": f"Failed to load IDF: {e}"}
+
+        all_types = list(idf.idfobjects.keys())  # upper-case IDD class names
+        if object_type:
+            pattern = object_type.strip().upper()
+            if any(ch in pattern for ch in "*?["):
+                types = [t for t in all_types if fnmatch.fnmatchcase(t, pattern)]
+            elif pattern in idf.idfobjects:
+                types = [pattern]
+            else:
+                close = difflib.get_close_matches(pattern, all_types, n=5, cutoff=0.6)
+                canonical = self._canonical_type_names(idf)
+                return {
+                    "success": False,
+                    "error": f"'{object_type}' is not an object type in the IDD"
+                    + (f"; did you mean {[canonical.get(c, c) for c in close]}?" if close else ""),
+                }
+        else:
+            types = all_types
+
+        wanted = references.strip().upper() if references else None
+        needle = name_contains.strip().upper() if name_contains else None
+
+        def fields_matching(obj: Any, value: str) -> List[str]:
+            return [
+                field for field, field_value in zip(obj.fieldnames[1:], obj.fieldvalues[1:])
+                if field_value not in ("", None) and str(field_value).strip().upper() == value
+            ]
+
+        # Node lists that contain the node, found across all types so that a
+        # type filter such as "SetpointManager:*" still sees list members.
+        lists: List[str] = []
+        if wanted:
+            for type_key in all_types:
+                if not type_key.endswith("NODELIST"):
+                    continue
+                for obj in idf.idfobjects.get(type_key, []):
+                    name = str(getattr(obj, "Name", "") or "")
+                    if name and fields_matching(obj, wanted):
+                        lists.append(name)
+
+        matches: List[Dict[str, Any]] = []
+        for type_key in types:
+            for obj in idf.idfobjects.get(type_key, []):
+                name = str(getattr(obj, "Name", "") or "") if "Name" in obj.fieldnames else ""
+                if needle and needle not in name.upper():
+                    continue
+                matched = fields_matching(obj, wanted) if wanted else []
+                if wanted and not matched:
+                    continue
+                matches.append({"object": obj, "matched_fields": matched})
+
+        # One hop through node lists: an object that names a list containing
+        # the node also acts on the node (e.g. SetpointManager:MixedAir).
+        if lists:
+            seen = {id(m["object"]) for m in matches}
+            for list_name in lists:
+                for type_key in types:
+                    for obj in idf.idfobjects.get(type_key, []):
+                        if id(obj) in seen:
+                            continue
+                        if needle and needle not in str(getattr(obj, "Name", "") or "").upper():
+                            continue
+                        matched = fields_matching(obj, list_name.upper())
+                        if matched:
+                            matches.append({"object": obj, "matched_fields": matched, "via": list_name})
+                            seen.add(id(obj))
+
+        type_counts: Dict[str, int] = {}
+        for match in matches:
+            type_counts[match["object"].key] = type_counts.get(match["object"].key, 0) + 1
+
+        objects = []
+        for match in matches[:limit]:
+            obj = match["object"]
+            fields = {
+                field: value
+                for field, value in zip(obj.fieldnames[1:], obj.fieldvalues[1:])
+                if value not in ("", None)
+            }
+            item: Dict[str, Any] = {"type": obj.key, "name": fields.get("Name", ""), "fields": fields}
+            if match["matched_fields"]:
+                item["matched_fields"] = match["matched_fields"]
+                # The object named X "defines" X; any other matching field uses it.
+                item["role"] = "defines" if match["matched_fields"] == ["Name"] else "references"
+            if match.get("via"):
+                item["via"] = match["via"]
+            objects.append(item)
+
+        result: Dict[str, Any] = {
+            "success": True,
+            "idf_path": idf_path,
+            "query": {
+                k: v for k, v in (
+                    ("object_type", object_type), ("references", references),
+                    ("name_contains", name_contains),
+                ) if v
+            },
+            "total_matches": len(matches),
+            "returned": len(objects),
+            "truncated": len(matches) > len(objects),
+            "type_counts": type_counts,
+            "objects": objects,
+        }
+        if not matches:
+            result["note"] = "No objects match. The file was read but not changed."
+        return result
+
+    @staticmethod
+    def _canonical_type_names(idf: Any) -> Dict[str, str]:
+        """{UPPER class name: IDD spelling}, e.g. SETPOINTMANAGER:COLDEST -> SetpointManager:Coldest."""
+        names: Dict[str, str] = {}
+        for upper, info in zip(idf.model.dtls, idf.idd_info):
+            if info and isinstance(info[0], dict) and info[0].get("idfobj"):
+                names[upper] = info[0]["idfobj"]
+        return names
 
     def add_object(
         self,

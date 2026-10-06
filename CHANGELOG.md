@@ -11,6 +11,15 @@ branch since the README/install-instructions cleanup.
 ## [Unreleased]
 
 ### Added
+- **`idf_modification(action="find")`**, a read-only object lookup: objects of
+  a type (exact or wildcard, e.g. `SetpointManager:*`), objects with any field
+  equal to a name (node, schedule, construction; case-insensitive), or both,
+  narrowed by `name_contains` and capped by `limit`. Results use the eppy field
+  names that `modify` accepts and mark each match as `defines` or
+  `references`. When the name is listed in a `*NodeList`, objects that use the
+  list are returned too, marked `via`. The `diagnose-simulation-errors` skill
+  and catalog use it for missing-reference, duplicate-name, node, and
+  setpoint errors.
 - **`reference_docs` tool.** Section-level access to the EnergyPlus Input
   Output Reference, Engineering Reference, Output Details and Examples, and
   Plant Application Guide for the installed release: `status`, `search`,

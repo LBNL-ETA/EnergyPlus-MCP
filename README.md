@@ -459,7 +459,7 @@ The `mode` field in `config.yaml` controls how tools are organized and registere
 - `model_preflight` — Load, validate, info, resolve_paths, readiness (preflight)
 - `model_upgrade` — Read-only transition planning and copy-only one-model IDF upgrades
 - `simulation_manager` — Run simulations (one, several in parallel, or a batch), check/wait/cancel queued runs, update SimulationControl/RunPeriod
-- `idf_modification` — Direct IDD-validated object changes when no semantic domain operation exists
+- `idf_modification` — Direct IDD-validated object changes when no semantic domain operation exists, plus a read-only `find` action that looks objects up by type (wildcards allowed) or by a name used in any field (following NodeLists one hop)
 - `example_library` — Read-only search of the installed EnergyPlus ExampleFiles and DataSets, returning objects with `idf_modification` field names
 - `reference_docs` — Sections of the EnergyPlus manuals for the installed release; `get_field` pairs a field's IDD limits with its documentation
 - `list_skills` / `get_skill` — Step-by-step agent skills bundled with the server

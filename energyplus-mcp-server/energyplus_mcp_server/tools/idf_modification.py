@@ -29,12 +29,15 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
 
     @mcp.tool()
     async def idf_modification(
-        action: Literal["modify", "add", "delete", "capabilities"],
+        action: Literal["find", "modify", "add", "delete", "capabilities"],
         idf_path: Optional[str] = None,
         object_type: Optional[str] = None,
         fields: Optional[Dict[str, Any]] = None,
         target: str = "all",
         output_path: Optional[str] = None,
+        references: Optional[str] = None,
+        name_contains: Optional[str] = None,
+        limit: Optional[int] = None,
     ) -> str:
         """
         Generic IDF modification tool for direct object modifications.
@@ -43,6 +46,13 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         when you know the exact field names. It performs IDD validation automatically.
 
         Actions:
+        - find: Read-only lookup. Objects of `object_type` (exact or wildcard such
+          as "SetpointManager:*"), objects with any field equal to `references`
+          (a node, schedule, construction, or other name; case-insensitive), or
+          both; narrow with `name_contains`. When the name sits in a *NodeList,
+          objects that use that list are returned too, marked "via". Each match
+          has role "defines" (the object named that) or "references". Returns
+          the eppy field names that modify accepts. Never writes a file.
         - modify: Modify existing IDF objects with specified field values
         - add: Add a new IDF object with specified field values
         - delete: Delete IDF objects matching the target pattern
@@ -53,11 +63,22 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         - object_type: EnergyPlus object type (e.g., "OutputControl:Table:Style", "Lights", "Zone")
         - fields: Dictionary of field names and values to modify
         - target: Target filter - "all", "name:ObjectName", or "zone:ZoneName" (default: "all")
+        - references: (find) Name to look for in any field
+        - name_contains: (find) Case-insensitive substring of the object Name
+        - limit: (find) Objects returned, 1-100 (default 20); total_matches counts all
         - output_path: Optional output path (if not specified, writes a timestamped copy
           to work/models/derived/). Paths inside sample_files/ or the EnergyPlus
           installation are rejected; those inputs are read-only.
 
         Examples:
+        0. Which setpoint managers set a node (directly or through a NodeList)?
+           {
+             "action": "find",
+             "idf_path": "model.idf",
+             "object_type": "SetpointManager:*",
+             "references": "CW Supply Outlet Node"
+           }
+
         1. Add OutputControl:Table:Style (if doesn't exist):
            {
              "action": "add",
@@ -133,6 +154,12 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     "description": "Generic domain-agnostic IDF modification with IDD validation",
                     "actions": [
                         {
+                            "name": "find",
+                            "required": ["idf_path", "object_type or references"],
+                            "optional": ["name_contains", "limit"],
+                            "description": "Read-only lookup by type (wildcards allowed) and/or a referenced name; never writes"
+                        },
+                        {
                             "name": "modify",
                             "required": ["idf_path", "object_type", "fields"],
                             "optional": ["target", "output_path"],
@@ -173,12 +200,24 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             if not idf_path:
                 return json.dumps({"error": "Missing required parameter: idf_path"}, indent=2)
 
-            if not object_type:
+            if not object_type and not (action == "find" and references):
                 return json.dumps({"error": "Missing required parameter: object_type"}, indent=2)
 
             # Accept the same bare or relative names as the other tools, e.g. a
             # model copied into work/models/derived.
             idf_path = resolve_idf_path(config, idf_path)
+
+            if action == "find":
+                result = IDFModifier().find_objects(
+                    idf_path=idf_path,
+                    object_type=object_type,
+                    references=references,
+                    name_contains=name_contains,
+                    limit=limit or 20,
+                )
+                result["tool"] = "idf_modification"
+                result["action"] = "find"
+                return json.dumps(result, indent=2, default=str)
 
             if action == "modify":
                 # Validate fields for modify action
