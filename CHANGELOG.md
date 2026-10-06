@@ -11,6 +11,16 @@ branch since the README/install-instructions cleanup.
 ## [Unreleased]
 
 ### Added
+- **`reference_docs` tool.** Section-level access to the EnergyPlus Input
+  Output Reference, Engineering Reference, Output Details and Examples, and
+  Plant Application Guide for the installed release: `status`, `search`,
+  `get_section` (by object type, cross-reference label, or section id, paged),
+  and `get_field`, which pairs a field's constraints from the installed IDD
+  with its documentation. A Dockerfile build stage generates the index from
+  the documentation's LaTeX source at the release tag matching `EPLUS_VER`
+  (`.devcontainer/build_reference_docs.py`, git + pandoc in the build stage
+  only) and installs it under `<EnergyPlus>/ReferenceDocs`;
+  `EPLUS_REFERENCE_DOCS_DIR` overrides the location.
 - **Agent skills.** `list_skills` and `get_skill` serve Markdown skills from
   `energyplus_mcp_server/skills/`, and the server now sends MCP instructions
   pointing agents to them. First skill: `learn-from-examples`, with a

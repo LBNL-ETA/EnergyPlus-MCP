@@ -65,6 +65,8 @@ accepts. Treat examples as evidence of *structure*; values still need a source.
    example values, which you must report as assumptions. Keep calculation
    methods consistent with the populated field (for example
    `Design_Level_Calculation_Method` must match the level field you set).
+   Check a field's meaning, units, limits, and choices with
+   `reference_docs(action="get_field", object_type=..., field=...)`.
 7. **Apply on one working copy.** Copy the model first
    (`file_utils(action="copy", ...)`), then call
    `idf_modification(action="add", idf_path=<copy>, output_path=<copy>, object_type=..., fields={...})`

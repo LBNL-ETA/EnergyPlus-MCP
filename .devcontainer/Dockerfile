@@ -1,6 +1,26 @@
 # =============================================================================
 # EnergyPlus MCP dev-container
 # =============================================================================
+
+# -----------------------------------------------------------------------------
+# 0. Build-only stage: EnergyPlus reference documentation index
+#
+# Converts the Input Output Reference, Engineering Reference, Output Details and
+# Examples, and Plant Application Guide from the LaTeX source of the same
+# release tag as the engine (EPLUS_VER/EPLUS_HASH, shared with section 2) into
+# a section index for the reference_docs tool.  git and pandoc stay in this
+# stage; only the index (~20 MB) is copied into the final image.
+# -----------------------------------------------------------------------------
+FROM python:3.12-slim AS reference-docs
+ARG EPLUS_VER=26.1.0
+ARG EPLUS_HASH=6f2e40d102
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git pandoc ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+COPY build_reference_docs.py /opt/build_reference_docs.py
+RUN python /opt/build_reference_docs.py \
+      --tag "v${EPLUS_VER}" --expected-commit "${EPLUS_HASH}" --out /reference-docs
+
 FROM python:3.12-slim
 
 # ----------------------------------------------------------------------------- 
@@ -73,6 +93,9 @@ RUN set -eux; \
     tar -xzf /tmp/eplus.tgz -C ${EPLUS_PREFIX} --strip-components=1; \
     ln -s ${EPLUS_PREFIX}/energyplus /usr/local/bin/energyplus; \
     rm /tmp/eplus.tgz
+
+# Reference documentation index built in stage 0 (read by reference_docs).
+COPY --from=reference-docs /reference-docs ${EPLUS_PREFIX}/ReferenceDocs
 
 # -----------------------------------------------------------------------------
 # 3. Pinned native-Linux IDF transition assets for the default 26.1.0 engine.

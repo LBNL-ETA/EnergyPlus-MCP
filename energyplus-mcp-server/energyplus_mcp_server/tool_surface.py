@@ -42,6 +42,7 @@ CORE_MODULES = (
     ("post", "post_processing"),
     ("idf_modification", "idf_modification"),
     ("example_library", "example_library"),
+    ("reference_docs", "reference_docs"),
     ("skills", ("list_skills", "get_skill")),
 )
 WORKFLOW_COMPAT_MODULES = (

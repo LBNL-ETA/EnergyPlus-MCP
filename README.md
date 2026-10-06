@@ -112,7 +112,7 @@ Choose the appropriate setup for your AI assistant or IDE:
 
 3. **Restart Claude Desktop**. The EnergyPlus server should appear in the MCP servers panel.
 
-4. **Verify**: in a new chat, ask *"List the EnergyPlus MCP tools you have access to."* With the default `domains` profile you should see the domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, …) plus core tools (`model_preflight`, `model_upgrade`, `simulation_manager`, `idf_modification`, `example_library`, `list_skills`, `get_skill`, `file_utils`, `post_processing`, `server_manager`).
+4. **Verify**: in a new chat, ask *"List the EnergyPlus MCP tools you have access to."* With the default `domains` profile you should see the domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, …) plus core tools (`model_preflight`, `model_upgrade`, `simulation_manager`, `idf_modification`, `example_library`, `reference_docs`, `list_skills`, `get_skill`, `file_utils`, `post_processing`, `server_manager`).
 
 #### Codex
 
@@ -461,6 +461,7 @@ The `mode` field in `config.yaml` controls how tools are organized and registere
 - `simulation_manager` — Run simulations (one, several in parallel, or a batch), check/wait/cancel queued runs, update SimulationControl/RunPeriod
 - `idf_modification` — Direct IDD-validated object changes when no semantic domain operation exists
 - `example_library` — Read-only search of the installed EnergyPlus ExampleFiles and DataSets, returning objects with `idf_modification` field names
+- `reference_docs` — Sections of the EnergyPlus manuals for the installed release; `get_field` pairs a field's IDD limits with its documentation
 - `list_skills` / `get_skill` — Step-by-step agent skills bundled with the server
 - `file_utils` — List and copy sample/weather files
 - `post_processing` — Interactive plots
@@ -592,6 +593,34 @@ so a different `EPLUS_VER` needs no inventory update. Set
 `EPLUS_EXAMPLE_INVENTORY_CACHE` to a writable directory to reuse the
 inventory across stdio sessions. Library files are only read; `get_objects`
 accepts only files in the inventory.
+
+### Reference documentation
+
+`reference_docs` serves the EnergyPlus manuals one section at a time: the
+Input Output Reference, Engineering Reference, Output Details and Examples,
+and Plant Application Guide.
+
+| Action | Returns |
+|---|---|
+| `status` | Whether the index is installed, its EnergyPlus version and source commit, section counts |
+| `get_field` | A field's IDD constraints (required, type, units, limits, choices, default, notes) with its Input Output Reference paragraph; accepts IDD or eppy names and numbered repeat fields |
+| `get_section` | One object (`object_type`), linked section (`label`), or search hit (`section_id`) as Markdown, paged with `max_chars`/`offset` |
+| `search` | Keyword search over titles and text, filtered by `doc` and `kind` (`object`, `field`, `output`, `section`) |
+
+The index is generated, not maintained by hand. A build stage in the
+Dockerfile fetches the LaTeX source of the manuals from the EnergyPlus
+release tag that matches `EPLUS_VER` (checked against `EPLUS_HASH`), converts
+it with pandoc, splits it at every heading, and copies only the result
+(about 20 MB, with the EnergyPlus license) to
+`<EnergyPlus>/ReferenceDocs`. For 26.1.0 that is about 20,000 sections, and
+830 of 858 IDD object types have their own section (the rest are mostly
+`GroundHeatTransfer:*` preprocessor objects documented in the Auxiliary
+Programs guide). Figures are not included. Outside Docker, build it with git
+and pandoc:
+
+```bash
+python .devcontainer/build_reference_docs.py --tag v26.1.0 --expected-commit 6f2e40d102 --out energyplus-mcp-server/work/reference_docs
+```
 
 ### Concurrent simulations
 
@@ -955,6 +984,7 @@ The server auto-detects EnergyPlus installation and uses sensible defaults.
 - `MCP_EXPOSE_MASTERS`, `MCP_EXPOSE_DOMAIN_MANAGERS`: mode controls when no YAML mode is supplied
 - `MCP_ENABLE_WORKFLOW_COMPATIBILITY`: opt in to deprecated workflow-manager aliases
 - `EPLUS_EXAMPLE_INVENTORY_CACHE`: optional directory for persisting the `example_library` inventory across sessions
+- `EPLUS_REFERENCE_DOCS_DIR`: reference documentation index for `reference_docs` (default: `<EnergyPlus>/ReferenceDocs`, then `work/reference_docs`)
 - `MCP_MAX_CONCURRENT_SIMULATIONS`: EnergyPlus processes allowed at once (default: CPU count minus one)
 - `MCP_SIMULATION_TIMEOUT_SECONDS`: wall-clock limit per simulation; `0` (default) means no limit
 
