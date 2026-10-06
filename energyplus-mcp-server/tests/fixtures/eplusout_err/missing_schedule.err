@@ -1,0 +1,4 @@
+Program Version,EnergyPlus, Version 26.1.0-6f2e40d102, YMD=2026.10.06 19:47,
+   ************* Beginning Zone Sizing Calculations
+   ** Severe  ** GetInternalHeatGains: Lights = SPACE1-1 LIGHTS 1
+   **   ~~~   ** Schedule Name = MISSING LIGHTS SCHEDULE, item not found.

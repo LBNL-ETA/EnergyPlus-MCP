@@ -3845,17 +3845,30 @@ class EnergyPlusManager:
             result = dict(job.result)
             result.pop("error_details", None)
             status["result"] = result
-            if not result.get("success"):
-                err_files = sorted(Path(job.output_directory).glob("*.err"))
-                if err_files:
-                    parsed = self.error_parser.parse_error_file(str(err_files[0]))
-                    if parsed.get("exists"):
-                        status["error_summary"] = {
-                            "err_file": str(err_files[0]),
-                            "counts": parsed.get("counts"),
-                            "first_fatal": (parsed.get("fatal_errors") or [None])[0],
-                            "first_severe": (parsed.get("severe_errors") or [None])[0],
-                        }
+            # Successful runs get a summary too: EnergyPlus can complete with
+            # Severe errors or millions of recurring warnings.
+            err_files = sorted(Path(job.output_directory).glob("*.err"))
+            if err_files:
+                parsed = self.error_parser.parse_error_file(str(err_files[0]))
+                if parsed.get("exists") and not parsed.get("error"):
+                    analysis = self.error_parser.analyze_root_cause(parsed)
+                    summary = parsed.get("summary", {})
+                    error_summary = {
+                        "err_file": str(err_files[0]),
+                        "run_status": summary.get("status"),
+                        "totals": summary.get("totals"),
+                        "counts": parsed.get("counts"),
+                        "primary_issue": analysis.get("primary_issue"),
+                        "primary_category": analysis.get("primary_category"),
+                        "primary_object": analysis.get("primary_object"),
+                    }
+                    if not result.get("success"):
+                        error_summary["first_fatal"] = (parsed.get("fatal_errors") or [None])[0]
+                        error_summary["first_severe"] = (parsed.get("severe_errors") or [None])[0]
+                    for flag in ("completed_with_severe", "incomplete_run", "frequent_recurring"):
+                        if flag in analysis:
+                            error_summary[flag] = analysis[flag]
+                    status["error_summary"] = error_summary
         return status
 
     def find_run_record(self, run_id: str, runs_dir: Optional[str] = None) -> Optional[Dict[str, Any]]:

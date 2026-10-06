@@ -53,6 +53,16 @@ branch since the README/install-instructions cleanup.
   `interrupted` on the next start.
 
 ### Changed
+- **Error parsing** (`post_processing(action="parse_errors")`, run status).
+  The parser now reads the recurring-error summary (repeat counts, warmup and
+  sizing counts, Max/Min) and attaches counts to matching messages; reports
+  the run `status` (`completed`, `terminated`, or `incomplete` for a crash),
+  EnergyPlus's own `totals`, and per-phase subtotals (replacing
+  `phase_counts`, which added the phase subtotals to the totals and
+  double-counted); tags each message with a `category`, object, and schema
+  field; and takes the first Severe message, not the Fatal announcement, as
+  the primary issue. `simulation_manager(action="status")` includes this
+  summary for successful runs too. Tests use real 26.1 `.err` files.
 - Edits without an explicit `output_path` write to `work/models/derived/`
   instead of beside the source model; HVAC diagrams and geometry viewers
   default to `work/reports/`; simulations default to `work/runs/` (was

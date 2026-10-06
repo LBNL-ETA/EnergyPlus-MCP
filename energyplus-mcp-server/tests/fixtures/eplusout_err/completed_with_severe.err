@@ -1,0 +1,53 @@
+Program Version,EnergyPlus, Version 26.1.0-6f2e40d102, YMD=2026.10.06 19:48,
+   ** Warning ** ProcessScheduleInput: Schedule:Compact = ALWAYS_ON
+   **   ~~~   ** Schedule Type Limits Name = FRACTION, item not found.
+   **   ~~~   ** Schedule will not be validated.
+   ** Warning ** ProcessScheduleInput: Schedule:Compact = CW TANK TEMP TOP SCHEDULE
+   **   ~~~   ** Schedule Type Limits Name = TEMPERATURE, item not found.
+   **   ~~~   ** Schedule will not be validated.
+   ** Warning ** ProcessScheduleInput: Schedule:Compact = CW TANK TEMP BOTTOM SCHEDULE
+   **   ~~~   ** Schedule Type Limits Name = TEMPERATURE, item not found.
+   **   ~~~   ** Schedule will not be validated.
+   ** Warning ** ProcessScheduleInput: Schedule:Compact = HW LOOP TEMP SCHEDULE
+   **   ~~~   ** Schedule Type Limits Name = TEMPERATURE, item not found.
+   **   ~~~   ** Schedule will not be validated.
+   ** Severe  ** SetBranchControlTypes: Caught unexpected equipment type of number
+   ** Severe  ** SetBranchControlTypes: Caught unexpected equipment type of number
+   ************* Testing Individual Branch Integrity
+   ************* All Branches passed integrity testing
+   ************* Testing Individual Supply Air Path Integrity
+   ************* All Supply Air Paths passed integrity testing
+   ************* Testing Individual Return Air Path Integrity
+   ************* All Return Air Paths passed integrity testing
+   ************* No node connection errors were found.
+   ************* Beginning Simulation
+   ** Warning ** GlycolProps::getSpecificHeat: Temperature is out of range (too low) for fluid [WATER] specific heat supplied values **
+   **   ~~~   ** ..Called From:PlantLoopSolver::EvaluateLoopSetPointLoad,Temperature=[-9.42E-002], supplied data range=[0.00,125.00]
+   **   ~~~   **  Environment=RUN PERIOD 1, at Simulation time=01/01 03:00 - 04:00
+   ** Warning ** GlycolProps::getDensity: Temperature is out of range (too low) for fluid [WATER] density **
+   **   ~~~   ** ..Called From:PlantPumps:CalcPumps: ,Temperature=[-9.42E-002], supplied data range=[0.00,100.00]
+   **   ~~~   **  Environment=RUN PERIOD 1, at Simulation time=01/01 03:00 - 04:00
+   ************* Simulation Error Summary *************
+   ** Warning ** The following Report Variables were requested but not generated -- check.rdd file
+   **   ~~~   ** Either the IDF did not contain these elements, the variable name is misspelled,
+   **   ~~~   ** or the requested variable is an advanced output which requires Output : Diagnostics, DisplayAdvancedReportVariables;
+   ************* Key=*, VarName=HOT WATER THERMAL STORAGE NEEDS CHARGE, Frequency=Hourly
+   *************
+   ************* ===== Recurring Error Summary =====
+   ************* The following recurring error messages occurred.
+   *************
+   *************  ** Warning ** GlycolProps::getSpecificHeat: Temperature out of range (too low) for fluid [WATER] specific heat **
+   *************  **   ~~~   **   This error occurred 22 total times;
+   *************  **   ~~~   **   during Warmup 0 times;
+   *************  **   ~~~   **   during Sizing 0 times.
+   *************  **   ~~~   **   Max=-0.055660 {C}  Min=-1.130022 {C}
+   *************
+   *************  ** Warning ** GlycolProps::getDensity: Temperature out of range (too low) for fluid [WATER] density **
+   *************  **   ~~~   **   This error occurred 68 total times;
+   *************  **   ~~~   **   during Warmup 0 times;
+   *************  **   ~~~   **   during Sizing 0 times.
+   *************  **   ~~~   **   Max=-0.055660 {C}  Min=-1.130022 {C}
+   *************
+   ************* EnergyPlus Warmup Error Summary. During Warmup: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Sizing Error Summary. During Sizing: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Completed Successfully-- 94 Warning; 2 Severe Errors; Elapsed Time=00hr 00min  1.57sec

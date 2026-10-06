@@ -1,0 +1,36 @@
+Program Version,EnergyPlus, Version 26.1.0-6f2e40d102, YMD=2026.10.06 19:47,
+   ************* Beginning Zone Sizing Calculations
+   ************* Beginning System Sizing Calculations
+   ************* Beginning Plant Sizing Calculations
+   ************* Testing Individual Branch Integrity
+   ************* All Branches passed integrity testing
+   ************* Testing Individual Supply Air Path Integrity
+   ************* All Supply Air Paths passed integrity testing
+   ************* Testing Individual Return Air Path Integrity
+   ************* All Return Air Paths passed integrity testing
+   ** Severe  ** Potential Node Connection Error for object FAN:VARIABLEVOLUME, name=SUPPLY FAN 1
+   **   ~~~   **   Node Types are still UNDEFINED -- See Branch/Node Details file for further information
+   **   ~~~   **   Inlet Node : MAIN HEATING COIL 1 OUTLET NODE
+   **   ~~~   **   Outlet Node: VAV SYS 1 OUTLET NODE
+   ** Warning ** Node Connection Error for object FAN:VARIABLEVOLUME=SUPPLY FAN 1
+   **   ~~~   **   Air Nodes not on any Branch or Parent Object
+   **   ~~~   **   Inlet Node : MAIN HEATING COIL 1 OUTLET NODE
+   **   ~~~   **   Outlet Node: VAV SYS 1 OUTLET NODE TYPO
+   ************* There were 2 node connection errors noted.
+   **  Fatal  ** Please see severe error(s) and correct either the branch nodes or the component nodes so that they match.
+   ...Summary of Errors that led to program termination:
+   ..... Reference severe error count=1
+   ..... Last severe error=Potential Node Connection Error for object FAN:VARIABLEVOLUME, name=SUPPLY FAN 1
+   ************* Warning:  Node connection errors not checked - most system input has not been read (see previous warning).
+   ************* Fatal error -- final processing.  Program exited before simulations began.  See previous error messages.
+   *************
+   ************* ===== Final Error Summary =====
+   ************* The following error categories occurred.  Consider correcting or noting.
+   ************* Node Connection Errors
+   ************* ..Node connection errors are often caused by spelling mistakes in a node name field.
+   ************* ..To track down the problem, search the idf file for each node name listed to see if it
+   ************* ..occurs in the expected input fields.
+   *************
+   ************* EnergyPlus Warmup Error Summary. During Warmup: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Sizing Error Summary. During Sizing: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Terminated--Fatal Error Detected. 1 Warning; 1 Severe Errors; Elapsed Time=00hr 00min  0.07sec
