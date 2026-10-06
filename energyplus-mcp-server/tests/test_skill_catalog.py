@@ -36,6 +36,15 @@ def test_bundled_skills_load_and_include_learn_from_examples():
     assert "WindowConstructs.idf" in guide["content"]
 
 
+def test_diagnose_simulation_errors_skill_loads_with_catalog():
+    by_name = {skill["name"]: skill for skill in SkillCatalog().list()["skills"]}
+    assert by_name["diagnose-simulation-errors"]["files"] == ["error-catalog.md"]
+    skill = SkillCatalog().get("diagnose-simulation-errors")
+    assert skill["content"].startswith("# Diagnose EnergyPlus simulation errors")
+    catalog = SkillCatalog().get("diagnose-simulation-errors", "error-catalog.md")
+    assert "Failed to match against any enum values" in catalog["content"]
+
+
 def test_bundled_skills_only_reference_registered_tools():
     all_tools = expected_tool_names(
         {

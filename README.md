@@ -574,6 +574,7 @@ that the server does not register.
 | Skill | Use it to |
 |---|---|
 | `learn-from-examples` | Add an object type you have not modelled by finding a small EnergyPlus example that uses it, reading the object and everything it references, and adapting it to the target model. Includes a DataSets guide for realistic component data. |
+| `diagnose-simulation-errors` | Find and fix the cause of a failed, crashed, or suspicious run: read the run status and EnergyPlus's totals, take the first Severe message as the lead, inspect it with the matching domain tool and `reference_docs`, fix one cause on a copy, and verify with a design-day run. Includes an error catalog of real EnergyPlus 26.1 messages. |
 
 `example_library` indexes `ExampleFiles/` (about 760 runnable models for
 26.1) and `DataSets/` under the configured EnergyPlus installation:

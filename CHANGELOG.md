@@ -20,6 +20,11 @@ branch since the README/install-instructions cleanup.
   list are returned too, marked `via`. The `diagnose-simulation-errors` skill
   and catalog use it for missing-reference, duplicate-name, node, and
   setpoint errors.
+- **`diagnose-simulation-errors` skill**, with `error-catalog.md`: real
+  EnergyPlus 26.1 messages for input-schema, missing-reference,
+  duplicate-name, node-connection, setpoint, sizing, weather, geometry, and
+  psychrometric problems, how to inspect each with the server's tools, and
+  which warnings affect results.
 - **`reference_docs` tool.** Section-level access to the EnergyPlus Input
   Output Reference, Engineering Reference, Output Details and Examples, and
   Plant Application Guide for the installed release: `status`, `search`,
