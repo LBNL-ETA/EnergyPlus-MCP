@@ -82,6 +82,50 @@ class EnergyPlusManager:
             raise RuntimeError(f"Failed to initialize eppy with IDD {idd_path}: {e}")
     
 
+    def _output_path(self, output_path: Optional[str], source_path: str, default_name: str,
+                     description: str = "output file") -> str:
+        """Choose where a tool writes its output.
+
+        Unscoped (stdio): unchanged behavior — the given path as-is, or
+        ``default_name`` next to the input file.
+        Scoped (streamable-http): the result must be inside the caller's own
+        workspace; the default goes next to the input only if that is already
+        in the workspace (inputs from shared sample/example folders are not).
+        """
+        from .scope import current_scope, check_write
+        scope = current_scope(self.config)
+        if scope is None:
+            if output_path is None:
+                return str(Path(source_path).parent / default_name)
+            return output_path
+        if output_path is None:
+            candidate = str(Path(source_path).parent / default_name)
+            if not scope.can_write(candidate):
+                candidate = os.path.join(scope.user_root, default_name)
+            return check_write(scope, candidate, description)
+        from .utils.path_utils import resolve_path
+        return resolve_path(self.config, output_path, must_exist=False, description=description)
+
+    def _scoped_directory(self, directory: str, description: str) -> str:
+        """Return ``directory`` unchanged when unscoped; otherwise confine it to the
+        caller's workspace (relative paths are taken relative to that workspace)."""
+        from .scope import current_scope, check_write
+        scope = current_scope(self.config)
+        if scope is None:
+            return directory
+        candidate = directory if os.path.isabs(directory) else os.path.join(scope.user_root, directory)
+        return check_write(scope, candidate, description)
+
+    def _output_directory(self, output_directory: Optional[str], idf_path: str) -> str:
+        """Simulation output directory: given, or a timestamped default."""
+        if output_directory is not None:
+            return self._scoped_directory(output_directory, "output directory")
+        from .scope import current_scope
+        scope = current_scope(self.config)
+        base = scope.user_root if scope is not None else self.config.paths.output_dir
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return str(Path(base) / f"{Path(idf_path).stem}_simulation_{timestamp}")
+
     def _resolve_idf_path(self, idf_path: str) -> str:
         """Resolve IDF path (handle relative paths, sample files, example files, etc.)"""
         from .utils.path_utils import resolve_path
@@ -859,9 +903,8 @@ class EnergyPlusManager:
                 }, indent=2)
             
             # Determine output path
-            if output_path is None:
-                path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+            path_obj = Path(resolved_path)
+            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
             
             # Apply modifications
             result = self.people_manager.modify_people_objects(
@@ -936,9 +979,8 @@ class EnergyPlusManager:
                 }, indent=2)
             
             # Determine output path
-            if output_path is None:
-                path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+            path_obj = Path(resolved_path)
+            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
             
             # Apply modifications
             result = self.lights_manager.modify_lights_objects(
@@ -1013,9 +1055,8 @@ class EnergyPlusManager:
                 }, indent=2)
             
             # Determine output path
-            if output_path is None:
-                path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+            path_obj = Path(resolved_path)
+            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
             
             # Apply modifications
             result = self.electric_equipment_manager.modify_electric_equipment_objects(
@@ -1102,9 +1143,8 @@ class EnergyPlusManager:
             )
             
             # Determine output path
-            if output_path is None:
-                path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_with_outputs{path_obj.suffix}")
+            path_obj = Path(resolved_path)
+            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_with_outputs{path_obj.suffix}")
             
             # Add variables to IDF
             addition_result = self.output_var_manager.add_variables_to_idf(
@@ -1217,9 +1257,8 @@ class EnergyPlusManager:
             )
             
             # Determine output path
-            if output_path is None:
-                path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_with_meters{path_obj.suffix}")
+            path_obj = Path(resolved_path)
+            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_with_meters{path_obj.suffix}")
             
             # Add meters to IDF
             addition_result = self.output_meter_manager.add_meters_to_idf(
@@ -2103,10 +2142,9 @@ class EnergyPlusManager:
             logger.info(f"Creating custom loop diagram for: {resolved_path}")
             
             # Determine output path
-            if output_path is None:
-                path_obj = Path(resolved_path)
-                diagram_name = f"{path_obj.stem}_hvac_diagram" if not loop_name else f"{path_obj.stem}_{loop_name}_diagram"
-                output_path = str(path_obj.parent / f"{diagram_name}.{format}")
+            path_obj = Path(resolved_path)
+            diagram_name = f"{path_obj.stem}_hvac_diagram" if not loop_name else f"{path_obj.stem}_{loop_name}_diagram"
+            output_path = self._output_path(output_path, resolved_path, f"{diagram_name}.{format}")
             
             # Method 1: Use topology data for custom diagram (PRIMARY)
             try:
@@ -2264,9 +2302,8 @@ class EnergyPlusManager:
             idf = IDF(resolved_path)
             
             # Determine output path
-            if output_path is None:
-                path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+            path_obj = Path(resolved_path)
+            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
             
             modifications_made = []
             
@@ -2385,9 +2422,8 @@ class EnergyPlusManager:
             idf = IDF(resolved_path)
             
             # Determine output path
-            if output_path is None:
-                path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+            path_obj = Path(resolved_path)
+            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
             
             all_surfs = idf.idfobjects['BuildingSurface:Detailed']
             if location.casefold() == "wall":
@@ -2485,9 +2521,8 @@ class EnergyPlusManager:
             idf = IDF(resolved_path)
             
             # Determine output path
-            if output_path is None:
-                path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+            path_obj = Path(resolved_path)
+            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
             
             window_surfs = idf.idfobjects['FenestrationSurface:Detailed']
             window_surfs = [x for x in window_surfs if x.Surface_Type.casefold() == "Window".casefold()]
@@ -2571,9 +2606,8 @@ class EnergyPlusManager:
             idf = IDF(resolved_path)
             
             # Determine output path
-            if output_path is None:
-                path_obj = Path(resolved_path)
-                output_path = str(path_obj.parent / f"{path_obj.stem}_modified{path_obj.suffix}")
+            path_obj = Path(resolved_path)
+            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
             
             object_type = "ZoneInfiltration:DesignFlowRate"
             infiltration_objs = idf.idfobjects[object_type]
@@ -2660,11 +2694,8 @@ class EnergyPlusManager:
                     resolved_weather_path = self._resolve_weather_file_path(weather_file)
                     logger.info(f"Using weather file: {resolved_weather_path}")
                 
-                # Set up output directory
-                if output_directory is None:
-                    idf_name = Path(resolved_idf_path).stem
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    output_directory = str(Path(self.config.paths.output_dir) / f"{idf_name}_simulation_{timestamp}")
+                # Set up output directory (inside the caller's workspace when scoped)
+                output_directory = self._output_directory(output_directory, resolved_idf_path)
                 
                 # Create output directory if it doesn't exist
                 os.makedirs(output_directory, exist_ok=True)
@@ -2822,7 +2853,8 @@ class EnergyPlusManager:
         try:
             logger.info(f"Creating interactive plot from: {output_directory}")
             
-            output_dir = Path(output_directory)
+            # The plot HTML is written into this directory, so it must be writable.
+            output_dir = Path(self._scoped_directory(output_directory, "output directory"))
             if not output_dir.exists():
                 raise FileNotFoundError(f"Output directory not found: {output_directory}")
             

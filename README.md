@@ -272,6 +272,15 @@ MCP_TOKENS=[{"label":"local-dev","token":"<paste-32+-char-hex-here>"}]
 - Labels and tokens must be unique within the array
 - An empty list while `MCP_TRANSPORT=streamable-http` causes the server to refuse to start (fail-closed)
 
+**Per-token file isolation.** Over HTTP, each token's `label` gets its own workspace at `<MCP_USER_DATA_ROOT>/<label>` (default `outputs/users/<label>`):
+
+- Tools can **read** only from that workspace and the shared reference folders (`sample_files/`, EnergyPlus `ExampleFiles/` and `WeatherData/`).
+- Tools can **write** only inside that workspace. Relative paths and default outputs (including outputs for shared sample models) land there. Absolute paths elsewhere, `..` traversal and symlinks out of the workspace are rejected.
+- An MCP session can only be used by the token that opened it.
+- `get_server_configuration`, `get_server_logs`, `get_error_logs` and `clear_logs` require a token whose label is listed in `MCP_ADMIN_LABELS` (comma-separated; must match labels in `MCP_TOKENS`).
+
+Stdio mode is unaffected: a local stdio server keeps its unrestricted file access.
+
 **3. Start the server.** Pick the variant that matches your setup:
 
 *Docker (recommended):* publish the port, mount the repo, and let the container pick up `.env` via `--env-file`. Run from the **repo root**:
