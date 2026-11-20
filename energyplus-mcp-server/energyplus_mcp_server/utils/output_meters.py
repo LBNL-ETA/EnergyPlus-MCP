@@ -18,6 +18,7 @@ from typing import Dict, List, Any, Optional
 from pathlib import Path
 from datetime import datetime
 import shutil
+import tempfile
 import re
 
 from eppy.modeleditor import IDF
@@ -111,6 +112,8 @@ class OutputMeterManager:
         Returns:
             Dictionary with discovered meters and metadata
         """
+        temp_idf_path = None
+        output_dir = None
         try:
             logger.info(f"Discovering available output meters for: {idf_path}")
             
@@ -120,6 +123,7 @@ class OutputMeterManager:
             # Run short simulation
             logger.info("Running short simulation to generate meter data dictionary...")
             sim_result = self._run_meter_discovery_simulation(temp_idf_path)
+            output_dir = sim_result.get("output_directory")
             
             if not sim_result["success"]:
                 return {
@@ -129,7 +133,7 @@ class OutputMeterManager:
                 }
             
             # Parse .mdd file for meters (Meter Data Dictionary)
-            mdd_file_path = self._find_mdd_file(sim_result["output_directory"])
+            mdd_file_path = self._find_mdd_file(output_dir)
             if not mdd_file_path:
                 return {
                     "success": False,
@@ -138,9 +142,6 @@ class OutputMeterManager:
             
             # Extract meters from .mdd file
             meters = self._parse_mdd_file_for_meters(mdd_file_path)
-            
-            # Clean up temporary files
-            self._cleanup_temp_files(temp_idf_path, sim_result["output_directory"])
             
             result = {
                 "success": True,
@@ -158,6 +159,8 @@ class OutputMeterManager:
         except Exception as e:
             logger.error(f"Error discovering available output meters: {e}")
             raise RuntimeError(f"Error discovering available output meters: {str(e)}")
+        finally:
+            self._cleanup_temp_files(temp_idf_path, output_dir)
     
     def get_configured_meters(self, idf_path: str) -> Dict[str, Any]:
         """
@@ -275,11 +278,14 @@ class OutputMeterManager:
             control.Run_Simulation_for_Sizing_Periods = 'No'
             control.Run_Simulation_for_Weather_File_Run_Periods = 'Yes'
         
-        # Create temporary file
-        temp_path = os.path.join(
-            self.config.paths.temp_dir, 
-            f"temp_meter_discovery_{datetime.now().strftime('%Y%m%d_%H%M%S')}.idf"
+        # Create unique temporary file to avoid concurrent-request collisions
+        os.makedirs(self.config.paths.temp_dir, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(
+            prefix="temp_meter_discovery_",
+            suffix=".idf",
+            dir=self.config.paths.temp_dir,
         )
+        os.close(fd)
         idf.save(temp_path)
         
         return temp_path
@@ -287,10 +293,12 @@ class OutputMeterManager:
     def _run_meter_discovery_simulation(self, temp_idf_path: str) -> Dict[str, Any]:
         """Run a minimal simulation to generate the .mdd file with meter information"""
         try:
-            # Create output directory
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_dir = os.path.join(self.config.paths.temp_dir, f"meter_discovery_{timestamp}")
-            os.makedirs(output_dir, exist_ok=True)
+            # Create unique output directory to avoid concurrent-request collisions
+            os.makedirs(self.config.paths.temp_dir, exist_ok=True)
+            output_dir = tempfile.mkdtemp(
+                prefix="meter_discovery_",
+                dir=self.config.paths.temp_dir,
+            )
             
             # Try to find a weather file
             weather_file = None
@@ -621,16 +629,16 @@ class OutputMeterManager:
         
         return categories
     
-    def _cleanup_temp_files(self, temp_idf_path: str, temp_output_dir: str):
+    def _cleanup_temp_files(self, temp_idf_path: Optional[str], temp_output_dir: Optional[str]):
         """Clean up temporary files and directories"""
         try:
             # Remove temporary IDF file
-            if os.path.exists(temp_idf_path):
+            if temp_idf_path and os.path.exists(temp_idf_path):
                 os.remove(temp_idf_path)
                 logger.debug(f"Cleaned up temporary IDF: {temp_idf_path}")
             
             # Remove temporary output directory
-            if os.path.exists(temp_output_dir):
+            if temp_output_dir and os.path.exists(temp_output_dir):
                 shutil.rmtree(temp_output_dir)
                 logger.debug(f"Cleaned up temporary output directory: {temp_output_dir}")
         
