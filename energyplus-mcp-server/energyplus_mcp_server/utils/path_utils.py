@@ -43,7 +43,12 @@ class PathResolver:
             self.config.energyplus.example_files_path,
             self.config.energyplus.weather_data_path
         ]
-        
+        from ..scope import current_scope
+        scope = current_scope(self.config)
+        if scope is not None:
+            # Never suggest (and so reveal) files outside the caller's scope.
+            search_dirs = list(scope.read_roots)
+
         target_name = os.path.basename(target_path).lower()
         
         for search_dir in search_dirs:
@@ -97,7 +102,15 @@ def resolve_path(config: Config, file_path: str, file_types: List[str] = None,
     """
     if not file_path:
         raise ValueError(f"{description} path cannot be empty")
-    
+
+    # Over streamable-http, confine the caller to its own workspace plus the
+    # shared read-only reference directories. Stdio returns None (unscoped).
+    from ..scope import current_scope
+    scope = current_scope(config)
+    if scope is not None:
+        return _resolve_scoped_path(config, scope, file_path, file_types, description,
+                                    must_exist, enable_fuzzy_weather_matching)
+
     # If it's already an absolute path
     if os.path.isabs(file_path):
         if must_exist and not os.path.exists(file_path):
@@ -159,6 +172,55 @@ def resolve_path(config: Config, file_path: str, file_types: List[str] = None,
             return weather_files[0]
     
     # If we get here, the file doesn't exist anywhere we looked
+    raise FileNotFoundError(f"{description} not found: {file_path}")
+
+
+def _has_extension(path: str, file_types: Optional[List[str]]) -> bool:
+    return not file_types or any(path.lower().endswith(ext.lower()) for ext in file_types)
+
+
+def _resolve_scoped_path(config: Config, scope, file_path: str, file_types: Optional[List[str]],
+                         description: str, must_exist: bool,
+                         enable_fuzzy_weather_matching: bool) -> str:
+    """resolve_path for a caller confined to ``scope`` (see energyplus_mcp_server.scope).
+
+    Outputs always land in the caller's own workspace. Inputs are looked up in
+    the caller's workspace, then the shared reference directories; the
+    server's working directory and the wider workspace are never searched.
+    """
+    from ..scope import check_read, check_write
+
+    if not must_exist:
+        candidate = file_path if os.path.isabs(file_path) else os.path.join(scope.user_root, file_path)
+        return check_write(scope, candidate, description)
+
+    if os.path.isabs(file_path):
+        resolved = check_read(scope, file_path, description)
+        if not os.path.exists(resolved):
+            raise FileNotFoundError(f"{description} not found: {file_path}")
+        if not _has_extension(resolved, file_types):
+            raise ValueError(f"File '{file_path}' does not have expected extension: {file_types}")
+        return resolved
+
+    search_paths = [
+        scope.user_root,
+        config.paths.sample_files_path,
+        config.energyplus.example_files_path if file_types and '.idf' in file_types else None,
+        config.energyplus.weather_data_path if file_types and '.epw' in file_types else None,
+    ]
+    for search_path in search_paths:
+        if not search_path or not os.path.exists(search_path):
+            continue
+        candidate = os.path.join(search_path, file_path)
+        if (os.path.exists(candidate) and scope.can_read(candidate)
+                and _has_extension(candidate, file_types)):
+            return check_read(scope, candidate, description)
+
+    if enable_fuzzy_weather_matching and file_types and '.epw' in file_types:
+        for match in find_weather_files_by_name(config, file_path):
+            if scope.can_read(match):
+                return check_read(scope, match, description)
+
     raise FileNotFoundError(f"{description} not found: {file_path}")
 
 

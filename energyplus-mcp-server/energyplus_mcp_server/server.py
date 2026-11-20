@@ -23,6 +23,7 @@ from mcp.server.fastmcp import FastMCP
 # Import our EnergyPlus utilities and configuration
 from energyplus_mcp_server.energyplus_tools import EnergyPlusManager
 from energyplus_mcp_server.config import get_config, Config
+from energyplus_mcp_server.scope import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -1058,6 +1059,7 @@ async def get_server_configuration() -> str:
         JSON string with configuration details
     """
     try:
+        require_admin(config, "get_server_configuration")
         logger.info("Getting server configuration")
         config_info = ep_manager.get_configuration_info()
         return f"Current server configuration:\n{config_info}"
@@ -1286,6 +1288,7 @@ async def get_server_logs(lines: int = 50) -> str:
         Recent log entries as text
     """
     try:
+        require_admin(config, "get_server_logs")
         log_file = Path(config.paths.workspace_root) / "logs" / "energyplus_mcp_server.log"
         
         if not log_file.exists():
@@ -1322,6 +1325,7 @@ async def get_error_logs(lines: int = 20) -> str:
         Recent error log entries as text
     """
     try:
+        require_admin(config, "get_error_logs")
         error_log_file = Path(config.paths.workspace_root) / "logs" / "energyplus_mcp_errors.log"
         
         if not error_log_file.exists():
@@ -1354,6 +1358,7 @@ async def clear_logs() -> str:
         Status of log clearing operation
     """
     try:
+        require_admin(config, "clear_logs")
         log_dir = Path(config.paths.workspace_root) / "logs"
         
         if not log_dir.exists():
