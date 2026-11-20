@@ -2854,6 +2854,8 @@ class EnergyPlusManager:
             logger.info(f"Creating interactive plot from: {output_directory}")
             
             # The plot HTML is written into this directory, so it must be writable.
+            from .scope import current_scope, check_read, check_write
+            scope = current_scope(self.config)
             output_dir = Path(self._scoped_directory(output_directory, "output directory"))
             if not output_dir.exists():
                 raise FileNotFoundError(f"Output directory not found: {output_directory}")
@@ -2874,9 +2876,19 @@ class EnergyPlusManager:
                 if not idf_name:
                     raise ValueError("Could not auto-detect IDF name. Please specify idf_name parameter.")
             
-            # Determine which file to process
-            meter_file = output_dir / f"{idf_name}Meter.csv"
-            variable_file = output_dir / f"{idf_name}.csv"
+            # Reject path separators or traversal in idf_name before building filenames
+            if (
+                os.path.isabs(idf_name)
+                or "/" in idf_name
+                or "\\" in idf_name
+                or ".." in idf_name
+                or idf_name in (".", "..")
+            ):
+                raise ValueError(f"Invalid idf_name: {idf_name!r}")
+
+            # Determine which file to process (verify final paths stay in scope before touching disk)
+            meter_file = Path(check_read(scope, str(output_dir / f"{idf_name}Meter.csv"), "meter CSV file"))
+            variable_file = Path(check_read(scope, str(output_dir / f"{idf_name}.csv"), "variable CSV file"))
             
             csv_file = None
             data_type = None
@@ -3006,7 +3018,7 @@ class EnergyPlusManager:
             
             # Save as HTML
             html_filename = f"{idf_name}_{data_type.lower()}_plot.html"
-            html_path = output_dir / html_filename
+            html_path = Path(check_write(scope, str(output_dir / html_filename), "plot file"))
             
             fig.write_html(str(html_path))
             

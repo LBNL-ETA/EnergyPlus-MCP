@@ -170,6 +170,65 @@ def test_similar_path_suggestions_stay_in_scope(http_config, as_alice):
     assert not any("bob" in s or "server_secret" in s for s in suggestions)
 
 
+@pytest.mark.parametrize("bad_name", [
+    "../bob/run1/secret",
+    "../../bob/run1/secret",
+    "sub/secret",
+    "sub\\secret",
+    "/tmp/secret",
+    "..",
+    ".",
+])
+def test_create_interactive_plot_rejects_traversal_in_idf_name(http_config, as_alice, tmp_path, bad_name):
+    from energyplus_mcp_server.energyplus_tools import EnergyPlusManager
+    bob_run = tmp_path / "users/bob/run1"
+    bob_run.mkdir(parents=True, exist_ok=True)
+    (bob_run / "secret.csv").write_text("Date/Time,Zone Mean Air Temperature [C](Hourly)\n01/01  01:00:00,21.0\n")
+    alice_run = tmp_path / "users/alice/run1"
+    alice_run.mkdir(parents=True, exist_ok=True)
+
+    mgr = EnergyPlusManager.__new__(EnergyPlusManager)
+    mgr.config = http_config
+    with pytest.raises(RuntimeError, match="Invalid idf_name"):
+        mgr.create_interactive_plot(str(alice_run), idf_name=bad_name)
+    assert not list(bob_run.glob("*.html"))
+
+
+def test_create_interactive_plot_blocks_symlink_csv_escape(http_config, as_alice, tmp_path):
+    from energyplus_mcp_server.energyplus_tools import EnergyPlusManager
+    bob_run = tmp_path / "users/bob/run1"
+    bob_run.mkdir(parents=True, exist_ok=True)
+    bob_csv = bob_run / "secret.csv"
+    bob_csv.write_text("Date/Time,Zone Mean Air Temperature [C](Hourly)\n01/01  01:00:00,21.0\n")
+
+    alice_run = tmp_path / "users/alice/run1"
+    alice_run.mkdir(parents=True, exist_ok=True)
+    (alice_run / "linked.csv").symlink_to(bob_csv)
+
+    mgr = EnergyPlusManager.__new__(EnergyPlusManager)
+    mgr.config = http_config
+    with pytest.raises(RuntimeError, match="outside the directories"):
+        mgr.create_interactive_plot(str(alice_run), idf_name="linked")
+    assert not list(alice_run.glob("*.html"))
+    assert not list(bob_run.glob("*.html"))
+
+
+def test_create_interactive_plot_works_inside_own_workspace(http_config, as_alice, tmp_path):
+    from energyplus_mcp_server.energyplus_tools import EnergyPlusManager
+    alice_run = tmp_path / "users/alice/run1"
+    alice_run.mkdir(parents=True, exist_ok=True)
+    (alice_run / "model.csv").write_text(
+        "Date/Time,Zone Mean Air Temperature [C](Hourly)\n01/01  01:00:00,21.0\n01/01  02:00:00,21.5\n"
+    )
+
+    mgr = EnergyPlusManager.__new__(EnergyPlusManager)
+    mgr.config = http_config
+    result = json.loads(mgr.create_interactive_plot(str(alice_run), idf_name="model"))
+    assert result["success"] is True
+    assert result["output_file"] == _real(alice_run / "model_variable_plot.html")
+    assert (alice_run / "model_variable_plot.html").exists()
+
+
 # --- admin gating --------------------------------------------------------------
 
 def test_admin_tools_require_admin_label(http_config):
