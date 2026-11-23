@@ -1,10 +1,16 @@
 """
 Output variables utility module for EnergyPlus MCP Server.
 Handles discovery, validation, and addition of EnergyPlus output variables.
+
+EnergyPlus Model Context Protocol Server (EnergyPlus-MCP)
+Copyright (c) 2025, The Regents of the University of California,
+through Lawrence Berkeley National Laboratory (subject to receipt of
+any required approvals from the U.S. Dept. of Energy). All rights reserved.
+
+See License.txt in the parent directory for license details.
 """
 
 import os
-import uuid
 import json
 import logging
 import time
@@ -12,6 +18,7 @@ from typing import Dict, List, Any, Optional, Set, Tuple
 from pathlib import Path
 from datetime import datetime
 import shutil
+import tempfile
 from difflib import get_close_matches
 
 from eppy.modeleditor import IDF
@@ -79,6 +86,8 @@ class OutputVariableManager:
         Returns:
             Dictionary with discovered variables and metadata
         """
+        temp_idf_path = None
+        output_dir = None
         try:
             logger.info(f"Discovering available output variables for: {idf_path}")
             
@@ -88,6 +97,7 @@ class OutputVariableManager:
             # Run short simulation
             logger.info("Running short simulation to generate variable dictionary...")
             sim_result = self._run_variable_discovery_simulation(temp_idf_path)
+            output_dir = sim_result.get("output_directory")
             
             if not sim_result["success"]:
                 return {
@@ -97,7 +107,7 @@ class OutputVariableManager:
                 }
             
             # Parse .rdd file
-            rdd_file_path = self._find_rdd_file(sim_result["output_directory"])
+            rdd_file_path = self._find_rdd_file(output_dir)
             if not rdd_file_path:
                 return {
                     "success": False,
@@ -106,9 +116,6 @@ class OutputVariableManager:
             
             # Extract variables from .rdd file
             variables = self._parse_rdd_file(rdd_file_path)
-            
-            # Clean up temporary files
-            self._cleanup_temp_files(temp_idf_path, sim_result["output_directory"])
             
             result = {
                 "success": True,
@@ -126,6 +133,8 @@ class OutputVariableManager:
         except Exception as e:
             logger.error(f"Error discovering available output variables: {e}")
             raise RuntimeError(f"Error discovering available output variables: {str(e)}")
+        finally:
+            self._cleanup_temp_files(temp_idf_path, output_dir)
     
     def get_configured_variables(self, idf_path: str) -> Dict[str, Any]:
         """
@@ -214,11 +223,14 @@ class OutputVariableManager:
             run_period.End_Month = 1
             run_period.End_Day_of_Month = run_days
         
-        # Create temporary file
-        temp_path = os.path.join(
-            self.config.paths.temp_dir, 
-            f"temp_variable_discovery_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.idf"
+        # Create unique temporary file to avoid concurrent-request collisions
+        os.makedirs(self.config.paths.temp_dir, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(
+            prefix="temp_variable_discovery_",
+            suffix=".idf",
+            dir=self.config.paths.temp_dir,
         )
+        os.close(fd)
         idf.save(temp_path)
         
         return temp_path
@@ -226,10 +238,12 @@ class OutputVariableManager:
     def _run_variable_discovery_simulation(self, temp_idf_path: str) -> Dict[str, Any]:
         """Run a minimal simulation just to generate the .rdd file"""
         try:
-            # Create output directory
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_dir = os.path.join(self.config.paths.temp_dir, f"variable_discovery_{timestamp}_{uuid.uuid4().hex[:8]}")
-            os.makedirs(output_dir, exist_ok=True)
+            # Create unique output directory to avoid concurrent-request collisions
+            os.makedirs(self.config.paths.temp_dir, exist_ok=True)
+            output_dir = tempfile.mkdtemp(
+                prefix="variable_discovery_",
+                dir=self.config.paths.temp_dir,
+            )
             
             # Check for weather file
             weather_file = None
@@ -382,16 +396,16 @@ class OutputVariableManager:
         
         return categories
     
-    def _cleanup_temp_files(self, temp_idf_path: str, temp_output_dir: str):
+    def _cleanup_temp_files(self, temp_idf_path: Optional[str], temp_output_dir: Optional[str]):
         """Clean up temporary files and directories"""
         try:
             # Remove temporary IDF file
-            if os.path.exists(temp_idf_path):
+            if temp_idf_path and os.path.exists(temp_idf_path):
                 os.remove(temp_idf_path)
                 logger.debug(f"Cleaned up temporary IDF: {temp_idf_path}")
             
             # Remove temporary output directory
-            if os.path.exists(temp_output_dir):
+            if temp_output_dir and os.path.exists(temp_output_dir):
                 shutil.rmtree(temp_output_dir)
                 logger.debug(f"Cleaned up temporary output directory: {temp_output_dir}")
         

@@ -1,6 +1,13 @@
 """
 People object utility module for EnergyPlus MCP Server.
 Handles inspection and modification of People objects in EnergyPlus models.
+
+EnergyPlus Model Context Protocol Server (EnergyPlus-MCP)
+Copyright (c) 2025, The Regents of the University of California,
+through Lawrence Berkeley National Laboratory (subject to receipt of
+any required approvals from the U.S. Dept. of Energy). All rights reserved.
+
+See License.txt in the parent directory for license details.
 """
 
 import logging

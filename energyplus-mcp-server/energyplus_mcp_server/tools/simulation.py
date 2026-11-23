@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional, Literal
 import asyncio
 import json
 
-from energyplus_mcp_server.utils.path_utils import check_writable_path
+from energyplus_mcp_server.utils.path_utils import resolve_output_location
 
 # Per-run settings a run_batch entry may override; the rest come from the call.
 RUN_FIELDS = (
@@ -85,10 +85,11 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             if unknown:
                 raise ValueError(f"Unsupported run fields: {sorted(unknown)}; allowed: {list(RUN_FIELDS)}")
             merged = {**defaults, **entry}
-            # Batch entries bypass the tool-argument guard, so check them here.
+            # Batch entries bypass the tool-argument guard, so check them here
+            # (over HTTP this also confines them to the caller's workspace).
             for name in ("output_directory", "runs_dir"):
                 if merged.get(name):
-                    check_writable_path(config, merged[name], description=name)
+                    merged[name] = resolve_output_location(config, merged[name], description=name)
             return merged
 
         def report(jobs: List[Any]) -> List[Dict[str, Any]]:

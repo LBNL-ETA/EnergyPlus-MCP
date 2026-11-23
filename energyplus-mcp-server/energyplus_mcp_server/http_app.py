@@ -3,6 +3,11 @@
 Wraps FastMCP's underlying Starlette app with:
 - A no-auth GET /health endpoint
 - AuthMiddleware that validates bearer tokens
+
+EnergyPlus Model Context Protocol Server (EnergyPlus-MCP)
+Copyright (c) 2025, The Regents of the University of California,
+through Lawrence Berkeley National Laboratory (subject to receipt of
+any required approvals from the U.S. Dept. of Energy). All rights reserved.
 """
 from __future__ import annotations
 

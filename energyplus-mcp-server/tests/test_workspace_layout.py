@@ -58,7 +58,9 @@ def _config(tmp_path):
     for directory in (paths.sample_files_path, paths.uploads_dir, paths.derived_models_dir,
                       energyplus.example_files_path, energyplus.weather_data_path):
         Path(directory).mkdir(parents=True)
-    return SimpleNamespace(paths=paths, energyplus=energyplus)
+    # resolve_path consults scope.current_scope, which reads the transport mode.
+    transport = SimpleNamespace(transport="stdio")
+    return SimpleNamespace(paths=paths, energyplus=energyplus, transport=transport)
 
 
 def _write(path: Path, text: str = "Version,26.1;\n") -> Path:

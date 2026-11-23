@@ -42,6 +42,7 @@ A Model Context Protocol (MCP) server for EnergyPlus that exposes a **compact, a
   - [Tool Surface Profiles (config.yaml)](#tool-surface-profiles-configyaml)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
+- [Cite this work](#cite-this-work)
 - [License](#license)
 
 </details>
@@ -255,14 +256,14 @@ The easiest development setup with all dependencies pre-configured.
 **Steps:**
 1. Clone and open in VS Code:
    ```bash
-   git clone -b agentic-bem https://github.com/LBNL-ETA/EnergyPlus-MCP.git
+   git clone https://github.com/LBNL-ETA/EnergyPlus-MCP.git
    cd EnergyPlus-MCP
    code .
    ```
 
 2. Click "Reopen in Container" when prompted (or press `Ctrl+Shift+P` → "Dev Containers: Reopen in Container")
 
-3. The container automatically installs EnergyPlus 26.1.0 and all dependencies (to pin a different version, see [below](#building-against-a-different-energyplus-version))
+3. The container automatically installs EnergyPlus 26.1.0 and all dependencies (to pin a different version, see [Building against a different EnergyPlus version](#building-against-a-different-energyplus-version))
 
 #### Docker Setup
 
@@ -270,7 +271,7 @@ For direct Docker development without VS Code:
 
 ```bash
 # Clone repository
-git clone -b agentic-bem https://github.com/LBNL-ETA/EnergyPlus-MCP.git
+git clone https://github.com/LBNL-ETA/EnergyPlus-MCP.git
 cd EnergyPlus-MCP
 
 # Build container
@@ -290,11 +291,11 @@ For local development (requires EnergyPlus installation):
 **Prerequisites:**
 - Python 3.10+
 - [uv package manager](https://github.com/astral-sh/uv)
-- [EnergyPlus 26.1.0](https://github.com/NREL/EnergyPlus/releases/tag/v26.1.0) (or pin a different version — see [below](#building-against-a-different-energyplus-version))
+- [EnergyPlus 26.1.0](https://github.com/NREL/EnergyPlus/releases/tag/v26.1.0) (or pin a different version — see [Building against a different EnergyPlus version](#building-against-a-different-energyplus-version))
 
 ```bash
 # Clone and install
-git clone -b agentic-bem https://github.com/LBNL-ETA/EnergyPlus-MCP.git
+git clone https://github.com/LBNL-ETA/EnergyPlus-MCP.git
 cd EnergyPlus-MCP/energyplus-mcp-server
 uv sync --extra dev
 
@@ -343,6 +344,15 @@ MCP_TOKENS=[{"label":"local-dev","token":"<paste-32+-char-hex-here>"}]
 - `token` is at least 32 characters
 - Labels and tokens must be unique within the array
 - An empty list while `MCP_TRANSPORT=streamable-http` causes the server to refuse to start (fail-closed)
+
+**Per-token file isolation.** Over HTTP, each token's `label` gets its own workspace at `<MCP_USER_DATA_ROOT>/<label>` (default `work/runs/users/<label>`):
+
+- Tools can **read** only from that workspace and the shared reference folders (`sample_files/`, EnergyPlus `ExampleFiles/` and `WeatherData/`).
+- Tools can **write** only inside that workspace. Relative paths and default outputs (including outputs for shared sample models) land there. Absolute paths elsewhere, `..` traversal and symlinks out of the workspace are rejected.
+- An MCP session can only be used by the token that opened it.
+- `get_server_configuration`, `get_server_logs`, `get_error_logs` and `clear_logs` require a token whose label is listed in `MCP_ADMIN_LABELS` (comma-separated; must match labels in `MCP_TOKENS`).
+
+Stdio mode is unaffected: a local stdio server keeps its unrestricted file access.
 
 **3. Start the server.** Pick the variant that matches your setup:
 
@@ -940,6 +950,8 @@ The Inspector opens a browser UI where you can list registered tools and invoke 
 }
 ```
 
+The Inspector opens a browser UI where you can list tools and invoke them with JSON arguments — useful for sanity-checking the install before wiring up a client.
+
 ## Architecture
 
 The server follows a layered architecture:
@@ -1021,7 +1033,7 @@ tool_surface:
   mode: masters
 ```
 
-Domains-only (default on `agentic-bem`; one manager per building domain):
+Domains-only (the default; one manager per building domain):
 ```yaml
 tool_surface:
   mode: domains
@@ -1075,6 +1087,33 @@ were never implemented and are deliberately rejected; see the migration guide.
    ```
 5. Submit a pull request
 
+## Cite this work
+
+If you use EnergyPlus-MCP in your research or project, please cite:
+
+> Han Li, Yujie Xu, Tianzhen Hong, EnergyPlus-MCP: A model-context-protocol server for ai-driven building energy modeling, SoftwareX, Volume 32, 2025, 102367, ISSN 2352-7110, https://doi.org/10.1016/j.softx.2025.102367.
+
+**BibTeX entry:**
+```bibtex
+@article{li2025energyplus,
+  title={EnergyPlus-MCP: A model-context-protocol server for ai-driven building energy modeling},
+  author={Li, Han and Xu, Yujie and Hong, Tianzhen},
+  journal={SoftwareX},
+  volume={32},
+  pages={102367},
+  year={2025},
+  issn={2352-7110},
+  doi={10.1016/j.softx.2025.102367},
+  url={https://www.sciencedirect.com/science/article/pii/S2352711025003334}
+}
+```
+
 ## License
 
-See [LICENSE](License.txt) file for details.
+EnergyPlus Model Context Protocol Server (EnergyPlus-MCP) Copyright (c) 2025, The Regents of the University of California, through Lawrence Berkeley National Laboratory (subject to receipt of any required approvals from the U.S. Dept. of Energy). All rights reserved.
+
+This software is distributed under a modified BSD license. See [License.txt](License.txt) for full license text and [Copyright.txt](Copyright.txt) for the copyright notice.
+
+If you have questions about your rights to use or distribute this software, please contact Berkeley Lab's Intellectual Property Office at IPO@lbl.gov.
+
+**Government Rights Notice**: This Software was developed under funding from the U.S. Department of Energy and the U.S. Government consequently retains certain rights. As such, the U.S. Government has been granted for itself and others acting on its behalf a paid-up, nonexclusive, irrevocable, worldwide license in the Software to reproduce, distribute copies to the public, prepare derivative works, and perform publicly and display publicly, and to permit others to do so.

@@ -1,6 +1,13 @@
 """
 Path utilities for EnergyPlus MCP Server
 Provides centralized path resolution for various file types
+
+EnergyPlus Model Context Protocol Server (EnergyPlus-MCP)
+Copyright (c) 2025, The Regents of the University of California,
+through Lawrence Berkeley National Laboratory (subject to receipt of
+any required approvals from the U.S. Dept. of Energy). All rights reserved.
+
+See License.txt in the parent directory for license details.
 """
 
 import os
@@ -36,7 +43,12 @@ class PathResolver:
             self.config.energyplus.example_files_path,
             self.config.energyplus.weather_data_path
         ]
-        
+        from ..scope import current_scope
+        scope = current_scope(self.config)
+        if scope is not None:
+            # Never suggest (and so reveal) files outside the caller's scope.
+            search_dirs = list(scope.read_roots)
+
         target_name = os.path.basename(target_path).lower()
         
         for search_dir in search_dirs:
@@ -90,7 +102,15 @@ def resolve_path(config: Config, file_path: str, file_types: List[str] = None,
     """
     if not file_path:
         raise ValueError(f"{description} path cannot be empty")
-    
+
+    # Over streamable-http, confine the caller to its own workspace plus the
+    # shared read-only reference directories. Stdio returns None (unscoped).
+    from ..scope import current_scope
+    scope = current_scope(config)
+    if scope is not None:
+        return _resolve_scoped_path(config, scope, file_path, file_types, description,
+                                    must_exist, enable_fuzzy_weather_matching, default_dir)
+
     # If it's already an absolute path
     if os.path.isabs(file_path):
         if must_exist and not os.path.exists(file_path):
@@ -218,12 +238,61 @@ def read_only_roots(config: Config) -> List[tuple[str, Path]]:
     return roots
 
 
+# Work-area folders, by kind: the PathConfig attribute used over stdio, and the
+# same layout inside a caller's own workspace over streamable-http.
+WORK_KINDS = {
+    "derived": ("derived_models_dir", os.path.join("models", "derived")),
+    "uploads": ("uploads_dir", os.path.join("models", "uploads")),
+    "runs": ("output_dir", "runs"),
+    "reports": ("reports_dir", "reports"),
+}
+
+
+def _current_scope(config: Config):
+    from ..scope import current_scope
+    return current_scope(config)
+
+
+def work_dir(config: Config, kind: str) -> str:
+    """Folder for one kind of output: ``work/<...>`` over stdio, or the same
+    layout inside the caller's workspace (``<user_root>/<...>``) over HTTP."""
+    attribute, subfolder = WORK_KINDS[kind]
+    scope = _current_scope(config)
+    if scope is None:
+        return getattr(config.paths, attribute)
+    return os.path.join(scope.user_root, subfolder)
+
+
+def resolve_output_location(config: Config, path: str, description: str = "output path") -> str:
+    """Validate a caller-supplied output path and return where it will be written.
+
+    Over stdio the path is checked against the read-only input trees and
+    returned unchanged, so each tool keeps its own relative-path convention.
+    Over HTTP a relative path is taken relative to the caller's workspace and
+    the absolute, symlink-resolved result must stay inside that workspace.
+    """
+    scope = _current_scope(config)
+    if scope is None:
+        check_writable_path(config, path, description)
+        return path
+    from ..scope import check_write
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path(scope.user_root) / candidate
+    return check_write(scope, str(candidate), description)
+
+
 def check_writable_path(config: Config, path: str, description: str = "output path") -> None:
-    """Raise ValueError when ``path`` would write into a read-only input tree.
+    """Raise when ``path`` would write into a read-only input tree, or, over
+    HTTP, outside the caller's own workspace.
 
     A relative path is checked against both the workspace root and the current
     directory, because tools resolve relative outputs against either one.
     """
+    scope = _current_scope(config)
+    if scope is not None:
+        resolve_output_location(config, path, description)
+        return
     candidate = Path(path).expanduser()
     if candidate.is_absolute():
         resolved = [candidate.resolve()]
@@ -245,10 +314,11 @@ def check_writable_path(config: Config, path: str, description: str = "output pa
 def derived_model_path(config: Config, source_path: str, suffix: str = "_modified") -> str:
     """Default output for an edited model: ``work/models/derived/<stem><suffix>.idf``.
 
+    Over HTTP this is ``<user_root>/models/derived/`` instead (see work_dir).
     Creates the directory so the caller can save straight to the path.
     """
     source = Path(source_path)
-    directory = Path(config.paths.derived_models_dir)
+    directory = Path(work_dir(config, "derived"))
     directory.mkdir(parents=True, exist_ok=True)
     return str(directory / f"{source.stem}{suffix}{source.suffix or '.idf'}")
 
@@ -256,11 +326,87 @@ def derived_model_path(config: Config, source_path: str, suffix: str = "_modifie
 def report_path(config: Config, filename: str) -> str:
     """Default location for a generated report, diagram, or viewer.
 
-    Creates ``work/reports`` so the caller can save straight to the path.
+    Creates ``work/reports`` (over HTTP, ``<user_root>/reports``) so the caller
+    can save straight to the path.
     """
-    directory = Path(config.paths.reports_dir)
+    directory = Path(work_dir(config, "reports"))
     directory.mkdir(parents=True, exist_ok=True)
     return str(directory / filename)
+def _has_extension(path: str, file_types: Optional[List[str]]) -> bool:
+    return not file_types or any(path.lower().endswith(ext.lower()) for ext in file_types)
+
+
+def _resolve_scoped_path(config: Config, scope, file_path: str, file_types: Optional[List[str]],
+                         description: str, must_exist: bool,
+                         enable_fuzzy_weather_matching: bool,
+                         default_dir: Optional[str] = None) -> str:
+    """resolve_path for a caller confined to ``scope`` (see energyplus_mcp_server.scope).
+
+    Outputs always land in the caller's own workspace. A bare output filename
+    whose ``default_dir`` is a work-area folder (for example work/models/derived)
+    goes to the same folder inside the caller's workspace. Inputs are looked up
+    in the caller's workspace and its models/derived and models/uploads folders,
+    then the shared reference directories (including sample_files category
+    folders); the server's working directory and the wider workspace are never
+    searched.
+    """
+    from ..scope import check_read, check_write
+
+    if not must_exist:
+        if os.path.isabs(file_path):
+            candidate = file_path
+        else:
+            base = scope.user_root
+            if default_dir and not os.path.dirname(file_path):
+                for kind, (attribute, _) in WORK_KINDS.items():
+                    if os.path.abspath(default_dir) == os.path.abspath(getattr(config.paths, attribute, "") or ""):
+                        base = work_dir(config, kind)
+                        break
+            candidate = os.path.join(base, file_path)
+        return check_write(scope, candidate, description)
+
+    if os.path.isabs(file_path):
+        resolved = check_read(scope, file_path, description)
+        if not os.path.exists(resolved):
+            raise FileNotFoundError(f"{description} not found: {file_path}")
+        if not _has_extension(resolved, file_types):
+            raise ValueError(f"File '{file_path}' does not have expected extension: {file_types}")
+        return resolved
+
+    def _search(search_paths: List[Optional[str]]) -> Optional[str]:
+        for search_path in search_paths:
+            if not search_path or not os.path.exists(search_path):
+                continue
+            candidate = os.path.join(search_path, file_path)
+            if (os.path.exists(candidate) and scope.can_read(candidate)
+                    and _has_extension(candidate, file_types)):
+                return check_read(scope, candidate, description)
+        return None
+
+    found = _search([
+        scope.user_root,
+        work_dir(config, "derived"),
+        work_dir(config, "uploads"),
+        config.paths.sample_files_path,
+    ])
+    if found:
+        return found
+    sample = _find_in_sample_files(config, file_path, file_types)
+    if sample and scope.can_read(sample):
+        return check_read(scope, sample, description)
+    found = _search([
+        config.energyplus.example_files_path if file_types and '.idf' in file_types else None,
+        config.energyplus.weather_data_path if file_types and '.epw' in file_types else None,
+    ])
+    if found:
+        return found
+
+    if enable_fuzzy_weather_matching and file_types and '.epw' in file_types:
+        for match in find_weather_files_by_name(config, file_path):
+            if scope.can_read(match):
+                return check_read(scope, match, description)
+
+    raise FileNotFoundError(f"{description} not found: {file_path}")
 
 
 # Convenience functions for common use cases
@@ -417,9 +563,9 @@ def list_files(config: Config,
         roots.append((config.paths.sample_files_path, 'sample'))
     # Models the user or agent is working on
     if getattr(config.paths, 'uploads_dir', None):
-        roots.append((config.paths.uploads_dir, 'upload'))
+        roots.append((work_dir(config, "uploads"), 'upload'))
     if getattr(config.paths, 'derived_models_dir', None):
-        roots.append((config.paths.derived_models_dir, 'derived'))
+        roots.append((work_dir(config, "derived"), 'derived'))
     if include_example_files and getattr(config.energyplus, 'example_files_path', None):
         roots.append((config.energyplus.example_files_path, 'example'))
     if include_weather_data and getattr(config.energyplus, 'weather_data_path', None):

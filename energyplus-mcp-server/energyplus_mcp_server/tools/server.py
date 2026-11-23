@@ -4,6 +4,8 @@ from pathlib import Path
 from datetime import datetime
 import os
 
+from energyplus_mcp_server.scope import ScopeError, require_admin
+
 STARTUP_TIME: datetime  # imported from boot module if needed
 
 
@@ -21,8 +23,38 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         select: Literal["server", "error", "both"] = "both",
         mode: Literal["dry_run", "apply"] = "dry_run",
     ) -> str:
+        """Server status, logs, and log rotation.
+
+        Actions and the parameters each one uses:
+        - status: server, EnergyPlus, and log-file status. include_config=True
+          with detail="detailed" adds the full server configuration.
+        - logs: recent log lines. type picks the server log, the error log, or
+          both; lines, contains, and since (ISO datetime) filter the output;
+          format is "summary" or "raw".
+        - clear_logs: rotate log files to timestamped backups. select picks
+          which logs; mode="dry_run" (default) only previews, mode="apply"
+          rotates.
+
+        Over the HTTP transport, logs, clear_logs, and status with the full
+        configuration require a token listed in MCP_ADMIN_LABELS. Stdio callers
+        are always allowed.
+        """
         log_dir = Path(config.paths.workspace_root) / "logs"
         now = datetime.utcnow().isoformat()
+
+        # Logs and configuration are server-wide, so over HTTP they can expose
+        # other users' paths and errors. Check per action: plain status stays
+        # open to every token.
+        admin_operation = None
+        if action in ("logs", "clear_logs"):
+            admin_operation = f"server_manager action '{action}'"
+        elif action == "status" and include_config and detail == "detailed":
+            admin_operation = "server_manager status with include_config"
+        if admin_operation:
+            try:
+                require_admin(config, admin_operation)
+            except ScopeError as e:
+                return json.dumps({"meta": {"action": action, "timestamp": now}, "error": str(e)}, indent=2)
 
         def _file_info(p: Path) -> Dict[str, Any]:
             try:

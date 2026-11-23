@@ -1,5 +1,12 @@
 """
 Configuration management for EnergyPlus MCP Server
+
+EnergyPlus Model Context Protocol Server (EnergyPlus-MCP)
+Copyright (c) 2025, The Regents of the University of California,
+through Lawrence Berkeley National Laboratory (subject to receipt of
+any required approvals from the U.S. Dept. of Energy). All rights reserved.
+
+See License.txt in the parent directory for license details.
 """
 
 import os
@@ -47,6 +54,9 @@ class PathConfig:
     uploads_dir: str = ""
     derived_models_dir: str = ""
     reports_dir: str = ""
+    # Parent of the per-token workspaces used by the streamable-http transport
+    # (<user_data_root>/<token label>). Override with MCP_USER_DATA_ROOT.
+    user_data_root: str = ""
 
     def __post_init__(self):
         """Set default paths after initialization"""
@@ -67,6 +77,8 @@ class PathConfig:
             self.output_dir = os.path.join(self.work_dir, "runs")
         if not self.reports_dir:
             self.reports_dir = os.path.join(self.work_dir, "reports")
+        if not self.user_data_root:
+            self.user_data_root = os.path.join(self.output_dir, "users")
 
 
 @dataclass
@@ -101,6 +113,8 @@ class AuthConfig:
     Empty dict in stdio mode (no auth wired in).
     """
     tokens: dict[str, str] = field(default_factory=dict)
+    # Labels allowed to call server-wide admin tools (logs, configuration).
+    admin_labels: frozenset = frozenset()
 
 
 @dataclass
@@ -206,6 +220,19 @@ class Config:
                 "streamable-http transport requires non-empty MCP_TOKENS"
             )
         self.auth.tokens = tokens
+
+        admin_raw = os.getenv("MCP_ADMIN_LABELS", "").strip()
+        admin_labels = frozenset(a.strip() for a in admin_raw.split(",") if a.strip())
+        unknown = admin_labels - set(tokens.values())
+        if unknown:
+            raise ValueError(
+                f"MCP_ADMIN_LABELS names labels not in MCP_TOKENS: {sorted(unknown)}"
+            )
+        self.auth.admin_labels = admin_labels
+
+        user_root = os.getenv("MCP_USER_DATA_ROOT", "").strip()
+        if user_root:
+            self.paths.user_data_root = user_root
 
     def _setup_energyplus_paths(self):
         """Set up EnergyPlus paths from environment variables or defaults"""

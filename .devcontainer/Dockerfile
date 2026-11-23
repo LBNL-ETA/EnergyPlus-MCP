@@ -43,7 +43,7 @@ RUN apt-get update && \
 # -----------------------------------------------------------------------------
 # 2. EnergyPlus (auto-detect host architecture)
 #
-# To build against a different EnergyPlus release, override these three build
+# To build against a different EnergyPlus release, override these four build
 # args together — e.g. to pin 25.1.0:
 #   docker build \
 #     --build-arg EPLUS_VER=25.1.0 \

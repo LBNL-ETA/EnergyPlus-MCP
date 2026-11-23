@@ -104,6 +104,8 @@ def workspace(tmp_path, monkeypatch):
                 example_files_path="", weather_data_path="",
             ),
             server=SimpleNamespace(simulation_timeout=timeout, max_concurrent_simulations=max_concurrency),
+            # Output paths go through scope.current_scope, which reads the transport.
+            transport=SimpleNamespace(transport="stdio"),
         )
         manager = EnergyPlusManager.__new__(EnergyPlusManager)
         manager.config = config

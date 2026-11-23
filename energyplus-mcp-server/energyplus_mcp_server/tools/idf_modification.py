@@ -18,7 +18,7 @@ import json
 import logging
 
 from energyplus_mcp_server.utils.idf_modifier import IDFModifier
-from energyplus_mcp_server.utils.path_utils import resolve_idf_path
+from energyplus_mcp_server.utils.path_utils import resolve_idf_path, work_dir
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +224,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 if not fields:
                     return json.dumps({"error": "Missing required parameter: fields"}, indent=2)
                 # Use IDFModifier for the actual modification
-                modifier = IDFModifier(output_dir=config.paths.derived_models_dir)
+                modifier = IDFModifier(output_dir=work_dir(config, "derived"))
 
                 # Convert fields dict to list format for IDFModifier
                 modifications = [{"field": k, "value": v} for k, v in fields.items()]
@@ -250,7 +250,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     return json.dumps({"error": "Missing required parameter: fields"}, indent=2)
 
                 # Use IDFModifier to add a new object
-                modifier = IDFModifier(output_dir=config.paths.derived_models_dir)
+                modifier = IDFModifier(output_dir=work_dir(config, "derived"))
 
                 # Perform object creation with IDD validation
                 result = modifier.add_object(
@@ -268,7 +268,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
 
             if action == "delete":
                 # Use IDFModifier to delete objects
-                modifier = IDFModifier(output_dir=config.paths.derived_models_dir)
+                modifier = IDFModifier(output_dir=work_dir(config, "derived"))
 
                 # Perform deletion
                 result = modifier.delete_objects(

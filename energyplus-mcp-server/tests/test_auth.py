@@ -142,6 +142,8 @@ async def test_build_app_health_and_auth_path(monkeypatch):
     from mcp.server.transport_security import TransportSecuritySettings
     from energyplus_mcp_server.http_app import build_app
 
+    # Disable mcp's DNS-rebinding protection in the test fixture; we're testing
+    # http_app composition + auth, not the SDK's host check.
     fastmcp = FastMCP(
         "test-server",
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
@@ -152,6 +154,11 @@ async def test_build_app_health_and_auth_path(monkeypatch):
     from asgi_lifespan import LifespanManager
 
     async with LifespanManager(app):
+        # Each request gets a fresh AsyncClient + Transport; starlette's
+        # BaseHTTPMiddleware + httpx ASGITransport can leave shared transport
+        # state in a closed state after a middleware-returned response, which
+        # trips up subsequent requests. Fresh transport+client per request.
+
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
             r = await c.get("/health")
             assert r.status_code == 200
@@ -161,6 +168,10 @@ async def test_build_app_health_and_auth_path(monkeypatch):
             r = await c.post("/mcp")
             assert r.status_code == 401
 
+        # Authenticated POST with proper MCP headers reaches FastMCP.
+        # Without a valid initialize handshake, FastMCP returns 4xx — we just
+        # assert it's NOT 401 (auth worked) and NOT 5xx (session manager
+        # lifespan + transport security composed correctly).
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
             r = await c.post(
                 "/mcp",
@@ -173,3 +184,19 @@ async def test_build_app_health_and_auth_path(monkeypatch):
             )
             assert r.status_code != 401
             assert r.status_code < 500
+
+        # With valid auth, request reaches FastMCP. Body shape is intentionally
+        # not a real MCP message — we only assert no 500 (which would indicate
+        # the session manager lifespan never ran and _task_group is None).
+        r = await c.post(
+            "/mcp",
+            headers={
+                "Authorization": "Bearer build-app-test-32-chars-abcdefghij",
+                "Accept": "application/json, text/event-stream",
+            },
+            json={"jsonrpc": "2.0", "method": "ping", "id": 1},
+        )
+        assert r.status_code != 500, (
+            f"FastMCP returned 500 — likely session_manager lifespan was "
+            f"not wired. Body: {r.text!r}"
+        )

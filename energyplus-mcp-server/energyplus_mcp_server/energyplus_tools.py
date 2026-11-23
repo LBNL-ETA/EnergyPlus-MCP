@@ -1,5 +1,12 @@
 """
 EnergyPlus tools with configuration management and simulation control
+
+EnergyPlus Model Context Protocol Server (EnergyPlus-MCP)
+Copyright (c) 2025, The Regents of the University of California,
+through Lawrence Berkeley National Laboratory (subject to receipt of
+any required approvals from the U.S. Dept. of Energy). All rights reserved.
+
+See License.txt in the parent directory for license details.
 """
 
 import os
@@ -38,7 +45,12 @@ from plotly.subplots import make_subplots
 
 from .config import get_config, Config
 from .utils.diagrams import HVACDiagramGenerator
-from .utils.path_utils import check_writable_path, derived_model_path, report_path
+from .utils.path_utils import (
+    derived_model_path,
+    report_path,
+    resolve_output_location,
+    work_dir,
+)
 from .utils import energyplus_process
 from .utils.simulation_queue import SimulationJob, SimulationQueue, mark_interrupted_runs, server_identity
 from .utils.schedules import ScheduleValueParser
@@ -3638,7 +3650,7 @@ class EnergyPlusManager:
             if runs_dir:
                 if output_directory is not None:
                     raise ValueError("runs_dir owns the calibration output directory; omit output_directory")
-                check_writable_path(self.config, runs_dir, "runs_dir")
+                runs_dir = resolve_output_location(self.config, runs_dir, "runs_dir")
                 # Reject bad paths, incompatible models, and invalid IDFs before
                 # reserving a physical-run record.
                 resolved_idf_path = self._resolve_idf_path(idf_path)
@@ -3674,9 +3686,9 @@ class EnergyPlusManager:
                     raise ValueError("run_id must be a single directory name")
                 if output_directory is None:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    output_dir = Path(self.config.paths.output_dir) / f"{stem}_simulation_{timestamp}_{uuid.uuid4().hex[:6]}"
+                    output_dir = Path(work_dir(self.config, "runs")) / f"{stem}_simulation_{timestamp}_{uuid.uuid4().hex[:6]}"
                 else:
-                    check_writable_path(self.config, output_directory, "output_directory")
+                    output_directory = resolve_output_location(self.config, output_directory, "output_directory")
                     output_dir = Path(output_directory).expanduser()
                     if not output_dir.is_absolute():
                         output_dir = Path(self.config.paths.workspace_root) / output_dir
@@ -3874,9 +3886,11 @@ class EnergyPlusManager:
     def find_run_record(self, run_id: str, runs_dir: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Read a run's record from disk, for runs this server process is not tracking."""
         if runs_dir:
+            # Over HTTP this confines runs_dir to the caller's workspace.
+            runs_dir = resolve_output_location(self.config, runs_dir, "runs_dir")
             candidates = [Path(runs_dir).expanduser() / run_id / "run_record.json"]
         else:
-            output_root = Path(self.config.paths.output_dir)
+            output_root = Path(work_dir(self.config, "runs"))
             candidates = [output_root / run_id / "run_record.json", *output_root.glob("*/run_record.json")]
         for path in candidates:
             try:
@@ -4270,7 +4284,10 @@ class EnergyPlusManager:
         try:
             logger.info(f"Creating interactive plot from: {output_directory}")
             
-            output_dir = Path(output_directory)
+            # The plot HTML is written into this directory, so it must be writable.
+            from .scope import current_scope, check_read, check_write
+            scope = current_scope(self.config)
+            output_dir = Path(resolve_output_location(self.config, output_directory, "output directory"))
             if not output_dir.exists():
                 raise FileNotFoundError(f"Output directory not found: {output_directory}")
             
@@ -4290,9 +4307,19 @@ class EnergyPlusManager:
                 if not idf_name:
                     raise ValueError("Could not auto-detect IDF name. Please specify idf_name parameter.")
             
-            # Determine which file to process
-            meter_file = output_dir / f"{idf_name}Meter.csv"
-            variable_file = output_dir / f"{idf_name}.csv"
+            # Reject path separators or traversal in idf_name before building filenames
+            if (
+                os.path.isabs(idf_name)
+                or "/" in idf_name
+                or "\\" in idf_name
+                or ".." in idf_name
+                or idf_name in (".", "..")
+            ):
+                raise ValueError(f"Invalid idf_name: {idf_name!r}")
+
+            # Determine which file to process (verify final paths stay in scope before touching disk)
+            meter_file = Path(check_read(scope, str(output_dir / f"{idf_name}Meter.csv"), "meter CSV file"))
+            variable_file = Path(check_read(scope, str(output_dir / f"{idf_name}.csv"), "variable CSV file"))
             
             csv_file = None
             data_type = None
@@ -4422,7 +4449,7 @@ class EnergyPlusManager:
             
             # Save as HTML
             html_filename = f"{idf_name}_{data_type.lower()}_plot.html"
-            html_path = output_dir / html_filename
+            html_path = Path(check_write(scope, str(output_dir / html_filename), "plot file"))
             
             fig.write_html(str(html_path))
             
