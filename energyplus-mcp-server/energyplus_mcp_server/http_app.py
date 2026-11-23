@@ -3,6 +3,7 @@
 Wraps FastMCP's underlying Starlette app with:
 - A no-auth GET /health endpoint
 - /files/... routes for one-time upload and download links (file_routes.py)
+- OAuth sign-in routes when MCP_OAUTH is set (oauth.py)
 - AuthMiddleware that validates bearer tokens
 
 EnergyPlus Model Context Protocol Server (EnergyPlus-MCP)
@@ -54,17 +55,27 @@ def build_app(mcp: FastMCP, config: Config) -> Starlette:
         async with mcp.session_manager.run():
             yield
 
+    oauth = None
+    oauth_routes = []
+    if config.auth.oauth is not None:
+        from energyplus_mcp_server.oauth import GoogleOAuthProvider
+
+        oauth = GoogleOAuthProvider(config.auth.oauth)
+        oauth_routes = oauth.routes(config.transport.http_path)
+
     app = Starlette(
         routes=[
             Route("/health", _health, methods=["GET"]),
             *file_routes(),
+            *oauth_routes,
             Mount("/", app=inner),  # everything else routes into FastMCP
         ],
         lifespan=_lifespan,
     )
-    app.add_middleware(AuthMiddleware, tokens=config.auth.tokens)
+    app.add_middleware(AuthMiddleware, tokens=config.auth.tokens, oauth=oauth)
     logger.info(
-        "http_app built: /health (open) + /files (one-time links) + /mcp (auth) with %d token(s)",
+        "http_app built: /health (open) + /files (one-time links) + /mcp (auth) with %d token(s)%s",
         len(config.auth.tokens),
+        f" + Google sign-in for {len(config.auth.oauth.users)} email(s)" if oauth else "",
     )
     return app

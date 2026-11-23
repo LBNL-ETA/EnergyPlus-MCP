@@ -9,6 +9,15 @@ version `0.1.0`.
 
 ## [Unreleased]
 
+### Added
+
+- Google sign-in (OAuth) for the streamable-HTTP transport, for clients such
+  as ChatGPT apps that cannot send a fixed bearer token. Set `MCP_OAUTH` and
+  `MCP_PUBLIC_BASE_URL`; only listed emails get in, each mapped to a workspace
+  label. Registered clients, codes and tokens are signed and self-contained,
+  so no database is needed. `deploy.sh` takes `OAUTH_SECRET` and
+  `PUBLIC_BASE_URL`.
+
 ## [0.2.0] - 2026-11-23
 
 First tagged release. It combines the `main` branch with the domain-manager
