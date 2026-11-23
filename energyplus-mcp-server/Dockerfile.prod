@@ -1,0 +1,73 @@
+# syntax=docker/dockerfile:1.7
+# Production image for a remote (streamable-HTTP) EnergyPlus MCP server, e.g.
+# on Google Cloud Run (see scripts/deploy.sh). For local development use
+# .devcontainer/Dockerfile instead.
+#
+# Build from the energyplus-mcp-server directory:
+#   docker build -f Dockerfile.prod -t energyplus-mcp .
+#
+# Not included (they need the larger dev build): the reference_docs index and
+# the model_upgrade transition bundle. Those tools report themselves unavailable.
+
+# ── Stage 1: builder — EnergyPlus + locked Python dependencies ───────────────
+FROM python:3.12-slim AS builder
+
+ARG ENERGYPLUS_VERSION=26.1.0
+ARG ENERGYPLUS_HASH=6f2e40d102
+# NREL ships Ubuntu24.04 builds from v26.1.0 on.
+ARG ENERGYPLUS_TARBALL=EnergyPlus-${ENERGYPLUS_VERSION}-${ENERGYPLUS_HASH}-Linux-Ubuntu24.04-x86_64.tar.gz
+ARG ENERGYPLUS_URL=https://github.com/NREL/EnergyPlus/releases/download/v${ENERGYPLUS_VERSION}/${ENERGYPLUS_TARBALL}
+ARG ENERGYPLUS_PREFIX=/app/software/EnergyPlusV26-1-0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl libgl1 libxext6 libsm6 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p ${ENERGYPLUS_PREFIX} \
+    && curl -fSL -o /tmp/eplus.tgz "${ENERGYPLUS_URL}" \
+    && tar -xzf /tmp/eplus.tgz -C ${ENERGYPLUS_PREFIX} --strip-components=1 \
+    && rm /tmp/eplus.tgz
+
+# Drop large folders the server does not use.
+RUN find ${ENERGYPLUS_PREFIX} -type d -name Documentation -prune -exec rm -rf {} + ; \
+    find ${ENERGYPLUS_PREFIX} -type d -name MacroDataSets -prune -exec rm -rf {} +
+
+WORKDIR /build
+COPY pyproject.toml uv.lock ./
+COPY energyplus_mcp_server ./energyplus_mcp_server
+# Install exactly the versions in uv.lock, then the package itself.
+RUN pip install --no-cache-dir uv \
+    && uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt \
+    && uv pip install --system --no-cache -r /tmp/requirements.txt \
+    && uv pip install --system --no-cache --no-deps .
+
+# ── Stage 2: runtime ─────────────────────────────────────────────────────────
+FROM python:3.12-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 libxext6 libsm6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 mcp
+
+COPY --from=builder /app/software /app/software
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+WORKDIR /workspace/energyplus-mcp-server
+COPY config.yaml ./config.yaml
+COPY sample_files ./sample_files
+# The server writes under work/ and logs/; per-user data goes to
+# MCP_USER_DATA_ROOT (mount persistent storage there in production).
+RUN mkdir -p work logs /data/users && chown -R mcp:mcp work logs /data
+
+ENV PYTHONUNBUFFERED=1 \
+    WORKSPACE_ROOT=/workspace/energyplus-mcp-server \
+    EPLUS_IDD_PATH=/app/software/EnergyPlusV26-1-0/Energy+.idd \
+    MCP_TRANSPORT=streamable-http \
+    MCP_HTTP_HOST=0.0.0.0 \
+    MCP_HTTP_PATH=/mcp \
+    MCP_USER_DATA_ROOT=/data/users
+
+USER mcp
+EXPOSE 8000
+ENTRYPOINT ["python", "-m", "energyplus_mcp_server.server"]

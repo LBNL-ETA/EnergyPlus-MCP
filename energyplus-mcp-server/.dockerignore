@@ -14,3 +14,15 @@ docker-compose.yml
 Dockerfile.dev
 README.md
 .devcontainer/
+# Local runtime data and tests (not part of the production image)
+outputs/
+work/
+logs/
+test_runs/
+tests/
+test_sqlite_queries.py
+.env
+.env.*
+!.env.example
+.ruff_cache/
+.vscode/
