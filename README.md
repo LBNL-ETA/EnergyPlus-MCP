@@ -26,6 +26,7 @@ A Model Context Protocol (MCP) server for EnergyPlus that exposes a **compact, a
     - [Docker Setup](#docker-setup)
     - [Local Development](#local-development)
     - [Streamable HTTP Transport (Local Testing)](#streamable-http-transport-local-testing)
+    - [Remote Deployment (Google Cloud Run)](#remote-deployment-google-cloud-run)
     - [Building against a different EnergyPlus version](#building-against-a-different-energyplus-version)
 - [Available Tools](#available-tools)
   - [Tool Registration Modes](#tool-registration-modes)
@@ -432,7 +433,22 @@ curl -i -X POST http://localhost:8000/mcp \
 - **JSON quoting in shells** — if you `export MCP_TOKENS=...` in zsh/bash instead of using `.env`, wrap the value in single quotes so the inner `"` characters survive.
 - **Port conflict on 8000** — set `MCP_HTTP_PORT=8001` in `.env` (the Cloud Run-style `PORT` env var is also honored).
 - **421 "Invalid Host header"** — `mcp>=1.10` ships DNS rebinding protection that rejects unrecognized Host headers. The server disables it by default for HTTP-behind-auth use cases. To re-enable with an allowlist, set `MCP_ALLOWED_HOSTS=host1.example.com,host2.example.com`.
-- **Tests** — transport and auth behavior is covered by `tests/test_config_transport.py` and `tests/test_auth.py`. Run with `uv run pytest tests/test_config_transport.py tests/test_auth.py`.
+- **Tests** — transport and auth behavior is covered by `tests/test_config_transport.py`, `tests/test_auth.py`, `tests/test_scope.py` and `tests/test_file_transfer.py`. Run with `uv run pytest`.
+
+#### Remote Deployment (Google Cloud Run)
+
+To share one server with colleagues, deploy the production image (`energyplus-mcp-server/Dockerfile.prod`) to Cloud Run with `energyplus-mcp-server/scripts/deploy.sh`. Each colleague gets their own bearer token and workspace, and uses `file_transfer` to move models and results.
+
+The script's header lists the one-time setup: an Artifact Registry repository, a `mcp-tokens` secret holding the `MCP_TOKENS` JSON, a Cloud Storage bucket for per-user files, and a dedicated runtime service account with access to only that secret and bucket. Avoid the default compute service account, which usually has broad project access. Then, from `energyplus-mcp-server/`:
+
+```bash
+PROJECT=my-project BUCKET=my-energyplus-mcp-users \
+SERVICE_ACCOUNT=energyplus-mcp-run@my-project.iam.gserviceaccount.com \
+ADMIN_LABELS=alice ./scripts/deploy.sh
+SVC_URL=https://<service>.run.app TOKEN=<a token> ./scripts/smoke.sh
+```
+
+The service runs a single instance (upload/download links and the simulation queue live in memory) that scales to zero when idle. The bucket is mounted at `MCP_USER_DATA_ROOT` (`/data/users`), so uploads and results survive restarts. Clients connect to `https://<service>.run.app/mcp` with `Authorization: Bearer <token>`. To rotate tokens, add a new version of the `mcp-tokens` secret and redeploy (or run `gcloud run services update` to start a new revision). The production image does not include the `reference_docs` index or the `model_upgrade` transition bundle; build from `.devcontainer/Dockerfile` if you need them.
 
 #### Building against a different EnergyPlus version
 
