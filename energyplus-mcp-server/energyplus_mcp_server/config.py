@@ -40,19 +40,43 @@ class EnergyPlusConfig:
 
 @dataclass
 class PathConfig:
-    """Path configuration"""
+    """Path configuration.
+
+    ``sample_files`` holds read-only curated inputs. Everything the server
+    writes goes under ``work/``: uploaded and derived models, simulation runs
+    (``output_dir``), and reports.
+    """
     workspace_root: str = "/workspace/energyplus-mcp-server"
     sample_files_path: str = ""
     temp_dir: str = "/tmp"
-    output_dir: str = "/workspace/energyplus-mcp-server/outputs"
+    output_dir: str = ""
+    work_dir: str = ""
+    uploads_dir: str = ""
+    derived_models_dir: str = ""
+    reports_dir: str = ""
     # Parent of the per-token workspaces used by the streamable-http transport
     # (<user_data_root>/<token label>). Override with MCP_USER_DATA_ROOT.
     user_data_root: str = ""
 
     def __post_init__(self):
         """Set default paths after initialization"""
+        # Override workspace_root from environment if set
+        workspace_env = os.getenv('WORKSPACE_ROOT')
+        if workspace_env:
+            self.workspace_root = workspace_env
+
         if not self.sample_files_path:
             self.sample_files_path = os.path.join(self.workspace_root, "sample_files")
+        if not self.work_dir:
+            self.work_dir = os.path.join(self.workspace_root, "work")
+        if not self.uploads_dir:
+            self.uploads_dir = os.path.join(self.work_dir, "models", "uploads")
+        if not self.derived_models_dir:
+            self.derived_models_dir = os.path.join(self.work_dir, "models", "derived")
+        if not self.output_dir:
+            self.output_dir = os.path.join(self.work_dir, "runs")
+        if not self.reports_dir:
+            self.reports_dir = os.path.join(self.work_dir, "reports")
         if not self.user_data_root:
             self.user_data_root = os.path.join(self.output_dir, "users")
 
@@ -61,10 +85,15 @@ class PathConfig:
 class ServerConfig:
     """Server configuration"""
     name: str = "energyplus-mcp-server"
-    version: str = "0.1.0"
+    version: str = "0.2.0"
     log_level: str = "INFO"
-    simulation_timeout: int = 300  # seconds
+    # Wall-clock limit per EnergyPlus run; 0 means no limit.
+    # Env: MCP_SIMULATION_TIMEOUT_SECONDS.
+    simulation_timeout: int = 0  # seconds
     tool_timeout: int = 60  # seconds
+    # EnergyPlus processes allowed at once; 0 means one fewer than the CPU
+    # count. Env: MCP_MAX_CONCURRENT_SIMULATIONS.
+    max_concurrent_simulations: int = 0
 
 
 @dataclass
@@ -101,6 +130,7 @@ class Config:
     def __post_init__(self):
         """Set up configuration after initialization"""
         self._setup_transport()
+        self._setup_simulation()
         self._setup_auth()
         self._setup_energyplus_paths()
         self._setup_logging()
@@ -123,6 +153,23 @@ class Config:
             except ValueError:
                 raise ValueError(f"MCP_HTTP_PORT/PORT must be an integer, got: {port_str!r}")
         self.transport.http_path = os.getenv("MCP_HTTP_PATH", self.transport.http_path)
+
+    def _setup_simulation(self):
+        """Read simulation concurrency and timeout env vars; fail closed on bad values."""
+        for env_name, attribute in (
+            ("MCP_MAX_CONCURRENT_SIMULATIONS", "max_concurrent_simulations"),
+            ("MCP_SIMULATION_TIMEOUT_SECONDS", "simulation_timeout"),
+        ):
+            raw = os.getenv(env_name)
+            if raw is None or not raw.strip():
+                continue
+            try:
+                value = int(raw)
+            except ValueError:
+                raise ValueError(f"{env_name} must be a non-negative integer, got: {raw!r}")
+            if value < 0:
+                raise ValueError(f"{env_name} must be a non-negative integer, got: {raw!r}")
+            setattr(self.server, attribute, value)
 
     _LABEL_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
     _MIN_TOKEN_LEN = 32
@@ -264,11 +311,17 @@ class Config:
         if not os.path.exists(self.paths.sample_files_path):
             logger.warning(f"Sample files directory not found: {self.paths.sample_files_path}")
         
-        # Create output directory if it doesn't exist (tolerant in dev/test)
-        try:
-            os.makedirs(self.paths.output_dir, exist_ok=True)
-        except OSError:
-            logger.warning("Could not create output dir %s", self.paths.output_dir)
+        # Create the writable work area if it doesn't exist (tolerant in dev/test)
+        for directory in (
+            self.paths.output_dir,
+            self.paths.uploads_dir,
+            self.paths.derived_models_dir,
+            self.paths.reports_dir,
+        ):
+            try:
+                os.makedirs(directory, exist_ok=True)
+            except OSError:
+                logger.warning("Could not create work directory %s", directory)
 
         logger.info("Configuration loaded and validated successfully")
 

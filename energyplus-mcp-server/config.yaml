@@ -1,0 +1,18 @@
+tool_surface:
+  # One of: masters | domains | hybrid
+  mode: domains
+
+  # Per-domain toggles (used when mode is domains or hybrid)
+  domains:
+    envelope: true
+    internal_loads: true
+    schedules: true
+    hvac: true
+    service_water: true
+    outputs: true
+    geometry: true
+
+  # Deprecated workflow-specific managers are disabled by default. They are
+  # thin aliases over domain operations and will be removed after migration.
+  compatibility:
+    workflow_managers: false

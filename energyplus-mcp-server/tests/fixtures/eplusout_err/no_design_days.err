@@ -1,0 +1,18 @@
+Program Version,EnergyPlus, Version 26.1.0-6f2e40d102, YMD=2026.10.06 19:47,
+   ** Severe  ** CheckEnvironmentSpecifications: Sizing for Zones has been requested but there are no design environments specified.
+   **   ~~~   ** ...Add appropriate SizingPeriod:* objects for your simulation.
+   ** Severe  ** CheckEnvironmentSpecifications: Sizing for Systems has been requested but there are no design environments specified.
+   **   ~~~   ** ...Add appropriate SizingPeriod:* objects for your simulation.
+   ** Severe  ** CheckEnvironmentSpecifications: Sizing for Equipment/Plants has been requested but there are no design environments specified.
+   **   ~~~   ** ...Add appropriate SizingPeriod:* objects for your simulation.
+   ** Warning ** CheckEnvironmentSpecifications: SimulationControl specified doing design day simulations, but no design environments specified.
+   **   ~~~   ** ...No design environment results produced. For these results, add appropriate SizingPeriod:* objects for your simulation.
+   **  Fatal  ** Program terminates due to preceding conditions.
+   ...Summary of Errors that led to program termination:
+   ..... Reference severe error count=3
+   ..... Last severe error=CheckEnvironmentSpecifications: Sizing for Equipment/Plants has been requested but there are no design environments specified.
+   ************* Warning:  Node connection errors not checked - most system input has not been read (see previous warning).
+   ************* Fatal error -- final processing.  Program exited before simulations began.  See previous error messages.
+   ************* EnergyPlus Warmup Error Summary. During Warmup: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Sizing Error Summary. During Sizing: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Terminated--Fatal Error Detected. 1 Warning; 3 Severe Errors; Elapsed Time=00hr 00min  0.02sec

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "energyplus-mcp-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "EnergyPlus MCP Server"
 authors = [{name = "Han Li", email = "hanli@lbl.gov"}]
 readme = "README.md"
@@ -17,6 +17,7 @@ dependencies = [
     "pandas",
     "plotly",
     "graphviz",
+    "pyyaml",
     "uvicorn[standard]",
     "python-dotenv",
 ]
@@ -39,7 +40,13 @@ repository = "https://github.com/LBNL-ETA/EnergyPlus-MCP"
 where = ["."]
 include = ["energyplus_mcp_server*"]
 
+[tool.setuptools.package-data]
+energyplus_mcp_server = ["skills/*/*.md", "skills/*/*.json"]
+
 [tool.pytest.ini_options]
+# Only collect the test suite; test_sqlite_queries.py at the project root is a
+# manual script that needs a local EnergyPlus install and simulation output.
+testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 

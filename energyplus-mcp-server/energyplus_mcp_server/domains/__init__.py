@@ -1,0 +1,54 @@
+"""Domain manager tool registration.
+
+Each domain module exposes `register(mcp, ep_manager, config)` which defines
+and registers its tools using the provided FastMCP instance.
+"""
+
+from typing import Any
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def register_all(mcp: Any, ep_manager: Any, config: Any,
+                 envelope: bool = True,
+                 internal_loads: bool = True,
+                 schedules: bool = True,
+                 hvac: bool = True,
+                 service_water: bool = True,
+                 outputs: bool = False,
+                 geometry: bool = True) -> None:
+    """Register workflow-neutral EnergyPlus/modeling domain managers."""
+    logger.info(
+        "Registering domain managers: envelope=%s, internal_loads=%s, schedules=%s, "
+        "hvac=%s, service_water=%s, outputs=%s, geometry=%s",
+        envelope, internal_loads, schedules, hvac, service_water, outputs, geometry,
+    )
+    if envelope:
+        from . import envelope as _env
+        _env.register(mcp, ep_manager, config)
+        logger.info("Registered envelope_manager tool")
+    if internal_loads:
+        from . import internal_loads as _il
+        _il.register(mcp, ep_manager, config)
+        logger.info("Registered internal_load_manager tool")
+    if schedules:
+        from . import schedules as _schedules
+        _schedules.register(mcp, ep_manager, config)
+        logger.info("Registered schedule_manager tool")
+    if hvac:
+        from . import hvac as _hv
+        _hv.register(mcp, ep_manager, config)
+        logger.info("Registered hvac_manager tool")
+    if service_water:
+        from . import service_water as _service_water
+        _service_water.register(mcp, ep_manager, config)
+        logger.info("Registered service_water_manager tool")
+    if outputs:
+        from . import outputs as _out
+        _out.register(mcp, ep_manager, config)
+        logger.info("Registered outputs_manager tool")
+    if geometry:
+        from . import geometry as _geom
+        _geom.register(mcp, ep_manager, config)
+        logger.info("Registered geometry_manager tool")

@@ -12,6 +12,15 @@ See License.txt in the parent directory for license details.
 import os
 import json
 import logging
+import math
+import re
+import shutil
+import subprocess
+import functools
+import threading
+import time
+import uuid
+from hashlib import sha256
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
@@ -20,7 +29,7 @@ from eppy.modeleditor import IDF
 from eppy import hvacbuilder
 from eppy.useful_scripts import loopdiagram
 from eppy import walk_hvac
-from datetime import datetime
+from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.patches import FancyBboxPatch
@@ -36,12 +45,22 @@ from plotly.subplots import make_subplots
 
 from .config import get_config, Config
 from .utils.diagrams import HVACDiagramGenerator
+from .utils.model_guard import check_model_for_caller
+from .utils.path_utils import (
+    derived_model_path,
+    report_path,
+    resolve_output_location,
+    work_dir,
+)
+from .utils import energyplus_process
+from .utils.simulation_queue import SimulationJob, SimulationQueue, mark_interrupted_runs, server_identity
 from .utils.schedules import ScheduleValueParser
 from .utils.output_variables import OutputVariableManager
 from .utils.output_meters import OutputMeterManager
 from .utils.people_utils import PeopleManager
 from .utils.lights_utils import LightsManager
 from .utils.electric_equipment_utils import ElectricEquipmentManager
+from .utils.error_parser import ErrorParser
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +80,14 @@ class EnergyPlusManager:
         self.people_manager = PeopleManager()
         self.lights_manager = LightsManager()
         self.electric_equipment_manager = ElectricEquipmentManager()
+        self.error_parser = ErrorParser()
+        self.simulation_queue = SimulationQueue(
+            self.config.server.max_concurrent_simulations,
+            self.config.server.simulation_timeout,
+        )
+        interrupted = mark_interrupted_runs(self.config.paths.output_dir)
+        if interrupted:
+            logger.warning("Marked %d run(s) left by a stopped server as interrupted", len(interrupted))
         
         logger.info(f"EnergyPlus Manager initialized with IDD: {self.config.energyplus.idd_path}")
     
@@ -81,50 +108,6 @@ class EnergyPlusManager:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize eppy with IDD {idd_path}: {e}")
     
-
-    def _output_path(self, output_path: Optional[str], source_path: str, default_name: str,
-                     description: str = "output file") -> str:
-        """Choose where a tool writes its output.
-
-        Unscoped (stdio): unchanged behavior — the given path as-is, or
-        ``default_name`` next to the input file.
-        Scoped (streamable-http): the result must be inside the caller's own
-        workspace; the default goes next to the input only if that is already
-        in the workspace (inputs from shared sample/example folders are not).
-        """
-        from .scope import current_scope, check_write
-        scope = current_scope(self.config)
-        if scope is None:
-            if output_path is None:
-                return str(Path(source_path).parent / default_name)
-            return output_path
-        if output_path is None:
-            candidate = str(Path(source_path).parent / default_name)
-            if not scope.can_write(candidate):
-                candidate = os.path.join(scope.user_root, default_name)
-            return check_write(scope, candidate, description)
-        from .utils.path_utils import resolve_path
-        return resolve_path(self.config, output_path, must_exist=False, description=description)
-
-    def _scoped_directory(self, directory: str, description: str) -> str:
-        """Return ``directory`` unchanged when unscoped; otherwise confine it to the
-        caller's workspace (relative paths are taken relative to that workspace)."""
-        from .scope import current_scope, check_write
-        scope = current_scope(self.config)
-        if scope is None:
-            return directory
-        candidate = directory if os.path.isabs(directory) else os.path.join(scope.user_root, directory)
-        return check_write(scope, candidate, description)
-
-    def _output_directory(self, output_directory: Optional[str], idf_path: str) -> str:
-        """Simulation output directory: given, or a timestamped default."""
-        if output_directory is not None:
-            return self._scoped_directory(output_directory, "output directory")
-        from .scope import current_scope
-        scope = current_scope(self.config)
-        base = scope.user_root if scope is not None else self.config.paths.output_dir
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return str(Path(base) / f"{Path(idf_path).stem}_simulation_{timestamp}")
 
     def _resolve_idf_path(self, idf_path: str) -> str:
         """Resolve IDF path (handle relative paths, sample files, example files, etc.)"""
@@ -325,7 +308,9 @@ class EnergyPlusManager:
             logger.debug(f"Resolved source path: {resolved_source_path}")
             
             # Resolve target path (for creation)
-            resolved_target_path = resolve_path(self.config, target_path, must_exist=False, description="target file")
+            # A bare target filename becomes a working copy in work/models/derived.
+            resolved_target_path = resolve_path(self.config, target_path, must_exist=False, description="target file",
+                                                default_dir=self.config.paths.derived_models_dir)
             logger.debug(f"Resolved target path: {resolved_target_path}")
             
             # Check if source file is readable
@@ -490,6 +475,7 @@ class EnergyPlusManager:
                     "version": self.config.server.version,
                     "log_level": self.config.server.log_level,
                     "simulation_timeout": self.config.server.simulation_timeout,
+                    "max_concurrent_simulations": self.simulation_queue.max_concurrency,
                     "tool_timeout": self.config.server.tool_timeout
                 },
                 "debug_mode": self.config.debug_mode
@@ -544,7 +530,13 @@ class EnergyPlusManager:
             
             # Check for materials referenced in constructions
             constructions = idf.idfobjects.get("Construction", [])
-            materials = idf.idfobjects.get("Material", []) + idf.idfobjects.get("Material:NoMass", [])
+            materials = [
+                material
+                for object_type, objects in idf.idfobjects.items()
+                if object_type.upper() == "MATERIAL"
+                or object_type.upper().startswith(("MATERIAL:", "WINDOWMATERIAL:"))
+                for material in objects
+            ]
             material_names = {getattr(mat, 'Name', '') for mat in materials}
             
             for construction in constructions:
@@ -646,20 +638,20 @@ class EnergyPlusManager:
     
 
     def check_simulation_settings(self, idf_path: str) -> str:
-        """Check SimulationControl and RunPeriod settings with modifiable fields info"""
+        """Check SimulationControl, RunPeriod, and Timestep settings with modifiable fields info"""
         resolved_path = self._resolve_idf_path(idf_path)
-        
+
         try:
             logger.debug(f"Checking simulation settings for: {resolved_path}")
             idf = IDF(resolved_path)
-            
+
             settings_info = {
                 "file_path": resolved_path,
                 "SimulationControl": {
                     "current_values": {},
                     "modifiable_fields": {
                         "Do_Zone_Sizing_Calculation": "Yes/No - Controls zone sizing calculations",
-                        "Do_System_Sizing_Calculation": "Yes/No - Controls system sizing calculations", 
+                        "Do_System_Sizing_Calculation": "Yes/No - Controls system sizing calculations",
                         "Do_Plant_Sizing_Calculation": "Yes/No - Controls plant sizing calculations",
                         "Run_Simulation_for_Sizing_Periods": "Yes/No - Run design day simulations",
                         "Run_Simulation_for_Weather_File_Run_Periods": "Yes/No - Run annual weather file simulation",
@@ -672,7 +664,7 @@ class EnergyPlusManager:
                     "modifiable_fields": {
                         "Name": "String - Name of the run period",
                         "Begin_Month": "Integer 1-12 - Starting month",
-                        "Begin_Day_of_Month": "Integer 1-31 - Starting day", 
+                        "Begin_Day_of_Month": "Integer 1-31 - Starting day",
                         "Begin_Year": "Integer - Starting year (optional)",
                         "End_Month": "Integer 1-12 - Ending month",
                         "End_Day_of_Month": "Integer 1-31 - Ending day",
@@ -682,7 +674,14 @@ class EnergyPlusManager:
                         "Use_Weather_File_Daylight_Saving_Period": "Yes/No",
                         "Apply_Weekend_Holiday_Rule": "Yes/No",
                         "Use_Weather_File_Rain_Indicators": "Yes/No",
-                        "Use_Weather_File_Snow_Indicators": "Yes/No"
+                        "Use_Weather_File_Snow_Indicators": "Yes/No",
+                        "Treat_Weather_as_Actual": "Yes/No"
+                    }
+                },
+                "Timestep": {
+                    "current_values": {},
+                    "modifiable_fields": {
+                        "Number_of_Timesteps_per_Hour": "Integer 1-60 - Number of zone timesteps per hour (default: 4, common values: 4, 6, 10, 12, 15, 20, 30, 60)"
                     }
                 }
             }
@@ -720,14 +719,25 @@ class EnergyPlusManager:
                     "Use_Weather_File_Daylight_Saving_Period": getattr(run_period, 'Use_Weather_File_Daylight_Saving_Period', 'Unknown'),
                     "Apply_Weekend_Holiday_Rule": getattr(run_period, 'Apply_Weekend_Holiday_Rule', 'Unknown'),
                     "Use_Weather_File_Rain_Indicators": getattr(run_period, 'Use_Weather_File_Rain_Indicators', 'Unknown'),
-                    "Use_Weather_File_Snow_Indicators": getattr(run_period, 'Use_Weather_File_Snow_Indicators', 'Unknown')
+                    "Use_Weather_File_Snow_Indicators": getattr(run_period, 'Use_Weather_File_Snow_Indicators', 'Unknown'),
+                    "Treat_Weather_as_Actual": getattr(run_period, 'Treat_Weather_as_Actual', 'Unknown')
                 }
                 settings_info["RunPeriod"]["current_values"].append(run_data)
             
             if not run_objs:
                 settings_info["RunPeriod"]["error"] = "No RunPeriod objects found"
-            
-            logger.debug(f"Found {len(sim_objs)} SimulationControl and {len(run_objs)} RunPeriod objects")
+
+            # Get current Timestep values
+            timestep_objs = idf.idfobjects.get("Timestep", [])
+            if timestep_objs:
+                timestep = timestep_objs[0]
+                settings_info["Timestep"]["current_values"] = {
+                    "Number_of_Timesteps_per_Hour": getattr(timestep, 'Number_of_Timesteps_per_Hour', 'Unknown')
+                }
+            else:
+                settings_info["Timestep"]["error"] = "No Timestep object found (EnergyPlus will use default: 4 timesteps/hour)"
+
+            logger.debug(f"Found {len(sim_objs)} SimulationControl, {len(run_objs)} RunPeriod, and {len(timestep_objs)} Timestep objects")
             return json.dumps(settings_info, indent=2)
             
         except Exception as e:
@@ -846,6 +856,499 @@ class EnergyPlusManager:
             raise RuntimeError(f"Error getting materials: {str(e)}")
     
 
+    def get_constructions(self, idf_path: str) -> str:
+        """Get construction information with layers"""
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.debug(f"Getting constructions for: {resolved_path}")
+            idf = IDF(resolved_path)
+            
+            constructions = []
+            
+            # Get Construction objects
+            construction_objs = idf.idfobjects.get("Construction", [])
+            for construction in construction_objs:
+                # Extract layers - first layer is "Outside_Layer", then "Layer_2", "Layer_3", etc.
+                layers = []
+                
+                # Get first layer (Outside_Layer)
+                first_layer = getattr(construction, 'Outside_Layer', None)
+                if first_layer:
+                    layers.append({"position": 1, "material": first_layer})
+                
+                # Get remaining layers (Layer_2, Layer_3, etc.)
+                layer_index = 2
+                while True:
+                    layer_field = f"Layer_{layer_index}"
+                    layer_name = getattr(construction, layer_field, None)
+                    if not layer_name:
+                        break
+                    layers.append({"position": layer_index, "material": layer_name})
+                    layer_index += 1
+                
+                construction_data = {
+                    "Type": "Construction",
+                    "Name": getattr(construction, 'Name', 'Unknown'),
+                    "Layers": layers,
+                    "Layer_Count": len(layers)
+                }
+                constructions.append(construction_data)
+            
+            logger.debug(f"Found {len(constructions)} constructions")
+            return json.dumps(constructions, indent=2)
+            
+        except Exception as e:
+            logger.error(f"Error getting constructions for {resolved_path}: {e}")
+            raise RuntimeError(f"Error getting constructions: {str(e)}")
+
+
+    def inspect_envelope_comprehensive(self, idf_path: str) -> str:
+        """Get comprehensive envelope inspection with surfaces, constructions, materials, and relationships"""
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Performing comprehensive envelope inspection for: {resolved_path}")
+            idf = IDF(resolved_path)
+            
+            # Get all materials with usage tracking
+            materials_dict = {}
+            material_to_constructions = {}  # Track which constructions use each material
+            
+            # Collect all material types
+            for mat_type in ["Material", "Material:NoMass", "WindowMaterial:SimpleGlazingSystem", 
+                           "WindowMaterial:Glazing", "WindowMaterial:Gas", "Material:AirGap"]:
+                for material in idf.idfobjects.get(mat_type, []):
+                    name = getattr(material, 'Name', 'Unknown')
+                    material_to_constructions[name] = []
+                    
+                    # Build material data based on type
+                    if mat_type == "Material":
+                        mat_data = {
+                            "name": name,
+                            "type": mat_type,
+                            "Roughness": getattr(material, 'Roughness', None),
+                            "Thickness": getattr(material, 'Thickness', None),
+                            "Conductivity": getattr(material, 'Conductivity', None),
+                            "Density": getattr(material, 'Density', None),
+                            "Specific_Heat": getattr(material, 'Specific_Heat', None),
+                            "Thermal_Absorptance": getattr(material, 'Thermal_Absorptance', None),
+                            "Solar_Absorptance": getattr(material, 'Solar_Absorptance', None),
+                            "Visible_Absorptance": getattr(material, 'Visible_Absorptance', None)
+                        }
+                    elif mat_type == "Material:NoMass":
+                        mat_data = {
+                            "name": name,
+                            "type": mat_type,
+                            "Roughness": getattr(material, 'Roughness', None),
+                            "Thermal_Resistance": getattr(material, 'Thermal_Resistance', None),
+                            "Thermal_Absorptance": getattr(material, 'Thermal_Absorptance', None),
+                            "Solar_Absorptance": getattr(material, 'Solar_Absorptance', None),
+                            "Visible_Absorptance": getattr(material, 'Visible_Absorptance', None)
+                        }
+                    elif mat_type == "WindowMaterial:SimpleGlazingSystem":
+                        mat_data = {
+                            "name": name,
+                            "type": mat_type,
+                            "UFactor": getattr(material, 'UFactor', None),
+                            "Solar_Heat_Gain_Coefficient": getattr(material, 'Solar_Heat_Gain_Coefficient', None),
+                            "Visible_Transmittance": getattr(material, 'Visible_Transmittance', None)
+                        }
+                    elif mat_type == "WindowMaterial:Glazing":
+                        mat_data = {
+                            "name": name,
+                            "type": mat_type,
+                            "Thickness": getattr(material, 'Thickness', None),
+                            "Solar_Transmittance": getattr(material, 'Solar_Transmittance_at_Normal_Incidence', None),
+                            "Front_Solar_Reflectance": getattr(material, 'Front_Side_Solar_Reflectance_at_Normal_Incidence', None),
+                            "Visible_Transmittance": getattr(material, 'Visible_Transmittance_at_Normal_Incidence', None),
+                            "Conductivity": getattr(material, 'Conductivity', None)
+                        }
+                    elif mat_type == "WindowMaterial:Gas":
+                        mat_data = {
+                            "name": name,
+                            "type": mat_type,
+                            "Gas_Type": getattr(material, 'Gas_Type', None),
+                            "Thickness": getattr(material, 'Thickness', None)
+                        }
+                    elif mat_type == "Material:AirGap":
+                        mat_data = {
+                            "name": name,
+                            "type": mat_type,
+                            "Thermal_Resistance": getattr(material, 'Thermal_Resistance', None)
+                        }
+                    else:
+                        mat_data = {"name": name, "type": mat_type}
+                    
+                    materials_dict[name] = mat_data
+            
+            # Get all constructions with layer details
+            constructions_list = []
+            construction_to_surfaces = {}  # Track which surfaces use each construction
+            
+            for construction in idf.idfobjects.get("Construction", []):
+                name = getattr(construction, 'Name', 'Unknown')
+                construction_to_surfaces[name] = []
+                
+                # Extract layers - first layer is "Outside_Layer", then "Layer_2", "Layer_3", etc.
+                layers = []
+                
+                # Get first layer (Outside_Layer)
+                first_layer = getattr(construction, 'Outside_Layer', None)
+                if first_layer:
+                    layers.append({
+                        "position": 1,
+                        "material": first_layer
+                    })
+                    # Track material usage
+                    if first_layer in material_to_constructions:
+                        material_to_constructions[first_layer].append(name)
+                
+                # Get remaining layers (Layer_2, Layer_3, etc.)
+                layer_index = 2
+                while True:
+                    layer_field = f"Layer_{layer_index}"
+                    layer_name = getattr(construction, layer_field, None)
+                    if not layer_name:
+                        break
+                    layers.append({
+                        "position": layer_index,
+                        "material": layer_name
+                    })
+                    # Track material usage
+                    if layer_name in material_to_constructions:
+                        material_to_constructions[layer_name].append(name)
+                    layer_index += 1
+                
+                constructions_list.append({
+                    "name": name,
+                    "layers": layers,
+                    "layer_count": len(layers),
+                    "materials_stack": [layer["material"] for layer in layers]
+                })
+            
+            # Get all surfaces
+            surfaces_list = []
+            exterior_count = 0
+            interior_count = 0
+            
+            for surface in idf.idfobjects.get("BuildingSurface:Detailed", []):
+                name = getattr(surface, 'Name', 'Unknown')
+                surface_type = getattr(surface, 'Surface_Type', 'Unknown')
+                construction = getattr(surface, 'Construction_Name', 'Unknown')
+                zone = getattr(surface, 'Zone_Name', 'Unknown')
+                boundary_condition = getattr(surface, 'Outside_Boundary_Condition', 'Unknown')
+                
+                # Track surface count for construction
+                if construction in construction_to_surfaces:
+                    construction_to_surfaces[construction].append(name)
+                
+                # Count exterior/interior
+                if boundary_condition in ["Outdoors", "Ground"]:
+                    exterior_count += 1
+                else:
+                    interior_count += 1
+                
+                # Find materials stack for this surface
+                materials_stack = []
+                for const in constructions_list:
+                    if const["name"] == construction:
+                        materials_stack = const["materials_stack"]
+                        break
+                
+                surfaces_list.append({
+                    "name": name,
+                    "surface_type": surface_type,
+                    "construction_name": construction,
+                    "zone_name": zone,
+                    "outside_boundary_condition": boundary_condition,
+                    "sun_exposure": getattr(surface, 'Sun_Exposure', 'Unknown'),
+                    "wind_exposure": getattr(surface, 'Wind_Exposure', 'Unknown'),
+                    "materials_stack": materials_stack
+                })
+            
+            # Add usage counts to constructions
+            for const in constructions_list:
+                const["used_by_surfaces"] = construction_to_surfaces.get(const["name"], [])
+                const["surface_count"] = len(const["used_by_surfaces"])
+            
+            # Add usage counts to materials
+            materials_list = []
+            for name, mat_data in materials_dict.items():
+                mat_data["used_in_constructions"] = material_to_constructions.get(name, [])
+                mat_data["construction_count"] = len(mat_data["used_in_constructions"])
+                # Count surfaces indirectly
+                surface_count = 0
+                for const_name in mat_data["used_in_constructions"]:
+                    surface_count += len(construction_to_surfaces.get(const_name, []))
+                mat_data["surface_count"] = surface_count
+                materials_list.append(mat_data)
+            
+            # Identify relationships and issues
+            relationships = {
+                "orphaned_constructions": [],
+                "orphaned_materials": [],
+                "missing_references": []
+            }
+            
+            # Find orphaned constructions (not used by any surface)
+            for const in constructions_list:
+                if const["surface_count"] == 0:
+                    relationships["orphaned_constructions"].append(const["name"])
+            
+            # Find orphaned materials (not used by any construction)
+            for mat in materials_list:
+                if mat["construction_count"] == 0:
+                    relationships["orphaned_materials"].append(mat["name"])
+            
+            # Find missing construction references
+            for surface in surfaces_list:
+                if surface["construction_name"] not in construction_to_surfaces:
+                    relationships["missing_references"].append({
+                        "surface": surface["name"],
+                        "missing_construction": surface["construction_name"]
+                    })
+            
+            # Count used constructions
+            used_constructions = len([c for c in constructions_list if c["surface_count"] > 0])
+            
+            # Compile comprehensive result
+            result = {
+                "file_path": resolved_path,
+                "summary": {
+                    "total_surfaces": len(surfaces_list),
+                    "exterior_surfaces": exterior_count,
+                    "interior_surfaces": interior_count,
+                    "total_constructions": len(constructions_list),
+                    "used_constructions": used_constructions,
+                    "total_materials": len(materials_list),
+                    "orphaned_constructions": len(relationships["orphaned_constructions"]),
+                    "orphaned_materials": len(relationships["orphaned_materials"]),
+                    "missing_references": len(relationships["missing_references"])
+                },
+                "constructions": constructions_list,
+                "materials": materials_list,
+                "surfaces": surfaces_list,
+                "relationships": relationships
+            }
+            
+            logger.info(f"Comprehensive envelope inspection complete: {len(surfaces_list)} surfaces, "
+                       f"{len(constructions_list)} constructions, {len(materials_list)} materials")
+            return json.dumps(result, indent=2)
+            
+        except Exception as e:
+            logger.error(f"Error in comprehensive envelope inspection for {resolved_path}: {e}")
+            raise RuntimeError(f"Error in comprehensive envelope inspection: {str(e)}")
+
+
+    def edit_material(self, idf_path: str, material_name: str, properties: Dict[str, Any], 
+                     output_path: Optional[str] = None) -> str:
+        """Edit material properties"""
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Editing material '{material_name}' in: {resolved_path}")
+            idf = IDF(resolved_path)
+            
+            # Find the material across all material types
+            material_obj = None
+            material_type = None
+            
+            for mat_type in ["Material", "Material:NoMass", "WindowMaterial:SimpleGlazingSystem",
+                           "WindowMaterial:Glazing", "WindowMaterial:Gas", "Material:AirGap"]:
+                objs = idf.idfobjects.get(mat_type, [])
+                for obj in objs:
+                    if getattr(obj, 'Name', None) == material_name:
+                        material_obj = obj
+                        material_type = mat_type
+                        break
+                if material_obj:
+                    break
+            
+            if not material_obj:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Material '{material_name}' not found in model"
+                })
+            
+            # Track changes
+            changes = []
+            
+            # Apply property updates
+            for prop_name, new_value in properties.items():
+                # Convert property name to IDF field name (e.g., "conductivity" -> "Conductivity")
+                field_name = prop_name.replace('_', ' ').title().replace(' ', '_')
+                
+                # Get old value
+                old_value = getattr(material_obj, field_name, None)
+                
+                # Set new value
+                try:
+                    setattr(material_obj, field_name, new_value)
+                    changes.append({
+                        "field": field_name,
+                        "old_value": old_value,
+                        "new_value": new_value
+                    })
+                except Exception as e:
+                    logger.warning(f"Could not set {field_name} on {material_name}: {e}")
+            
+            # Determine output path
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
+            
+            # Save modified IDF
+            idf.save(output_path)
+            
+            result = {
+                "success": True,
+                "material_name": material_name,
+                "material_type": material_type,
+                "changes_applied": len(changes),
+                "changes": changes,
+                "input_file": resolved_path,
+                "output_file": output_path
+            }
+            
+            logger.info(f"Successfully modified material '{material_name}' with {len(changes)} changes")
+            return json.dumps(result, indent=2)
+            
+        except Exception as e:
+            logger.error(f"Error editing material for {resolved_path}: {e}")
+            return json.dumps({
+                "success": False,
+                "error": str(e),
+                "material_name": material_name
+            })
+
+
+    def edit_construction(self, idf_path: str, construction_name: str, layers: List[str],
+                         output_path: Optional[str] = None) -> str:
+        """Edit construction layers"""
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Editing construction '{construction_name}' in: {resolved_path}")
+            idf = IDF(resolved_path)
+            
+            # Find the construction
+            construction_obj = None
+            for const in idf.idfobjects.get("Construction", []):
+                if getattr(const, 'Name', None) == construction_name:
+                    construction_obj = const
+                    break
+            
+            if not construction_obj:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Construction '{construction_name}' not found in model"
+                })
+            
+            # Get old layers - first layer is "Outside_Layer", then "Layer_2", "Layer_3", etc.
+            old_layers = []
+            first_layer = getattr(construction_obj, 'Outside_Layer', None)
+            if first_layer:
+                old_layers.append(first_layer)
+            
+            layer_index = 2
+            while True:
+                layer_field = f"Layer_{layer_index}"
+                layer_name = getattr(construction_obj, layer_field, None)
+                if not layer_name:
+                    break
+                old_layers.append(layer_name)
+                layer_index += 1
+            
+            # Set new layers - first layer is "Outside_Layer", then "Layer_2", "Layer_3", etc.
+            if len(layers) > 0:
+                setattr(construction_obj, 'Outside_Layer', layers[0])
+            else:
+                setattr(construction_obj, 'Outside_Layer', "")
+            
+            # Set remaining layers (Layer_2, Layer_3, etc.)
+            for i, layer_material in enumerate(layers[1:], start=2):
+                layer_field = f"Layer_{i}"
+                setattr(construction_obj, layer_field, layer_material)
+            
+            # Clear any remaining old layers
+            for i in range(len(layers) + 1, len(old_layers) + 2):
+                if i == 1:
+                    continue  # Already handled Outside_Layer
+                layer_field = f"Layer_{i}"
+                if hasattr(construction_obj, layer_field):
+                    setattr(construction_obj, layer_field, "")
+            
+            # Determine output path
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
+            
+            # Save modified IDF
+            idf.save(output_path)
+            
+            result = {
+                "success": True,
+                "construction_name": construction_name,
+                "old_layers": old_layers,
+                "new_layers": layers,
+                "layers_added": len(layers) - len(old_layers) if len(layers) > len(old_layers) else 0,
+                "layers_removed": len(old_layers) - len(layers) if len(old_layers) > len(layers) else 0,
+                "input_file": resolved_path,
+                "output_file": output_path
+            }
+            
+            logger.info(f"Successfully modified construction '{construction_name}'")
+            return json.dumps(result, indent=2)
+            
+        except Exception as e:
+            logger.error(f"Error editing construction for {resolved_path}: {e}")
+            return json.dumps({
+                "success": False,
+                "error": str(e),
+                "construction_name": construction_name
+            })
+
+
+    def generate_envelope_html(self, idf_path: str) -> str:
+        """
+        Generate an interactive HTML visualization of the building envelope.
+        Returns the HTML as a string.
+        
+        Args:
+            idf_path: Path to the IDF file
+            
+        Returns:
+            HTML string containing the interactive envelope viewer
+        """
+        from .utils.envelope_html import transform_envelope_data_for_viz, create_envelope_html_viewer
+        
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.debug(f"Generating envelope HTML for: {resolved_path}")
+            
+            # Get comprehensive envelope data
+            envelope_json = self.inspect_envelope_comprehensive(resolved_path)
+            envelope_data = json.loads(envelope_json)
+            
+            # Extract building name from path
+            building_name = Path(resolved_path).stem
+            
+            # Transform data for the visualization
+            viz_data = transform_envelope_data_for_viz(envelope_data)
+            
+            # Generate HTML
+            html = create_envelope_html_viewer(building_name, viz_data)
+            
+            logger.debug(f"Successfully generated envelope HTML for {building_name}")
+            return html
+            
+        except Exception as e:
+            logger.error(f"Error generating envelope HTML for {resolved_path}: {e}")
+            raise RuntimeError(f"Error generating envelope HTML: {str(e)}")
+
+
     def inspect_people(self, idf_path: str) -> str:
         """
         Inspect and list all People objects in the EnergyPlus model
@@ -903,8 +1406,9 @@ class EnergyPlusManager:
                 }, indent=2)
             
             # Determine output path
-            path_obj = Path(resolved_path)
-            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             # Apply modifications
             result = self.people_manager.modify_people_objects(
@@ -979,8 +1483,9 @@ class EnergyPlusManager:
                 }, indent=2)
             
             # Determine output path
-            path_obj = Path(resolved_path)
-            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             # Apply modifications
             result = self.lights_manager.modify_lights_objects(
@@ -1055,8 +1560,9 @@ class EnergyPlusManager:
                 }, indent=2)
             
             # Determine output path
-            path_obj = Path(resolved_path)
-            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             # Apply modifications
             result = self.electric_equipment_manager.modify_electric_equipment_objects(
@@ -1143,8 +1649,9 @@ class EnergyPlusManager:
             )
             
             # Determine output path
-            path_obj = Path(resolved_path)
-            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_with_outputs{path_obj.suffix}")
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = derived_model_path(self.config, str(path_obj), "_with_outputs")
             
             # Add variables to IDF
             addition_result = self.output_var_manager.add_variables_to_idf(
@@ -1257,8 +1764,9 @@ class EnergyPlusManager:
             )
             
             # Determine output path
-            path_obj = Path(resolved_path)
-            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_with_meters{path_obj.suffix}")
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = derived_model_path(self.config, str(path_obj), "_with_meters")
             
             # Add meters to IDF
             addition_result = self.output_meter_manager.add_meters_to_idf(
@@ -2142,9 +2650,10 @@ class EnergyPlusManager:
             logger.info(f"Creating custom loop diagram for: {resolved_path}")
             
             # Determine output path
-            path_obj = Path(resolved_path)
-            diagram_name = f"{path_obj.stem}_hvac_diagram" if not loop_name else f"{path_obj.stem}_{loop_name}_diagram"
-            output_path = self._output_path(output_path, resolved_path, f"{diagram_name}.{format}")
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                diagram_name = f"{path_obj.stem}_hvac_diagram" if not loop_name else f"{path_obj.stem}_{loop_name}_diagram"
+                output_path = report_path(self.config, f"{diagram_name}.{format}")
             
             # Method 1: Use topology data for custom diagram (PRIMARY)
             try:
@@ -2302,8 +2811,9 @@ class EnergyPlusManager:
             idf = IDF(resolved_path)
             
             # Determine output path
-            path_obj = Path(resolved_path)
-            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             modifications_made = []
             
@@ -2356,7 +2866,7 @@ class EnergyPlusManager:
                     "End_Month", "End_Day_of_Month", "End_Year", "Day_of_Week_for_Start_Day",
                     "Use_Weather_File_Holidays_and_Special_Days", "Use_Weather_File_Daylight_Saving_Period",
                     "Apply_Weekend_Holiday_Rule", "Use_Weather_File_Rain_Indicators", 
-                    "Use_Weather_File_Snow_Indicators"
+                    "Use_Weather_File_Snow_Indicators", "Treat_Weather_as_Actual"
                 }
                 
                 for field_name, new_value in field_updates.items():
@@ -2422,8 +2932,9 @@ class EnergyPlusManager:
             idf = IDF(resolved_path)
             
             # Determine output path
-            path_obj = Path(resolved_path)
-            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             all_surfs = idf.idfobjects['BuildingSurface:Detailed']
             if location.casefold() == "wall":
@@ -2521,8 +3032,9 @@ class EnergyPlusManager:
             idf = IDF(resolved_path)
             
             # Determine output path
-            path_obj = Path(resolved_path)
-            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             window_surfs = idf.idfobjects['FenestrationSurface:Detailed']
             window_surfs = [x for x in window_surfs if x.Surface_Type.casefold() == "Window".casefold()]
@@ -2606,8 +3118,9 @@ class EnergyPlusManager:
             idf = IDF(resolved_path)
             
             # Determine output path
-            path_obj = Path(resolved_path)
-            output_path = self._output_path(output_path, resolved_path, f"{path_obj.stem}_modified{path_obj.suffix}")
+            if output_path is None:
+                path_obj = Path(resolved_path)
+                output_path = derived_model_path(self.config, str(path_obj), "_modified")
             
             object_type = "ZoneInfiltration:DesignFlowRate"
             infiltration_objs = idf.idfobjects[object_type]
@@ -2663,122 +3176,743 @@ class EnergyPlusManager:
             raise RuntimeError(f"Error modifying infiltration rate: {str(e)}")
     
     
+    def _ensure_output_sqlite(self, idf: IDF, option_type: str = "SimpleAndTabular") -> None:
+        """Ensure Output:SQLite object exists with the requested option type."""
+        sqlite_objects = []
+        for key in ("Output:SQLite", "OUTPUT:SQLITE"):
+            try:
+                sqlite_objects = list(idf.idfobjects[key])
+                break
+            except KeyError:
+                continue
+
+        if sqlite_objects:
+            primary = sqlite_objects[0]
+            primary.Option_Type = option_type
+            for extra in sqlite_objects[1:]:
+                idf.removeidfobject(extra)
+            logger.debug("Updated Output:SQLite Option_Type=%s", option_type)
+        else:
+            idf.newidfobject("Output:SQLite", Option_Type=option_type)
+            logger.debug("Added Output:SQLite Option_Type=%s", option_type)
+
+    def _ensure_calibration_outputs(self, idf: IDF) -> None:
+        """Add the small, in-memory output contract used by calibration runs."""
+        self._ensure_output_sqlite(idf)
+        required = {
+            ("Electricity:Facility", "Monthly"),
+            ("NaturalGas:Facility", "Monthly"),
+        }
+        existing = {
+            (str(getattr(meter, "Key_Name", "")), str(getattr(meter, "Reporting_Frequency", "")))
+            for meter in idf.idfobjects.get("Output:Meter", [])
+        }
+        for meter_name, frequency in sorted(required - existing):
+            idf.newidfobject(
+                "Output:Meter",
+                Key_Name=meter_name,
+                Reporting_Frequency=frequency,
+            )
+
+    @staticmethod
+    def _idf_version(idf_path: str) -> str:
+        """Read the declared Version object without loading the model into eppy."""
+        with open(idf_path, "r", encoding="utf-8", errors="ignore") as stream:
+            contents = stream.read()
+        match = re.search(r"(?im)^\s*version\s*,\s*([^,;!\s]+)", contents)
+        if not match:
+            raise ValueError(f"IDF has no Version object: {idf_path}")
+        return match.group(1)
+
+    @staticmethod
+    def _normalized_energyplus_version(version: str) -> str:
+        numbers = re.findall(r"\d+", version)
+        if len(numbers) < 2:
+            raise ValueError(f"Unrecognized EnergyPlus version: {version!r}")
+        while len(numbers) > 2 and numbers[-1] == "0":
+            numbers.pop()
+        return ".".join(str(int(number)) for number in numbers)
+
+    def _runtime_energyplus_version(self) -> str:
+        executable = self.config.energyplus.executable_path
+        completed = subprocess.run(
+            [executable, "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        version_text = f"{completed.stdout}\n{completed.stderr}"
+        match = re.search(r"\d+\.\d+(?:\.\d+)?", version_text)
+        if not match:
+            raise RuntimeError(f"Could not determine EnergyPlus version from {executable}")
+        return match.group(0)
+
+    def _assert_simulation_version_matches(self, idf_path: str) -> Dict[str, str]:
+        model_version = self._idf_version(idf_path)
+        runtime_version = self._runtime_energyplus_version()
+        if self._normalized_energyplus_version(model_version) != self._normalized_energyplus_version(runtime_version):
+            raise ValueError(
+                "EnergyPlus runtime version does not match model Version object: "
+                f"model {model_version}, runtime {runtime_version}."
+            )
+        return {"model_version": model_version, "runtime_version": runtime_version}
+
+    def _start_calibration_run(self, runs_dir: str, run_id: Optional[str], idf_path: str) -> Dict[str, Any]:
+        """Reserve a unique physical-run directory before a calibration simulation."""
+        resolved_runs_dir = Path(runs_dir).expanduser().resolve()
+        resolved_run_id = run_id or uuid.uuid4().hex
+        if not resolved_run_id or Path(resolved_run_id).name != resolved_run_id:
+            raise ValueError("run_id must be a single directory name")
+        run_root = resolved_runs_dir / resolved_run_id
+        if run_root.exists():
+            raise FileExistsError(f"Calibration run_id already exists: {resolved_run_id}")
+        output_dir = run_root / "run"
+        output_dir.mkdir(parents=True)
+        record_path = run_root / "run_record.json"
+        record = {
+            "run_id": resolved_run_id,
+            "name": Path(idf_path).stem,
+            "status": "queued",
+            # Reservation time; replaced by the process start once it launches.
+            "started_at": time.time(),
+            "input_idf": idf_path,
+            "run_directory": str(output_dir),
+        }
+        record_path.write_text(json.dumps(record, indent=2))
+        return {
+            "run_id": resolved_run_id,
+            "run_root": run_root,
+            "output_dir": output_dir,
+            "record_path": record_path,
+            "record": record,
+        }
+
+    @staticmethod
+    def _finish_calibration_run(context: Dict[str, Any], status: str, **details: Any) -> None:
+        record = context["record"]
+        record.update(details)
+        record["status"] = status
+        record["finished_at"] = time.time()
+        context["record_path"].write_text(json.dumps(record, indent=2))
+
+    @staticmethod
+    def _canonical_calibration_sql(output_directory: str) -> str:
+        """Return the calibration contract's eplusout.sql, normalizing eppy's prefix."""
+        output_dir = Path(output_directory)
+        canonical = output_dir / "eplusout.sql"
+        if canonical.is_file():
+            return str(canonical)
+        sql_files = list(output_dir.glob("*.sql"))
+        if len(sql_files) != 1:
+            raise RuntimeError(
+                "Calibration run did not produce a unique SQLite result under "
+                f"{output_dir}"
+            )
+        shutil.move(str(sql_files[0]), canonical)
+        return str(canonical)
+
+    def adjust_lighting_power_percentage(
+        self,
+        idf_path: str,
+        percentage_change: float,
+        output_path: str,
+    ) -> Dict[str, Any]:
+        """Scale each native Lights object's active design-power field."""
+        try:
+            percentage = float(percentage_change)
+        except (TypeError, ValueError) as error:
+            raise ValueError("LPD percentage change must be numeric") from error
+        if not math.isfinite(percentage) or percentage < -100:
+            raise ValueError("LPD percentage change must be finite and at least -100")
+
+        resolved_input = self._resolve_idf_path(idf_path)
+        resolved_output = str(Path(output_path).expanduser().resolve())
+        if Path(resolved_input).resolve() == Path(resolved_output):
+            raise ValueError("output_path must differ from the explicit input model")
+
+        idf = IDF(resolved_input)
+        field_by_method = {
+            "lightinglevel": "Lighting_Level",
+            "watts/area": "Watts_per_Floor_Area",
+            "watts/person": "Watts_per_Person",
+        }
+        factor = 1 + percentage / 100.0
+        changes: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        planned: List[tuple[Any, str, float, float, str]] = []
+
+        for lights in idf.idfobjects.get("Lights", []):
+            method = str(getattr(lights, "Design_Level_Calculation_Method", ""))
+            field = field_by_method.get(method.strip().casefold())
+            name = str(getattr(lights, "Name", "Unnamed"))
+            if not field:
+                skipped.append({"object_name": name, "reason": f"unsupported calculation method {method!r}"})
+                continue
+            raw_value = getattr(lights, field, None)
+            try:
+                before = float(raw_value)
+            except (TypeError, ValueError):
+                skipped.append({"object_name": name, "field": field, "reason": "active design-power field is not numeric"})
+                continue
+            after = before * factor
+            planned.append((lights, field, before, after, method))
+
+        if not planned:
+            raise ValueError("No Lights objects with a supported numeric design-power field were found")
+
+        for lights, field, before, after, method in planned:
+            setattr(lights, field, after)
+            lights.checkrange(field)
+            changes.append({
+                "object_name": str(getattr(lights, "Name", "Unnamed")),
+                "calculation_method": method,
+                "field": field,
+                "before": before,
+                "after": after,
+            })
+
+        Path(resolved_output).parent.mkdir(parents=True, exist_ok=True)
+        idf.save(resolved_output)
+        return {
+            "success": True,
+            "parameter": "LPD",
+            "requested_percent": percentage,
+            "input_file": resolved_input,
+            "output_file": resolved_output,
+            "before": [{"object_name": change["object_name"], "field": change["field"], "value": change["before"]} for change in changes],
+            "after": [{"object_name": change["object_name"], "field": change["field"], "value": change["after"]} for change in changes],
+            "changes": changes,
+            "skipped": skipped,
+        }
+
+    def inspect_parameter(self, idf_path: str, parameter: str) -> Dict[str, Any]:
+        """Inspect canonical semantic parameter quantities without mutation.
+
+        This is deliberately workflow-neutral.  Callers select the relevant
+        domain manager (internal loads, envelope, or HVAC); the manager keeps
+        the source-hash binding needed by a later absolute set.
+        """
+        from .utils import model_parameters
+        resolved = self._resolve_idf_path(idf_path)
+        self._assert_simulation_version_matches(resolved)
+        result = model_parameters.inspect_absolute(IDF(resolved), parameter)
+        return {"success": True, "model_format": "idf", "idf_path": resolved,
+                "model_sha256": sha256(Path(resolved).read_bytes()).hexdigest(),
+                "parameter": parameter, **result}
+
+    def adjust_parameter_percentage(
+        self, idf_path: str, parameter: str, percentage_change: float, output_path: str,
+        expected_model_sha256: str | None = None, mode: str = "apply",
+    ) -> Dict[str, Any]:
+        """Apply a complete, signed percentage plan to a separate IDF copy."""
+        return self._apply_parameter_edit(
+            idf_path, parameter, percentage_change, output_path,
+            operation="adjust_percentage", expected_model_sha256=expected_model_sha256,
+            mode=mode,
+        )
+
+    def set_parameter(
+        self, idf_path, parameter, value, output_path, target_ids=None,
+        assignments=None, expected_model_sha256=None, mode="apply",
+    ) -> Dict[str, Any]:
+        """Set inspected semantic targets to absolute values in a separate IDF copy."""
+        return self._apply_parameter_edit(
+            idf_path, parameter, value, output_path, operation="set_parameter",
+            target_ids=target_ids, assignments=assignments,
+            expected_model_sha256=expected_model_sha256,
+            mode=mode,
+        )
+
+    # Deprecated compatibility aliases.  The workflow facade calls these so
+    # existing clients keep their established action labels while all edits
+    # still pass through the generic implementation above.
+    def adjust_calibration_percentage(
+        self, idf_path: str, parameter: str, percentage_change: float, output_path: str,
+    ) -> Dict[str, Any]:
+        return self._apply_parameter_edit(idf_path, parameter, percentage_change, output_path)
+
+    def inspect_calibration_parameter(self, idf_path: str, parameter: str) -> Dict[str, Any]:
+        return self.inspect_parameter(idf_path, parameter)
+
+    def set_calibration_values(
+        self, idf_path, parameter, value, output_path, target_ids=None,
+        assignments=None, expected_model_sha256=None,
+    ) -> Dict[str, Any]:
+        return self._apply_parameter_edit(
+            idf_path, parameter, value, output_path, operation="set",
+            target_ids=target_ids, assignments=assignments,
+            expected_model_sha256=expected_model_sha256,
+        )
+
+    def _apply_parameter_edit(
+        self, idf_path, parameter, value, output_path, operation="perturb",
+        target_ids=None, assignments=None, expected_model_sha256=None, mode="apply",
+    ) -> Dict[str, Any]:
+        """Validate and apply a complete plan to a separate candidate IDF."""
+        from .utils import model_parameters
+
+        if mode not in {"apply", "dry_run"}:
+            raise ValueError("mode must be 'apply' or 'dry_run'")
+        percentage = model_parameters.percentage_value(value) if operation in ("perturb", "adjust_percentage") else None
+        if parameter not in model_parameters.PARAMETERS:
+            raise ValueError(f"Unsupported semantic parameter: {parameter}")
+        resolved_input = self._resolve_idf_path(idf_path)
+        model_hash = sha256(Path(resolved_input).read_bytes()).hexdigest()
+        if expected_model_sha256 is not None and model_hash != expected_model_sha256:
+            raise ValueError("Input model changed since inspection; inspect again before editing")
+        resolved_output = Path(output_path).expanduser().resolve()
+        if (Path(resolved_input).resolve() == resolved_output or
+                (resolved_output.exists() and os.path.samefile(resolved_input, resolved_output))):
+            raise ValueError("output_path must differ from the explicit input model")
+        self._assert_simulation_version_matches(resolved_input)
+        idf = IDF(resolved_input)
+        if operation in ("perturb", "adjust_percentage"):
+            planned, skipped = model_parameters.plan(idf, parameter, percentage)
+        else:
+            inspection = model_parameters.inspect_absolute(idf, parameter)
+            if inspection["coverage"] != "complete":
+                return {"success": False, "parameter": parameter,
+                        "error": "Absolute operation requires complete inspection coverage",
+                        **inspection}
+            planned, skipped = model_parameters.plan_absolute(idf, parameter, value, target_ids, assignments)
+        if skipped:
+            return {
+                "success": False, "parameter": parameter,
+                "error": "Incomplete object coverage; no candidate was saved",
+                "skipped": skipped,
+            }
+        if not planned:
+            raise ValueError(f"No supported {parameter} fields were found")
+        # Only this in-memory copy is touched. Any invalid field aborts before save.
+        for change in planned:
+            if isinstance(change["after"], (int, float)):
+                model_parameters.check_numeric_range(change["object"], change["field"], change["after"])
+            if mode == "apply":
+                setattr(change["object"], change["field"], change["after"])
+        if mode == "apply" and operation in ("set", "set_parameter"):
+            updated = model_parameters.inspect_absolute(idf, parameter)
+            actual = {target["target_id"]: target["value"] for target in updated["targets"]}
+            expected = assignments if assignments is not None else {
+                target["target_id"]: value for target in inspection["targets"]
+                if target_ids is None or target["target_id"] in target_ids
+            }
+            if updated["coverage"] != "complete" or any(
+                key not in actual or not math.isclose(actual[key], target, rel_tol=1e-8, abs_tol=1e-10)
+                for key, target in expected.items()
+            ):
+                raise ValueError("Absolute target verification failed; no candidate saved")
+        changes = [{key: value for key, value in change.items() if key != "object"}
+                   for change in planned]
+        if mode == "apply":
+            resolved_output.parent.mkdir(parents=True, exist_ok=True)
+            idf.save(str(resolved_output))
+        result = {
+            "success": True, "parameter": parameter, "action": operation,
+            "requested_percent": percentage,
+            "requested_value": value if operation in ("set", "set_parameter") else None,
+            "assignments": assignments, "input_sha256": model_hash,
+            "input_file": resolved_input, "output_file": str(resolved_output),
+            "before": [{"object_name": c["object_name"], "field": c["field"], "value": c["before"]} for c in changes],
+            "after": [{"object_name": c["object_name"], "field": c["field"], "value": c["after"]} for c in changes],
+            "changes": changes, "skipped": [], "coverage": "complete",
+            "changed": any(change["before"] != change["after"] for change in changes),
+            "mode": mode,
+        }
+        if mode == "apply":
+            result["output_sha256"] = sha256(resolved_output.read_bytes()).hexdigest()
+        return result
+
+    def parameter_capabilities(
+        self, idf_path: Optional[str] = None, parameters: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Return capability gates for generic semantic IDF parameters.
+
+        Domain managers narrow this response to parameters they own.  A
+        model with partial coverage remains unsupported: consumers must not
+        silently edit only a convenient subset of objects.
+        """
+        from .utils import model_parameters
+
+        try:
+            runtime_version = self._runtime_energyplus_version()
+        except Exception as error:
+            return {
+                "success": False,
+                "ready": False,
+                "idf_path": idf_path,
+                "model_format": "idf",
+                "runtime_error": str(error),
+            }
+
+        resolved_path = None
+        lights_count = None
+        idf = None
+        version_info: Dict[str, str] = {"runtime_version": runtime_version}
+        if idf_path:
+            try:
+                resolved_path = self._resolve_idf_path(idf_path)
+                version_info = self._assert_simulation_version_matches(resolved_path)
+                idf = IDF(resolved_path)
+                lights_count = len(idf.idfobjects.get("Lights", []))
+            except Exception as error:
+                return {
+                    "success": False,
+                    "ready": False,
+                    "idf_path": idf_path,
+                    "model_format": "idf",
+                    "energyplus_version": runtime_version,
+                    "model_error": str(error),
+                }
+
+        capabilities = model_parameters.capabilities(idf)
+        if parameters is not None:
+            requested = {str(parameter).strip().upper() for parameter in parameters}
+            unsupported = requested.difference(capabilities)
+            if unsupported:
+                raise ValueError(
+                    "Unsupported semantic parameter(s): " + ", ".join(sorted(unsupported))
+                )
+            capabilities = {
+                parameter: detail for parameter, detail in capabilities.items()
+                if parameter in requested
+            }
+        for detail in capabilities.values():
+            detail["tool"] = "domain_manager"
+            detail["action"] = "adjust_percentage"
+            detail["operations"] = [
+                "adjust_percentage",
+                *( ["set_parameter"] if detail["absolute_set_supported"] else [] ),
+            ]
+            detail["absolute_set"]["tool"] = "domain_manager"
+            detail["absolute_set"]["action"] = "set_parameter"
+        return {
+            "success": True,
+            "ready": True,
+            "idf_path": resolved_path or idf_path,
+            "model_format": "idf",
+            "energyplus_version": runtime_version,
+            "model_version": version_info.get("model_version"),
+            "applicability": {
+                "lights_count": lights_count,
+                "lpd_reachable": capabilities.get("LPD", {}).get("supported"),
+            },
+            "monthly_meters": ["Electricity:Facility", "NaturalGas:Facility"],
+            "parameters": capabilities,
+            "simulation_evidence": {
+                "tool": "simulation_manager",
+                "action": "run",
+                "required_args": ["idf_path", "runs_dir"],
+                "optional_args": ["run_id", "weather_file"],
+                "paths": "<runs_dir>/<run_id>/run/eplusout.sql and <runs_dir>/<run_id>/run_record.json",
+            },
+        }
+
+    def calibration_capabilities(self, idf_path: Optional[str] = None) -> Dict[str, Any]:
+        """Deprecated compatibility view of :meth:`parameter_capabilities`."""
+        payload = self.parameter_capabilities(idf_path)
+        for detail in payload.get("parameters", {}).values():
+            detail["tool"] = "calibration_manager"
+            detail["action"] = "perturb"
+            detail["operations"] = [
+                "percentage_change",
+                *( ["absolute_set"] if detail["absolute_set_supported"] else [] ),
+            ]
+            detail["absolute_set"]["tool"] = "calibration_manager"
+            detail["absolute_set"]["action"] = "set"
+        return payload
+
     # ------------------------ Simulation Execution ------------------------
+    # eppy parses IDFs against class-level IDD state; staging runs from several
+    # worker threads at once must not interleave those parses.
+    _EPPY_LOCK = threading.Lock()
+
+    def submit_simulation(self, idf_path: str, weather_file: str = None,
+                          output_directory: str = None, annual: bool = True,
+                          design_day: bool = False, readvars: bool = True,
+                          expandobjects: bool = True, include_sqlite_output: bool = True,
+                          runs_dir: str = None, run_id: str = None) -> SimulationJob:
+        """Stage a run, queue it, and return the queued job without waiting.
+
+        ``runs_dir`` opts into the calibration evidence layout
+        ``<runs_dir>/<run_id>/{run_record.json, in.idf, run/}``. Otherwise the
+        run directory is ``output_directory`` (default
+        ``work/runs/<model>_simulation_<time>_<id>``) and holds the outputs,
+        the staged ``in.idf``, and ``run_record.json``.
+        """
+        if not idf_path:
+            raise ValueError("Missing required parameter: idf_path")
+        queue = self.simulation_queue
+        # Over HTTP, the run belongs to the calling token; only it can see,
+        # wait on, or cancel the run. None over stdio.
+        from .scope import current_label
+        owner = current_label()
+        calibration_context: Optional[Dict[str, Any]] = None
+        resolved_idf_path = idf_path
+        resolved_weather_path = None
+        version_info: Optional[Dict[str, str]] = None
+        try:
+            if runs_dir:
+                if output_directory is not None:
+                    raise ValueError("runs_dir owns the calibration output directory; omit output_directory")
+                runs_dir = resolve_output_location(self.config, runs_dir, "runs_dir")
+                # Reject bad paths, incompatible models, and invalid IDFs before
+                # reserving a physical-run record.
+                resolved_idf_path = self._resolve_idf_path(idf_path)
+                # Over HTTP, refuse models that run external code or read
+                # files outside the caller's folders.
+                check_model_for_caller(self.config, resolved_idf_path)
+                version_info = self._assert_simulation_version_matches(resolved_idf_path)
+                if weather_file:
+                    resolved_weather_path = self._resolve_weather_file_path(weather_file)
+                with self._EPPY_LOCK:
+                    idf = IDF(resolved_idf_path, resolved_weather_path) if resolved_weather_path else IDF(resolved_idf_path)
+                calibration_context = self._start_calibration_run(runs_dir, run_id, resolved_idf_path)
+                job_id = calibration_context["run_id"]
+                output_dir = Path(calibration_context["output_dir"])
+                run_input_idf = calibration_context["run_root"] / "in.idf"
+                with self._EPPY_LOCK:
+                    self._ensure_calibration_outputs(idf)
+                    idf.save(str(run_input_idf))
+                record_path = calibration_context["record_path"]
+                record = calibration_context["record"]
+                record.update({
+                    "model_path": resolved_idf_path,
+                    "run_input_idf": str(run_input_idf),
+                    **version_info,
+                })
+                # No prefix plus the legacy suffix gives the calibration
+                # contract's names: eplusout.sql, eplusout.err, ...
+                output_prefix, output_suffix = None, "L"
+            else:
+                resolved_idf_path = self._resolve_idf_path(idf_path)
+                # Over HTTP, refuse models that run external code or read
+                # files outside the caller's folders.
+                check_model_for_caller(self.config, resolved_idf_path)
+                if weather_file:
+                    resolved_weather_path = self._resolve_weather_file_path(weather_file)
+                stem = Path(resolved_idf_path).stem
+                job_id = run_id or f"{stem}_{uuid.uuid4().hex[:12]}"
+                if Path(job_id).name != job_id:
+                    raise ValueError("run_id must be a single directory name")
+                if output_directory is None:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    output_dir = Path(work_dir(self.config, "runs")) / f"{stem}_simulation_{timestamp}_{uuid.uuid4().hex[:6]}"
+                else:
+                    output_directory = resolve_output_location(self.config, output_directory, "output_directory")
+                    output_dir = Path(output_directory).expanduser()
+                    if not output_dir.is_absolute():
+                        output_dir = Path(self.config.paths.workspace_root) / output_dir
+                # Check before staging so a busy directory's in.idf is never replaced.
+                queue.ensure_available(job_id, output_dir, owner)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                run_input_idf = output_dir / "in.idf"
+                with self._EPPY_LOCK:
+                    idf = IDF(resolved_idf_path, resolved_weather_path) if resolved_weather_path else IDF(resolved_idf_path)
+                    if include_sqlite_output:
+                        self._ensure_output_sqlite(idf)
+                    idf.save(str(run_input_idf))
+                record_path = output_dir / "run_record.json"
+                record = {
+                    "run_id": job_id,
+                    "name": stem,
+                    "input_idf": resolved_idf_path,
+                    "run_input_idf": str(run_input_idf),
+                    "run_directory": str(output_dir),
+                }
+                output_prefix, output_suffix = stem, "C"
+            record.update({"weather_file": resolved_weather_path, **server_identity()})
+            simulation_options = {
+                "output_directory": str(output_dir),
+                "annual": annual,
+                "design_day": design_day,
+                "readvars": readvars,
+                "expandobjects": expandobjects,
+                "output_prefix": output_prefix or "eplus",
+                "output_suffix": output_suffix,
+            }
+            command = energyplus_process.build_command(
+                self.config.energyplus.executable_path,
+                run_input_idf,
+                output_dir,
+                weather=resolved_weather_path,
+                idd=self.config.energyplus.idd_path,
+                annual=annual,
+                design_day=design_day,
+                readvars=readvars,
+                expandobjects=expandobjects,
+                output_prefix=output_prefix,
+                output_suffix=output_suffix,
+            )
+            job = SimulationJob(
+                owner=owner,
+                run_id=job_id,
+                name=Path(resolved_idf_path).stem,
+                command=command,
+                output_directory=output_dir,
+                record_path=Path(record_path),
+                record=record,
+                finalize=functools.partial(
+                    self._finalize_simulation,
+                    input_idf=resolved_idf_path,
+                    weather_file=resolved_weather_path,
+                    simulation_options=simulation_options,
+                    include_sqlite_output=include_sqlite_output,
+                    calibration=calibration_context is not None,
+                ),
+            )
+            return queue.submit(job)
+        except Exception as error:
+            if calibration_context:
+                # The reserved run record stays, marked failed, so the
+                # calibration budget sees the attempt.
+                self._finish_calibration_run(
+                    calibration_context, "failed", input_idf=str(resolved_idf_path), error=str(error),
+                )
+                job = SimulationJob(
+                    owner=owner,
+                    run_id=calibration_context["run_id"],
+                    name=Path(str(resolved_idf_path)).stem,
+                    command=[],
+                    output_directory=Path(calibration_context["output_dir"]),
+                    record_path=Path(calibration_context["record_path"]),
+                    record=calibration_context["record"],
+                    finalize=lambda job: job.result or {},
+                    status="failed",
+                    error=str(error),
+                )
+                job.ended_at = time.time()
+                job.result = {
+                    "success": False,
+                    "input_idf": str(resolved_idf_path),
+                    "output_directory": str(calibration_context["output_dir"]),
+                    "error": str(error),
+                    "run_id": calibration_context["run_id"],
+                    "status": "failed",
+                    "run_record": str(calibration_context["record_path"]),
+                    "timestamp": datetime.now().isoformat(),
+                }
+                return queue.add_finished(job)
+            logger.error(f"Error setting up simulation for {resolved_idf_path}: {error}")
+            raise RuntimeError(f"Error running simulation: {error}")
+
+    def _finalize_simulation(self, job: SimulationJob, *, input_idf: str, weather_file: Optional[str],
+                             simulation_options: Dict[str, Any], include_sqlite_output: bool,
+                             calibration: bool) -> Dict[str, Any]:
+        """Build the tool result for a run whose process has ended (or never started)."""
+        output_directory = str(job.output_directory)
+        common = {
+            "input_idf": input_idf,
+            "weather_file": weather_file,
+            "output_directory": output_directory,
+            "simulation_options": simulation_options,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if job.error is None and job.exit_code == 0:
+            result: Dict[str, Any] = {
+                "success": True,
+                **common,
+                "simulation_duration": str(timedelta(seconds=round((job.ended_at or time.time()) - (job.started_at or job.created_at), 3))),
+                "include_sqlite_output": include_sqlite_output,
+                "output_files": self._find_simulation_outputs(output_directory),
+                "energyplus_result": "Simulation completed",
+            }
+            if calibration:
+                sql_path = self._canonical_calibration_sql(output_directory)
+                job.record["eplusout_sql"] = sql_path
+                result.update({
+                    "eplusout_sql": sql_path,
+                    "model_path": input_idf,
+                    "run_input_idf": job.record.get("run_input_idf"),
+                })
+            logger.info("Simulation %s completed", job.run_id)
+            return result
+
+        error_prefix = "eplusout" if calibration else Path(input_idf).stem
+        error_file = Path(output_directory) / f"{error_prefix}.err"
+        if calibration and not error_file.exists():
+            error_file = Path(output_directory) / "eplusoutout.err"
+        error_details = ""
+        if error_file.exists():
+            try:
+                error_details = error_file.read_text(errors="replace")
+            except OSError:
+                error_details = "Could not read error file"
+        error = job.error or f"EnergyPlus exited with code {job.exit_code}"
+        fatal = [line.strip() for line in error_details.splitlines() if re.search(r"\*\*\s*Fatal\s*\*\*", line)]
+        if fatal and job.error is None:
+            error = f"{error}: {fatal[0]}"
+        logger.error("Simulation %s failed: %s", job.run_id, error)
+        return {"success": False, **common, "error": error, "error_details": error_details}
+
     def run_simulation(self, idf_path: str, weather_file: str = None, 
                        output_directory: str = None, annual: bool = True,
                        design_day: bool = False, readvars: bool = True,
-                       expandobjects: bool = True) -> str:
-            """
-            Run EnergyPlus simulation with specified IDF and weather file
-            
-            Args:
-                idf_path: Path to the IDF file
-                weather_file: Path to weather file (.epw). If None, searches for weather files in sample_files
-                output_directory: Directory for simulation outputs. If None, creates one in outputs/
-                annual: Run annual simulation (default: True)
-                design_day: Run design day only simulation (default: False)
-                readvars: Run ReadVarsESO after simulation (default: True)
-                expandobjects: Run ExpandObjects prior to simulation (default: True)
-            
-            Returns:
-                JSON string with simulation results and output file paths
-            """
-            resolved_idf_path = self._resolve_idf_path(idf_path)
-            
+                       expandobjects: bool = True, include_sqlite_output: bool = True,
+                       runs_dir: str = None, run_id: str = None) -> str:
+        """Run EnergyPlus and wait for it; ``runs_dir`` opts into the calibration evidence layout.
+
+        The run goes through the shared queue, so it counts toward the
+        concurrency limit alongside runs submitted by other tool calls.
+        """
+        job = self.submit_simulation(
+            idf_path, weather_file, output_directory, annual, design_day, readvars,
+            expandobjects, include_sqlite_output=include_sqlite_output,
+            runs_dir=runs_dir, run_id=run_id,
+        )
+        self.simulation_queue.wait_sync(job)
+        return json.dumps(job.result, indent=2)
+
+    def simulation_status(self, job: SimulationJob) -> Dict[str, Any]:
+        """Summarize a tracked run; finished runs include their result."""
+        status = job.summary()
+        if job.result is not None:
+            result = dict(job.result)
+            result.pop("error_details", None)
+            status["result"] = result
+            # Successful runs get a summary too: EnergyPlus can complete with
+            # Severe errors or millions of recurring warnings.
+            err_files = sorted(Path(job.output_directory).glob("*.err"))
+            if err_files:
+                parsed = self.error_parser.parse_error_file(str(err_files[0]))
+                if parsed.get("exists") and not parsed.get("error"):
+                    analysis = self.error_parser.analyze_root_cause(parsed)
+                    summary = parsed.get("summary", {})
+                    error_summary = {
+                        "err_file": str(err_files[0]),
+                        "run_status": summary.get("status"),
+                        "totals": summary.get("totals"),
+                        "counts": parsed.get("counts"),
+                        "primary_issue": analysis.get("primary_issue"),
+                        "primary_category": analysis.get("primary_category"),
+                        "primary_object": analysis.get("primary_object"),
+                    }
+                    if not result.get("success"):
+                        error_summary["first_fatal"] = (parsed.get("fatal_errors") or [None])[0]
+                        error_summary["first_severe"] = (parsed.get("severe_errors") or [None])[0]
+                    for flag in ("completed_with_severe", "incomplete_run", "frequent_recurring"):
+                        if flag in analysis:
+                            error_summary[flag] = analysis[flag]
+                    status["error_summary"] = error_summary
+        return status
+
+    def find_run_record(self, run_id: str, runs_dir: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Read a run's record from disk, for runs this server process is not tracking."""
+        if runs_dir:
+            # Over HTTP this confines runs_dir to the caller's workspace.
+            runs_dir = resolve_output_location(self.config, runs_dir, "runs_dir")
+            candidates = [Path(runs_dir).expanduser() / run_id / "run_record.json"]
+        else:
+            output_root = Path(work_dir(self.config, "runs"))
+            candidates = [output_root / run_id / "run_record.json", *output_root.glob("*/run_record.json")]
+        for path in candidates:
             try:
-                logger.info(f"Starting simulation for: {resolved_idf_path}")
-                
-                # Resolve weather file path
-                resolved_weather_path = None
-                if weather_file:
-                    resolved_weather_path = self._resolve_weather_file_path(weather_file)
-                    logger.info(f"Using weather file: {resolved_weather_path}")
-                
-                # Set up output directory (inside the caller's workspace when scoped)
-                output_directory = self._output_directory(output_directory, resolved_idf_path)
-                
-                # Create output directory if it doesn't exist
-                os.makedirs(output_directory, exist_ok=True)
-                logger.info(f"Output directory: {output_directory}")
-                
-                # Load IDF file
-                if resolved_weather_path:
-                    idf = IDF(resolved_idf_path, resolved_weather_path)
-                else:
-                    idf = IDF(resolved_idf_path)
-                
-                # Configure simulation options
-                simulation_options = {
-                    'output_directory': output_directory,
-                    'annual': annual,
-                    'design_day': design_day,
-                    'readvars': readvars,
-                    'expandobjects': expandobjects,
-                    'output_prefix': Path(resolved_idf_path).stem,
-                    'output_suffix': 'C',  # Capital suffix style
-                    'verbose': 'v'  # Verbose output
-                }
-                
-                # Add weather file to options if provided
-                if resolved_weather_path:
-                    simulation_options['weather'] = resolved_weather_path
-                
-                logger.info("Starting EnergyPlus simulation...")
-                start_time = datetime.now()
-                
-                # Run the simulation
-                try:
-                    result = idf.run(**simulation_options)
-                    end_time = datetime.now()
-                    duration = end_time - start_time
-                    
-                    # Check for common output files
-                    output_files = self._find_simulation_outputs(output_directory)
-                    
-                    simulation_result = {
-                        "success": True,
-                        "input_idf": resolved_idf_path,
-                        "weather_file": resolved_weather_path,
-                        "output_directory": output_directory,
-                        "simulation_duration": str(duration),
-                        "simulation_options": simulation_options,
-                        "output_files": output_files,
-                        "energyplus_result": str(result) if result else "Simulation completed",
-                        "timestamp": end_time.isoformat()
-                    }
-                    
-                    logger.info(f"Simulation completed successfully in {duration}")
-                    return json.dumps(simulation_result, indent=2)
-                    
-                except Exception as e:
-                    # Try to find error file for more detailed error information
-                    error_file = Path(output_directory) / f"{Path(resolved_idf_path).stem}.err"
-                    error_details = ""
-                    
-                    if error_file.exists():
-                        try:
-                            with open(error_file, 'r') as f:
-                                error_details = f.read()
-                        except Exception:
-                            error_details = "Could not read error file"
-                    
-                    simulation_result = {
-                        "success": False,
-                        "input_idf": resolved_idf_path,
-                        "weather_file": resolved_weather_path,
-                        "output_directory": output_directory,
-                        "error": str(e),
-                        "error_details": error_details,
-                        "simulation_options": simulation_options,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    
-                    logger.error(f"Simulation failed: {str(e)}")
-                    return json.dumps(simulation_result, indent=2)
-                    
-            except Exception as e:
-                logger.error(f"Error setting up simulation for {resolved_idf_path}: {e}")
-                raise RuntimeError(f"Error running simulation: {str(e)}")
+                record = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if record.get("run_id") == run_id:
+                return {"run_record": str(path), **record}
+        return None
         
 
     def _resolve_weather_file_path(self, weather_file: str) -> str:
@@ -2836,7 +3970,317 @@ class EnergyPlusManager:
         return output_files
 
     # ------------------------ Post-Processing and Visualization ------------------------
-    def create_interactive_plot(self, output_directory: str, idf_name: str = None, 
+    def parse_simulation_errors(self, err_file_path: str) -> Dict[str, Any]:
+        """
+        Parse EnergyPlus error file and analyze errors
+        
+        Args:
+            err_file_path: Path to the .err file
+            
+        Returns:
+            Dictionary with parsed errors and analysis
+        """
+        # Parse the error file
+        parsed_errors = self.error_parser.parse_error_file(err_file_path)
+        
+        # Add root cause analysis if errors exist
+        if parsed_errors.get("exists") and not parsed_errors.get("error"):
+            analysis = self.error_parser.analyze_root_cause(parsed_errors)
+            parsed_errors["analysis"] = analysis
+        
+        return parsed_errors
+
+    def list_output_files(self, output_directory: str, idf_name: str = None) -> str:
+        """
+        List and analyze all EnergyPlus output files in a directory
+
+        Args:
+            output_directory: Directory containing simulation output files
+            idf_name: Name of the IDF file (without extension). If None, tries to detect from directory
+
+        Returns:
+            JSON string with detailed information about all output files
+        """
+        try:
+            logger.info(f"Listing output files in: {output_directory}")
+
+            output_dir = Path(output_directory)
+            if not output_dir.exists():
+                raise FileNotFoundError(f"Output directory not found: {output_directory}")
+
+            # Auto-detect IDF name if not provided
+            if not idf_name:
+                csv_files = list(output_dir.glob("*.csv"))
+                for csv_file in csv_files:
+                    if csv_file.name.endswith("Meter.csv"):
+                        idf_name = csv_file.name[:-9]
+                        break
+                    elif not csv_file.name.endswith("Table.csv"):
+                        idf_name = csv_file.stem
+                        break
+
+                if not idf_name:
+                    # Try to find any output file with common extensions
+                    for ext in ['.err', '.eio', '.eso', '.end']:
+                        matches = list(output_dir.glob(f"*{ext}"))
+                        if matches:
+                            idf_name = matches[0].stem
+                            break
+
+            # Define file type metadata
+            file_types = {
+                '.err': {
+                    'type': 'Error/Warning File',
+                    'description': 'Error messages and warnings - check this first',
+                    'priority': 'critical',
+                    'category': 'diagnostic'
+                },
+                '.end': {
+                    'type': 'Completion Status',
+                    'description': 'Final simulation status with error counts and elapsed time',
+                    'priority': 'critical',
+                    'category': 'diagnostic'
+                },
+                '.csv': {
+                    'type': 'Time Series Data (Variables)',
+                    'description': 'Hourly/timestep output variables in CSV format',
+                    'priority': 'high',
+                    'category': 'timeseries'
+                },
+                'Meter.csv': {
+                    'type': 'Time Series Data (Meters)',
+                    'description': 'Hourly/timestep meter data (energy consumption by category)',
+                    'priority': 'high',
+                    'category': 'timeseries'
+                },
+                'Table.htm': {
+                    'type': 'HTML Summary Report',
+                    'description': 'Comprehensive tabular summary reports (annual energy, end uses, HVAC sizing)',
+                    'priority': 'high',
+                    'category': 'summary'
+                },
+                'Table.tab': {
+                    'type': 'Tab-Delimited Summary Report',
+                    'description': 'Same as HTML report but in tab-delimited format for spreadsheets',
+                    'priority': 'medium',
+                    'category': 'summary'
+                },
+                '.rdd': {
+                    'type': 'Report Data Dictionary',
+                    'description': 'Lists ALL available Output:Variable options for this simulation',
+                    'priority': 'high',
+                    'category': 'reference'
+                },
+                '.mdd': {
+                    'type': 'Meter Data Dictionary',
+                    'description': 'Lists ALL available Output:Meter options for this simulation',
+                    'priority': 'high',
+                    'category': 'reference'
+                },
+                '.eio': {
+                    'type': 'Invariant Output',
+                    'description': 'Static simulation information (location, timesteps, surface details, sizing results)',
+                    'priority': 'medium',
+                    'category': 'reference'
+                },
+                '.eso': {
+                    'type': 'Standard Output (Raw)',
+                    'description': 'Raw time-varying output data (use CSV version instead)',
+                    'priority': 'low',
+                    'category': 'timeseries'
+                },
+                '.mtr': {
+                    'type': 'Meter Output (Raw)',
+                    'description': 'Raw meter data (use Meter.csv version instead)',
+                    'priority': 'low',
+                    'category': 'timeseries'
+                },
+                '.mtd': {
+                    'type': 'Meter Details',
+                    'description': 'Shows which variables feed into which meters',
+                    'priority': 'low',
+                    'category': 'reference'
+                },
+                '.bnd': {
+                    'type': 'Branch Node Details',
+                    'description': 'HVAC system flow connections and topology',
+                    'priority': 'low',
+                    'category': 'hvac'
+                },
+                '.dxf': {
+                    'type': 'AutoCAD Geometry',
+                    'description': '3D visualization of building geometry in AutoCAD format',
+                    'priority': 'low',
+                    'category': 'geometry'
+                },
+                '.shd': {
+                    'type': 'Shading Details',
+                    'description': 'Shading calculation details',
+                    'priority': 'low',
+                    'category': 'geometry'
+                },
+                '.audit': {
+                    'type': 'Audit File',
+                    'description': 'Echoes IDD and IDF with syntax error flagging',
+                    'priority': 'low',
+                    'category': 'diagnostic'
+                },
+                '.rvaudit': {
+                    'type': 'ReadVarsESO Audit',
+                    'description': 'Audit trail for ESO to CSV conversion',
+                    'priority': 'low',
+                    'category': 'diagnostic'
+                },
+                '.sql': {
+                    'type': 'SQLite Database',
+                    'description': 'Comprehensive simulation results in SQLite database format (queryable with SQL)',
+                    'priority': 'high',
+                    'category': 'database'
+                }
+            }
+
+            files_info = []
+            all_files = sorted(output_dir.iterdir())
+
+            for file_path in all_files:
+                if not file_path.is_file():
+                    continue
+
+                # Determine file type
+                file_ext = file_path.suffix
+                file_name = file_path.name
+
+                # Special handling for specific patterns
+                if file_name.endswith('Meter.csv'):
+                    type_key = 'Meter.csv'
+                elif file_name.endswith('Table.htm'):
+                    type_key = 'Table.htm'
+                elif file_name.endswith('Table.tab'):
+                    type_key = 'Table.tab'
+                else:
+                    type_key = file_ext
+
+                metadata = file_types.get(type_key, {
+                    'type': 'Unknown',
+                    'description': f'{file_ext} file',
+                    'priority': 'low',
+                    'category': 'other'
+                })
+
+                file_size = file_path.stat().st_size
+
+                file_info = {
+                    'name': file_name,
+                    'type': metadata['type'],
+                    'description': metadata['description'],
+                    'priority': metadata['priority'],
+                    'category': metadata['category'],
+                    'size_bytes': file_size,
+                    'size_human': self._format_file_size(file_size)
+                }
+
+                # Add extra details for specific file types
+                try:
+                    if file_ext == '.csv' or file_name.endswith('.csv'):
+                        line_count = sum(1 for _ in open(file_path, 'r', encoding='utf-8', errors='ignore'))
+                        file_info['line_count'] = line_count
+                        if line_count > 1:
+                            file_info['timesteps'] = line_count - 1  # Subtract header
+
+                            # Count variables (columns)
+                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                header = f.readline()
+                                var_count = len(header.split(',')) - 1  # Subtract datetime column
+                                file_info['variables_count'] = var_count
+
+                    elif file_name.endswith('Table.htm'):
+                        # Extract report names from HTML
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            import re
+                            reports = re.findall(r'Report:<b>\s*([^<]+)</b>', content)
+                            if reports:
+                                file_info['reports'] = reports[:10]  # Limit to first 10
+                                file_info['total_reports'] = len(reports)
+
+                    elif file_ext in ['.err', '.eio', '.rdd', '.mdd', '.bnd', '.mtd', '.shd', '.audit']:
+                        line_count = sum(1 for _ in open(file_path, 'r', encoding='utf-8', errors='ignore'))
+                        file_info['line_count'] = line_count
+
+                    # Special handling for .end file
+                    if file_ext == '.end':
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            status = f.read().strip()
+                            file_info['status'] = status
+
+                except Exception as e:
+                    logger.warning(f"Could not extract details for {file_name}: {e}")
+
+                files_info.append(file_info)
+
+            # Generate recommendations
+            recommendations = {
+                'start_here': [],
+                'for_time_series': [],
+                'for_summary_reports': [],
+                'for_discovering_outputs': [],
+                'for_sql_analysis': [],
+                'for_hvac_systems': [],
+                'for_geometry': []
+            }
+
+            for file_info in files_info:
+                name = file_info['name']
+                if file_info['type'] == 'Error/Warning File':
+                    recommendations['start_here'].append(name)
+                elif file_info['type'] == 'Completion Status':
+                    recommendations['start_here'].append(name)
+                elif file_info['type'] in ['HTML Summary Report', 'Tab-Delimited Summary Report']:
+                    recommendations['for_summary_reports'].append(name)
+                elif 'Time Series Data' in file_info['type']:
+                    recommendations['for_time_series'].append(name)
+                elif 'Dictionary' in file_info['type']:
+                    recommendations['for_discovering_outputs'].append(name)
+                elif file_info['category'] == 'database':
+                    recommendations['for_sql_analysis'].append(name)
+                elif file_info['category'] == 'hvac':
+                    recommendations['for_hvac_systems'].append(name)
+                elif file_info['category'] == 'geometry':
+                    recommendations['for_geometry'].append(name)
+
+            result = {
+                'output_directory': str(output_dir),
+                'idf_name': idf_name or 'Unknown',
+                'total_files': len(files_info),
+                'files': files_info,
+                'recommendations': recommendations,
+                'categories': self._group_files_by_category(files_info)
+            }
+
+            logger.info(f"Listed {len(files_info)} output files")
+            return json.dumps(result, indent=2)
+
+        except Exception as e:
+            logger.error(f"Error listing output files: {e}")
+            raise RuntimeError(f"Error listing output files: {str(e)}")
+
+    def _format_file_size(self, size_bytes: int) -> str:
+        """Format file size in human-readable format"""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.1f}{unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.1f}TB"
+
+    def _group_files_by_category(self, files_info: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Group files by category and count them"""
+        categories = {}
+        for file_info in files_info:
+            cat = file_info.get('category', 'other')
+            categories[cat] = categories.get(cat, 0) + 1
+        return categories
+
+    def create_interactive_plot(self, output_directory: str, idf_name: str = None,
                                 file_type: str = "auto", custom_title: str = None) -> str:
         """
         Create interactive HTML plot from EnergyPlus output files (meter or variable outputs)
@@ -2856,7 +4300,7 @@ class EnergyPlusManager:
             # The plot HTML is written into this directory, so it must be writable.
             from .scope import current_scope, check_read, check_write
             scope = current_scope(self.config)
-            output_dir = Path(self._scoped_directory(output_directory, "output directory"))
+            output_dir = Path(resolve_output_location(self.config, output_directory, "output directory"))
             if not output_dir.exists():
                 raise FileNotFoundError(f"Output directory not found: {output_directory}")
             
@@ -3041,6 +4485,631 @@ class EnergyPlusManager:
             logger.error(f"Error creating interactive plot: {e}")
             raise RuntimeError(f"Error creating interactive plot: {str(e)}")
 
+    # ==================== SQLite Query Methods ====================
+
+    def query_sql_variables(
+        self,
+        sql_path: str,
+        frequency: Optional[str] = None,
+        is_meter: Optional[bool] = None,
+        name_filter: Optional[str] = None,
+        include_summary: bool = True
+    ) -> str:
+        """Query available variables/meters in SQLite output database.
+
+        Args:
+            sql_path: Path to SQLite database file
+            frequency: Filter by reporting frequency (e.g., 'Hourly', 'Zone Timestep')
+            is_meter: True for meters only, False for variables only, None for both
+            name_filter: SQL LIKE pattern for filtering names (e.g., '%Temperature%')
+            include_summary: Include database summary statistics
+
+        Returns:
+            JSON string with variables list and optional summary
+        """
+        from .utils.sqlite_query import SQLiteQueryManager
+
+        try:
+            # Resolve path
+            from .utils.path_utils import resolve_path
+            resolved_path = resolve_path(
+                self.config,
+                sql_path,
+                file_types=['.sql'],
+                description="SQLite output database"
+            )
+
+            manager = SQLiteQueryManager(resolved_path)
+
+            # Get variables
+            df = manager.list_available_variables(
+                frequency=frequency,
+                is_meter=is_meter,
+                name_filter=name_filter
+            )
+
+            result = {
+                "database_path": resolved_path,
+                "filters": {
+                    "frequency": frequency,
+                    "is_meter": is_meter,
+                    "name_filter": name_filter
+                },
+                "variables_count": len(df),
+                "variables": df.to_dict('records')
+            }
+
+            # Add summary if requested
+            if include_summary:
+                summary = manager.get_database_summary()
+                result["database_summary"] = summary
+
+            logger.info(f"Found {len(df)} variables in {resolved_path}")
+            return json.dumps(result, indent=2)
+
+        except Exception as e:
+            logger.error(f"Error querying SQL variables: {e}")
+            raise RuntimeError(f"Error querying SQL variables: {str(e)}")
+
+    def query_sql_timeseries(
+        self,
+        sql_path: str,
+        variable_name: Optional[str] = None,
+        variable_id: Optional[int] = None,
+        key_value: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        output_format: str = "json"
+    ) -> str:
+        """Query time-series data from SQLite output database.
+
+        Args:
+            sql_path: Path to SQLite database file
+            variable_name: Variable name to query (alternative to variable_id)
+            variable_id: Variable ID (ReportDataDictionaryIndex) to query
+            key_value: Key value for disambiguation (zone, surface, etc.)
+            start_date: Start date filter (format: 'YYYY-MM-DD')
+            end_date: End date filter (format: 'YYYY-MM-DD')
+            output_format: 'json' or 'csv'
+
+        Returns:
+            JSON string with time-series data or CSV data
+        """
+        from .utils.sqlite_query import SQLiteQueryManager
+
+        try:
+            # Resolve path
+            from .utils.path_utils import resolve_path
+            resolved_path = resolve_path(
+                self.config,
+                sql_path,
+                file_types=['.sql'],
+                description="SQLite output database"
+            )
+
+            manager = SQLiteQueryManager(resolved_path)
+
+            # Get variable metadata if using name
+            metadata = None
+            if variable_id is None and variable_name:
+                var_id = manager.find_variable_id(variable_name, key_value)
+                if var_id is None:
+                    # List possible matches
+                    possible = manager.list_available_variables(name_filter=f"%{variable_name}%")
+                    return json.dumps({
+                        "error": f"Variable '{variable_name}' not found or ambiguous",
+                        "possible_matches": possible.to_dict('records')
+                    }, indent=2)
+                variable_id = var_id
+                metadata = manager.get_variable_metadata(variable_id)
+            elif variable_id:
+                metadata = manager.get_variable_metadata(variable_id)
+
+            # Get time series
+            df = manager.get_time_series(
+                variable_id=variable_id,
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            if output_format == "csv":
+                # Return CSV string
+                return df.to_csv(index=False)
+
+            # Return JSON
+            result = {
+                "database_path": resolved_path,
+                "variable_metadata": metadata,
+                "filters": {
+                    "start_date": start_date,
+                    "end_date": end_date
+                },
+                "data_points": len(df),
+                "time_series": df.to_dict('records')
+            }
+
+            logger.info(f"Retrieved {len(df)} time-series records for variable_id {variable_id}")
+            return json.dumps(result, indent=2)
+
+        except Exception as e:
+            logger.error(f"Error querying SQL time series: {e}")
+            raise RuntimeError(f"Error querying SQL time series: {str(e)}")
+
+    def query_sql_tabular(
+        self,
+        sql_path: str,
+        report_name: Optional[str] = None,
+        list_reports: bool = False
+    ) -> str:
+        """Query tabular reports from SQLite output database.
+
+        Args:
+            sql_path: Path to SQLite database file
+            report_name: Specific report name to retrieve
+            list_reports: If True, only list available reports
+
+        Returns:
+            JSON string with tabular data or list of reports
+        """
+        from .utils.sqlite_query import SQLiteQueryManager
+
+        try:
+            # Resolve path
+            from .utils.path_utils import resolve_path
+            resolved_path = resolve_path(
+                self.config,
+                sql_path,
+                file_types=['.sql'],
+                description="SQLite output database"
+            )
+
+            manager = SQLiteQueryManager(resolved_path)
+
+            # List reports if requested
+            if list_reports:
+                reports = manager.get_tabular_reports()
+                return json.dumps({
+                    "database_path": resolved_path,
+                    "reports_count": len(reports),
+                    "available_reports": reports
+                }, indent=2)
+
+            # Get tabular data
+            df = manager.get_tabular_report_data(report_name=report_name)
+
+            result = {
+                "database_path": resolved_path,
+                "report_name": report_name or "All reports",
+                "records_count": len(df),
+                "tabular_data": df.to_dict('records')
+            }
+
+            logger.info(f"Retrieved {len(df)} tabular data records")
+            return json.dumps(result, indent=2)
+
+        except Exception as e:
+            logger.error(f"Error querying SQL tabular data: {e}")
+            raise RuntimeError(f"Error querying SQL tabular data: {str(e)}")
+
+    def _generate_uplot_html(self, data_dict: Dict[str, Any], title: str) -> str:
+        """Generate standalone HTML file with uPlot visualization.
+
+        Args:
+            data_dict: Dictionary with 'timestamps', 'series_data', 'series_labels'
+            title: Plot title
+
+        Returns:
+            HTML string with embedded uPlot chart
+        """
+        html_template = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.24/dist/uPlot.min.css">
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
+        }}
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        h1 {{
+            margin: 0 0 20px 0;
+            font-size: 24px;
+            font-weight: 600;
+            color: #333;
+        }}
+        .chart-wrapper {{
+            width: 100%;
+            height: 600px;
+        }}
+        .legend {{
+            margin-top: 20px;
+            font-size: 13px;
+        }}
+        .legend-item {{
+            display: inline-block;
+            margin-right: 20px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }}
+        .legend-item:hover {{
+            background: #f0f0f0;
+        }}
+        .legend-item.disabled {{
+            opacity: 0.4;
+        }}
+        .legend-color {{
+            display: inline-block;
+            width: 20px;
+            height: 3px;
+            margin-right: 6px;
+            vertical-align: middle;
+        }}
+        /* Tooltip styling */
+        .uplot-tooltip {{
+            position: absolute;
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 1000;
+            white-space: nowrap;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }}
+        .uplot-tooltip-time {{
+            font-weight: 600;
+            margin-bottom: 6px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid rgba(255,255,255,0.3);
+        }}
+        .uplot-tooltip-series {{
+            display: flex;
+            align-items: center;
+            margin: 3px 0;
+        }}
+        .uplot-tooltip-marker {{
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>{title}</h1>
+        <div id="chart" class="chart-wrapper"></div>
+        <div id="legend" class="legend"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.24/dist/uPlot.iife.min.js"></script>
+    <script>
+        // Data from Python
+        const data = {data_json};
+
+        // Color palette
+        const colors = [
+            '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+        ];
+
+        // Configure series
+        const series = [
+            {{
+                label: "Time",
+                value: (u, v) => v == null ? '-' : new Date(v * 1000).toLocaleString()
+            }}
+        ];
+
+        data.series_labels.forEach((label, idx) => {{
+            series.push({{
+                label: label,
+                stroke: colors[idx % colors.length],
+                width: 2,
+                points: {{ show: false }},
+                value: (u, v) => v == null ? '-' : v.toFixed(2)
+            }});
+        }});
+
+        // uPlot options
+        const opts = {{
+            width: document.getElementById('chart').offsetWidth,
+            height: 600,
+            series: series,
+            axes: [
+                {{
+                    stroke: "#333",
+                    grid: {{ stroke: "#e0e0e0", width: 1 }},
+                    ticks: {{ stroke: "#999", width: 1 }},
+                    size: 90,  // Increased space for rotated labels
+                    rotate: -45,  // Rotate labels 45 degrees
+                    values: (u, vals) => vals.map(v => {{
+                        const d = new Date(v * 1000);
+                        const year = d.getFullYear();
+                        const month = String(d.getMonth() + 1).padStart(2, '0');
+                        const day = String(d.getDate()).padStart(2, '0');
+                        const hour = String(d.getHours()).padStart(2, '0');
+                        // Format: YYYY-MM-DD HH
+                        return `${{year}}-${{month}}-${{day}} ${{hour}}h`;
+                    }}),
+                    // Reduce number of ticks to prevent crowding
+                    space: 100  // Minimum pixels between ticks (increased for year)
+                }},
+                {{
+                    stroke: "#333",
+                    grid: {{ stroke: "#e0e0e0", width: 1 }},
+                    ticks: {{ stroke: "#999", width: 1 }},
+                    values: (u, vals) => vals.map(v => v.toFixed(2))
+                }}
+            ],
+            cursor: {{
+                drag: {{
+                    x: true,
+                    y: false
+                }},
+                sync: {{
+                    key: 'sync',
+                }}
+            }},
+            legend: {{
+                show: false  // We'll use custom legend
+            }}
+        }};
+
+        // Create tooltip element
+        const tooltip = document.createElement('div');
+        tooltip.className = 'uplot-tooltip';
+        tooltip.style.display = 'none';
+        document.body.appendChild(tooltip);
+
+        // Add tooltip plugin
+        opts.hooks = {{
+            setCursor: [
+                u => {{
+                    const {{ left, top, idx }} = u.cursor;
+
+                    if (idx === null || idx === undefined) {{
+                        tooltip.style.display = 'none';
+                        return;
+                    }}
+
+                    // Get timestamp
+                    const timestamp = data.data[0][idx];
+                    const d = new Date(timestamp * 1000);
+                    const dateStr = d.toLocaleString();
+
+                    // Build tooltip content
+                    let content = `<div class="uplot-tooltip-time">${{dateStr}}</div>`;
+
+                    // Add each series value
+                    data.series_labels.forEach((label, i) => {{
+                        const seriesIdx = i + 1;  // +1 because data[0] is timestamps
+                        const value = data.data[seriesIdx][idx];
+
+                        if (value !== null && value !== undefined && u.series[seriesIdx].show !== false) {{
+                            const color = colors[i % colors.length];
+                            content += `
+                                <div class="uplot-tooltip-series">
+                                    <span class="uplot-tooltip-marker" style="background: ${{color}}"></span>
+                                    <span>${{label}}: ${{value.toFixed(2)}}</span>
+                                </div>
+                            `;
+                        }}
+                    }});
+
+                    tooltip.innerHTML = content;
+
+                    // Position tooltip
+                    const chartRect = u.root.querySelector('.u-over').getBoundingClientRect();
+                    tooltip.style.display = 'block';
+                    tooltip.style.left = (chartRect.left + left + 10) + 'px';
+                    tooltip.style.top = (chartRect.top + top - tooltip.offsetHeight / 2) + 'px';
+                }}
+            ]
+        }};
+
+        // Create chart
+        const chart = new uPlot(opts, data.data, document.getElementById('chart'));
+
+        // Create custom legend with toggle
+        const legendDiv = document.getElementById('legend');
+        data.series_labels.forEach((label, idx) => {{
+            const item = document.createElement('div');
+            item.className = 'legend-item';
+            item.innerHTML = `<span class="legend-color" style="background: ${{colors[idx % colors.length]}}"></span>${{label}}`;
+            item.onclick = () => {{
+                const seriesIdx = idx + 1;  // +1 because series[0] is time axis
+                chart.setSeries(seriesIdx, {{ show: !chart.series[seriesIdx].show }});
+                item.classList.toggle('disabled');
+            }};
+            legendDiv.appendChild(item);
+        }});
+
+        // Hide tooltip when mouse leaves chart
+        chart.root.addEventListener('mouseleave', () => {{
+            tooltip.style.display = 'none';
+        }});
+
+        // Handle window resize
+        window.addEventListener('resize', () => {{
+            chart.setSize({{
+                width: document.getElementById('chart').offsetWidth,
+                height: 600
+            }});
+        }});
+    </script>
+</body>
+</html>"""
+
+        return html_template.format(
+            title=title,
+            data_json=json.dumps(data_dict)
+        )
+
+    def visualize_output(
+        self,
+        sql_path: str,
+        variable_ids: Optional[List[int]] = None,
+        variable_names: Optional[List[str]] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        custom_title: Optional[str] = None,
+        output_path: Optional[str] = None
+    ) -> str:
+        """Create interactive plot from SQLite database time-series data.
+
+        This is the primary visualization tool for EnergyPlus simulation outputs.
+        It creates interactive HTML plots with proper datetime x-axis from SQLite
+        database files.
+
+        Args:
+            sql_path: Path to SQLite database file
+            variable_ids: List of variable IDs to plot
+            variable_names: List of variable names to plot (alternative to variable_ids)
+            start_date: Start date filter (format: 'YYYY-MM-DD')
+            end_date: End date filter (format: 'YYYY-MM-DD')
+            custom_title: Custom plot title
+            output_path: Optional output path for HTML file
+
+        Returns:
+            JSON string with plot creation results
+        """
+        from .utils.sqlite_query import SQLiteQueryManager
+
+        try:
+            # Resolve path
+            from .utils.path_utils import resolve_path
+            resolved_path = resolve_path(
+                self.config,
+                sql_path,
+                file_types=['.sql'],
+                description="SQLite output database"
+            )
+
+            manager = SQLiteQueryManager(resolved_path)
+
+            # Resolve variable names to IDs if needed
+            if variable_ids is None and variable_names:
+                variable_ids = []
+                for name in variable_names:
+                    var_id = manager.find_variable_id(name)
+                    if var_id is None:
+                        raise ValueError(f"Could not find variable: {name}")
+                    variable_ids.append(var_id)
+
+            if not variable_ids:
+                raise ValueError("Must provide either variable_ids or variable_names")
+
+            # Get metadata for all variables
+            metadata_list = []
+            for var_id in variable_ids:
+                meta = manager.get_variable_metadata(var_id)
+                if meta:
+                    metadata_list.append(meta)
+
+            # Get time series data
+            df = manager.get_multiple_time_series(
+                variable_ids=variable_ids,
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            if df.empty:
+                raise ValueError("No data found for specified variables and date range")
+
+            # Add datetime column for proper time-series visualization
+            try:
+                df = SQLiteQueryManager.add_datetime_column(df, use_year=True)
+                use_datetime = df['datetime'].notna().any()
+            except Exception as e:
+                logger.warning(f"Failed to add datetime column, falling back to TimeIndex: {e}")
+                use_datetime = False
+
+            # Prepare data for uPlot
+            # uPlot expects: [[timestamps], [series1_values], [series2_values], ...]
+
+            # Get timestamps as Unix timestamps (seconds since epoch)
+            if use_datetime:
+                timestamps = df['datetime'].apply(lambda x: x.timestamp() if pd.notna(x) else None).tolist()
+            else:
+                # Fallback: use TimeIndex as seconds (scaled for visualization)
+                timestamps = df.index.tolist()
+
+            # Prepare series data and labels
+            series_data = [timestamps]  # First array is timestamps
+            series_labels = []
+
+            for var_id, meta in zip(variable_ids, metadata_list):
+                if var_id in df.columns:
+                    # Series label
+                    label = f"{meta['Name']} ({meta['KeyValue']})"
+                    if meta['Units']:
+                        label += f" [{meta['Units']}]"
+                    series_labels.append(label)
+
+                    # Series values (convert to list, handle NaN)
+                    values = df[var_id].tolist()
+                    series_data.append(values)
+
+            # Create data dictionary for uPlot
+            data_dict = {
+                "data": series_data,
+                "series_labels": series_labels
+            }
+
+            # Generate HTML with uPlot
+            title = custom_title or "EnergyPlus Time-Series Data"
+            html_content = self._generate_uplot_html(data_dict, title)
+
+            # Determine output path
+            if output_path is None:
+                db_path = Path(resolved_path)
+                output_file = db_path.parent / f"{db_path.stem}_uplot.html"
+            else:
+                output_file = Path(output_path)
+
+            # Save HTML
+            with open(str(output_file), 'w', encoding='utf-8') as f:
+                f.write(html_content)
+
+            result = {
+                "success": True,
+                "database_path": resolved_path,
+                "output_file": str(output_file),
+                "variables_plotted": [
+                    {"id": meta['ReportDataDictionaryIndex'], "name": meta['Name'], "key": meta['KeyValue']}
+                    for meta in metadata_list
+                ],
+                "data_points": len(df),
+                "title": title,
+                "library": "uPlot"
+            }
+
+            logger.info(f"uPlot visualization created: {output_file}")
+            return json.dumps(result, indent=2)
+
+        except Exception as e:
+            logger.error(f"Error creating SQL plot: {e}")
+            raise RuntimeError(f"Error creating SQL plot: {str(e)}")
+
+    # ==================== End SQLite Query Methods ====================
+
     def _get_branches_from_list(self, idf, branch_list_name: str) -> List[Dict[str, Any]]:
         """Helper method to get branch information from a branch list"""
         branches = []
@@ -3174,3 +5243,199 @@ class EnergyPlusManager:
                 return connector_info
         
         return None
+
+
+    def extract_geometry(self, idf_path: str, output_format: str = "json", pretty: bool = True) -> str:
+        """
+        Extract complete building geometry from IDF file.
+        
+        Args:
+            idf_path: Path to the IDF file
+            output_format: Output format ("json", "summary", or "threejs")
+            pretty: Whether to format JSON with indentation
+            
+        Returns:
+            JSON string with geometry data or error message
+        """
+        from .utils.geometry_utils import extract_building_geometry, geometry_to_json, get_geometry_summary
+        
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Extracting geometry from: {resolved_path}")
+            idf = IDF(resolved_path)
+            
+            # Extract geometry
+            geometry = extract_building_geometry(idf)
+            
+            # Format output
+            if output_format.lower() == "summary":
+                return get_geometry_summary(geometry)
+            elif output_format.lower() == "threejs":
+                from .utils.geometry_threejs import geometry_to_threejs_json
+                return geometry_to_threejs_json(geometry, pretty=pretty)
+            else:
+                return geometry_to_json(geometry, pretty=pretty)
+                
+        except FileNotFoundError:
+            error_msg = f"IDF file not found: {resolved_path}"
+            logger.error(error_msg)
+            return json.dumps({"error": error_msg})
+        except Exception as e:
+            error_msg = f"Error extracting geometry: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return json.dumps({"error": error_msg})
+
+
+    def extract_geometry_with_summary(self, idf_path: str, pretty: bool = True) -> str:
+        """
+        Extract building geometry with summary in a single JSON response.
+        
+        Args:
+            idf_path: Path to the IDF file
+            pretty: Whether to format JSON with indentation
+            
+        Returns:
+            JSON string with both geometry data and summary
+        """
+        from .utils.geometry_utils import extract_building_geometry, get_brief_summary
+        
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Extracting geometry with summary from: {resolved_path}")
+            idf = IDF(resolved_path)
+            
+            # Extract geometry
+            geometry = extract_building_geometry(idf)
+            
+            # Create brief summary
+            summary = get_brief_summary(geometry)
+            
+            # Combine into single response
+            result = {
+                "summary": summary,
+                "geometry": geometry
+            }
+            
+            return json.dumps(result, indent=2 if pretty else None)
+                
+        except FileNotFoundError:
+            error_msg = f"IDF file not found: {resolved_path}"
+            logger.error(error_msg)
+            return json.dumps({"error": error_msg})
+        except Exception as e:
+            error_msg = f"Error extracting geometry with summary: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return json.dumps({"error": error_msg})
+
+
+    def generate_geometry_html(self, idf_path: str) -> str:
+        """
+        Generate HTML viewer as a string (no file writing).
+        
+        Args:
+            idf_path: Path to the IDF file
+            
+        Returns:
+            HTML string with embedded geometry data
+        """
+        from .utils.geometry_utils import extract_building_geometry
+        from .utils.geometry_threejs import create_enhanced_html_viewer
+        
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Generating geometry HTML for: {resolved_path}")
+            
+            # Extract geometry
+            idf = IDF(resolved_path)
+            geometry = extract_building_geometry(idf)
+            
+            # Generate HTML with enhanced template
+            building_name = geometry.get("building", {}).get("name", "Building")
+            html_content = create_enhanced_html_viewer(
+                geometry_data=geometry,
+                title=f"{building_name} - Geometry Viewer"
+            )
+            
+            logger.info(f"Generated HTML viewer for: {building_name}")
+            return html_content
+            
+        except FileNotFoundError:
+            error_msg = f"IDF file not found: {resolved_path}"
+            logger.error(error_msg)
+            return f"<html><body><h1>Error</h1><p>{error_msg}</p></body></html>"
+        except Exception as e:
+            error_msg = f"Error generating geometry HTML: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return f"<html><body><h1>Error</h1><p>{error_msg}</p></body></html>"
+
+
+    def create_geometry_viewer(self, idf_path: str, output_path: Optional[str] = None) -> str:
+        """
+        Create an HTML viewer for building geometry visualization (writes files).
+        
+        Args:
+            idf_path: Path to the IDF file
+            output_path: Optional output path for HTML file (defaults to same directory as IDF)
+            
+        Returns:
+            JSON string with status and file paths
+        """
+        from .utils.geometry_utils import extract_building_geometry
+        from .utils.geometry_threejs import create_enhanced_html_viewer
+        
+        resolved_path = self._resolve_idf_path(idf_path)
+        
+        try:
+            logger.info(f"Creating geometry viewer for: {resolved_path}")
+            
+            # Determine output paths
+            path_obj = Path(resolved_path)
+            base_name = path_obj.stem
+            
+            if output_path is None:
+                output_dir = Path(report_path(self.config, ""))
+            else:
+                output_dir = Path(output_path).parent
+                if Path(output_path).suffix == '.html':
+                    base_name = Path(output_path).stem
+            
+            html_path = output_dir / f"{base_name}_viewer.html"
+            
+            # Extract geometry
+            idf = IDF(resolved_path)
+            geometry = extract_building_geometry(idf)
+            
+            # Generate HTML with enhanced template
+            building_name = geometry.get("building", {}).get("name", "Building")
+            html_content = create_enhanced_html_viewer(
+                geometry_data=geometry,
+                title=f"{building_name} - Geometry Viewer"
+            )
+            
+            # Write HTML file
+            with open(html_path, 'w') as f:
+                f.write(html_content)
+            
+            result = {
+                "success": True,
+                "message": "Geometry viewer created successfully",
+                "files": {
+                    "html": str(html_path)
+                },
+                "building_name": building_name
+            }
+            
+            logger.info(f"Viewer created: {html_path}")
+            return json.dumps(result, indent=2)
+            
+        except FileNotFoundError:
+            error_msg = f"IDF file not found: {resolved_path}"
+            logger.error(error_msg)
+            return json.dumps({"success": False, "error": error_msg})
+        except Exception as e:
+            error_msg = f"Error creating geometry viewer: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return json.dumps({"success": False, "error": error_msg})

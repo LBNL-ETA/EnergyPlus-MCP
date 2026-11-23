@@ -9,7 +9,7 @@ any required approvals from the U.S. Dept. of Energy). All rights reserved.
 See License.txt in the parent directory for license details.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .schedules import ScheduleValueParser, ScheduleLanguageParser, ScheduleConverter, SimpleScheduleFormat
 from .diagrams import HVACDiagramGenerator

@@ -1,0 +1,20 @@
+# Files Cloud Build does not need (scripts/deploy.sh uploads this directory).
+.gcloudignore
+.git/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.vscode/
+.DS_Store
+.env
+.env.*
+outputs/
+work/
+logs/
+test_runs/
+tests/
+test_sqlite_queries.py

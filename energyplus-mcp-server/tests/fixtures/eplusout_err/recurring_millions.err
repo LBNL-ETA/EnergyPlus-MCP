@@ -1,0 +1,77 @@
+Program Version,EnergyPlus, Version 26.1.0-6f2e40d102, YMD=2026.10.06 19:48,
+   ** Warning ** Weather file location will be used rather than entered (IDF) Location object.
+   **   ~~~   ** ..Location object=MIAMI INTL AP FL USA WMO=722020
+   **   ~~~   ** ..Weather File Location=Chicago Ohare Intl Ap IL USA TMY3 WMO#=725300
+   **   ~~~   ** ..due to location differences, Latitude difference=[16.16] degrees, Longitude difference=[7.62] degrees.
+   **   ~~~   ** ..Time Zone difference=[1.0] hour(s), Elevation difference=[1727.27] percent, [190.00] meters.
+   ** Warning ** Water heater = WATER HEATER TANK:  Recovery Efficiency and Energy Factor could not be calculated during the test for standard ratings
+   **   ~~~   ** Setpoint was never recovered and/or heater never turned on
+   ** Warning ** Check input. Pump nominal power or motor efficiency is set to 0, for pump=DHW PUMP
+   ************* Testing Individual Branch Integrity
+   ************* All Branches passed integrity testing
+   ************* Testing Individual Supply Air Path Integrity
+   ************* All Supply Air Paths passed integrity testing
+   ************* Testing Individual Return Air Path Integrity
+   ************* All Return Air Paths passed integrity testing
+   ************* No node connection errors were found.
+   ************* Beginning Simulation
+   ** Warning ** CalcEquipmentFlowRates: "SINKS" - Target water temperature is greater than the hot water temperature by (2.33E-002 C)
+   **   ~~~   **  Environment=APRIL, at Simulation time=01/01 04:51 - 04:52
+   **   ~~~   ** ...target water temperature     = 40.56 C
+   **   ~~~   ** ...hot water temperature        = 40.54 C
+   **   ~~~   ** ...Target water temperature should be less than or equal to the hot water temperature. Verify temperature setpoints and schedules.
+   ** Warning ** CalcEquipmentFlowRates: "SHOWERS" - Target water temperature is greater than the hot water temperature by (2.33E-002 C)
+   **   ~~~   **  Environment=APRIL, at Simulation time=01/01 04:51 - 04:52
+   **   ~~~   ** ...target water temperature     = 40.56 C
+   **   ~~~   ** ...hot water temperature        = 40.54 C
+   **   ~~~   ** ...Target water temperature should be less than or equal to the hot water temperature. Verify temperature setpoints and schedules.
+   ** Warning ** CalcDoe2DXCoil: Coil:WaterHeating:AirToWaterHeatPump:Wrapped="HPWHPLANTDXCOIL" - Air volume flow rate per watt of rated total water heating capacity is out of range at 9.30E-005 m3/s/W.
+   **   ~~~   **  Environment=APRIL, at Simulation time=01/16 12:59 - 13:00
+   **   ~~~   ** Expected range for VolumeFlowPerRatedTotalCapacity=[2.684E-005--8.056E-005]
+   **   ~~~   ** Possible causes may be that the parent object is calling for an actual supply air flow rate that is much higher or lower than the DX coil rated supply air flow rate.
+   ** Warning ** Temperature out of range [-100. to 200.] (PsyPsatFnTemp)
+   **   ~~~   **  Routine=PsyTwbFnTdbWPb, Environment=APRIL, at Simulation time=03/21 10:27 - 10:28
+   **   ~~~   **  Input Temperature=-596.97
+   ** Warning ** WetBulb not converged after 101 iterations(PsyTwbFnTdbWPb)
+   **   ~~~   **  Routine=Unknown, Environment=APRIL, at Simulation time=11/24 15:15 - 15:16
+   **   ~~~   **  Input Temperature = 2.87
+   **   ~~~   **  Input Humidity Ratio= 2.682041E-003
+   **   ~~~   **  Input Pressure = 99500.00
+   **   ~~~   **  Resultant Temperature= 1.46E-002
+   ************* Simulation Error Summary *************
+   *************
+   ************* ===== Recurring Error Summary =====
+   ************* The following recurring error messages occurred.
+   *************
+   *************  ** Warning ** "SINKS" - Target water temperature should be less than or equal to the hot water temperature error continues...
+   *************  **   ~~~   **   This error occurred 1147903 total times;
+   *************  **   ~~~   **   during Warmup 0 times;
+   *************  **   ~~~   **   during Sizing 0 times.
+   *************  **   ~~~   **   Max=19.508979  Min=0.000006
+   *************
+   *************  ** Warning ** "SHOWERS" - Target water temperature should be less than or equal to the hot water temperature error continues...
+   *************  **   ~~~   **   This error occurred 379977 total times;
+   *************  **   ~~~   **   during Warmup 0 times;
+   *************  **   ~~~   **   during Sizing 0 times.
+   *************  **   ~~~   **   Max=17.471789  Min=0.000006
+   *************
+   *************  ** Warning ** CalcDoe2DXCoil: Coil:WaterHeating:AirToWaterHeatPump:Wrapped="HPWHPLANTDXCOIL" - Air volume flow rate per watt of rated total water heating capacity is out of range error continues...
+   *************  **   ~~~   **   This error occurred 3531704 total times;
+   *************  **   ~~~   **   during Warmup 0 times;
+   *************  **   ~~~   **   during Sizing 0 times.
+   *************  **   ~~~   **   Max=0.000105  Min=0.000092
+   *************
+   *************  ** Warning ** Temperature out of range [-100. to 200.] (PsyPsatFnTemp)
+   *************  **   ~~~   **   This error occurred 1 total times;
+   *************  **   ~~~   **   during Warmup 0 times;
+   *************  **   ~~~   **   during Sizing 0 times.
+   *************  **   ~~~   **   Max=-596.970490 C  Min=-596.970490 C
+   *************
+   *************  ** Warning ** WetBulb not converged after max iterations(PsyTwbFnTdbWPb)
+   *************  **   ~~~   **   This error occurred 1 total times;
+   *************  **   ~~~   **   during Warmup 0 times;
+   *************  **   ~~~   **   during Sizing 0 times.
+   *************
+   ************* EnergyPlus Warmup Error Summary. During Warmup: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Sizing Error Summary. During Sizing: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Completed Successfully-- 5059591 Warning; 0 Severe Errors; Elapsed Time=00hr 00min 29.93sec

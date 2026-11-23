@@ -23,6 +23,9 @@ from difflib import get_close_matches
 
 from eppy.modeleditor import IDF
 
+from . import energyplus_process
+from .model_guard import check_model_for_caller
+
 logger = logging.getLogger(__name__)
 
 
@@ -251,12 +254,6 @@ class OutputVariableManager:
             else:
                 logger.warning("Default weather file not found, running without weather data")
             
-            # Load IDF for simulation (with weather file if available)
-            if weather_file:
-                idf = IDF(temp_idf_path, weather_file)
-            else:
-                idf = IDF(temp_idf_path)
-            
             # Run simulation with minimal options
             simulation_options = {
                 'output_directory': output_dir,
@@ -273,7 +270,29 @@ class OutputVariableManager:
                 simulation_options['weather'] = weather_file
             
             start_time = datetime.now()
-            result = idf.run(**simulation_options)
+            # A separate EnergyPlus process with its own working directory;
+            # eppy's IDF.run would change the server's cwd and stdout.
+            # Discovery runs the model too: apply the same remote-caller check.
+            check_model_for_caller(self.config, temp_idf_path)
+            command = energyplus_process.build_command(
+                self.config.energyplus.executable_path,
+                temp_idf_path,
+                output_dir,
+                weather=simulation_options.get('weather'),
+                idd=self.config.energyplus.idd_path,
+                annual=simulation_options['annual'],
+                design_day=simulation_options['design_day'],
+                readvars=simulation_options['readvars'],
+                expandobjects=simulation_options['expandobjects'],
+                output_prefix=simulation_options['output_prefix'],
+                output_suffix=simulation_options['output_suffix'],
+            )
+            exit_code = energyplus_process.run(
+                command, output_dir, os.path.join(output_dir, "energyplus.log"),
+                timeout_seconds=self.config.server.simulation_timeout,
+            )
+            if exit_code != 0:
+                raise RuntimeError(f"EnergyPlus exited with code {exit_code}; see {output_dir}")
             end_time = datetime.now()
             
             return {
@@ -281,7 +300,7 @@ class OutputVariableManager:
                 "output_directory": output_dir,
                 "duration": str(end_time - start_time),
                 "weather_file": weather_file,
-                "result": str(result) if result else "Completed"
+                "result": "Completed"
             }
             
         except Exception as e:

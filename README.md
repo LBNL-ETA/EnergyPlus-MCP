@@ -1,9 +1,14 @@
 # EnergyPlus MCP Server
 
-A Model Context Protocol (MCP) server that provides **35 comprehensive tools** for working with EnergyPlus building energy simulation models. This server enables AI assistants and other MCP clients to load, validate, modify, and analyze EnergyPlus IDF files through a standardized interface.
+A Model Context Protocol (MCP) server for EnergyPlus that exposes a **compact, agent-friendly tool surface** built around domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, `schedule_manager`, `service_water_manager`, …) and a few unified master tools. It lets AI assistants load, validate, modify, and simulate EnergyPlus IDF files through a consolidated interface.
 
-> **Version**: 0.1.0  
-> **EnergyPlus Compatibility**: 26.1.0 (default; see [Building against a different EnergyPlus version](#building-against-a-different-energyplus-version))  
+> This README documents the compact domain-manager / master-tool architecture
+> and its workflow-neutral default surface. Older releases may expose a
+> fine-grained tool layout; always use the documentation from the checked-out
+> revision.
+>
+> **Version**: 0.2.0
+> **EnergyPlus Compatibility**: 26.1.0 (default; see [Building against a different EnergyPlus version](#building-against-a-different-energyplus-version))
 > **Python**: 3.10+
 
 <details open>
@@ -13,6 +18,7 @@ A Model Context Protocol (MCP) server that provides **35 comprehensive tools** f
 - [Installation](#installation)
   - [Using the MCP Server](#using-the-mcp-server)
     - [Claude Desktop](#claude-desktop)
+    - [Codex](#codex)
     - [VS Code](#vs-code)
     - [Cursor](#cursor)
   - [Development Setup](#development-setup)
@@ -20,11 +26,21 @@ A Model Context Protocol (MCP) server that provides **35 comprehensive tools** f
     - [Docker Setup](#docker-setup)
     - [Local Development](#local-development)
     - [Streamable HTTP Transport (Local Testing)](#streamable-http-transport-local-testing)
+    - [Remote Deployment (Google Cloud Run)](#remote-deployment-google-cloud-run)
     - [Building against a different EnergyPlus version](#building-against-a-different-energyplus-version)
 - [Available Tools](#available-tools)
+  - [Tool Registration Modes](#tool-registration-modes)
+  - [Core Tools (Always Available)](#core-tools-always-available)
+  - [Mode-Specific Tools](#mode-specific-tools)
+  - [Deprecated Workflow Compatibility](#deprecated-workflow-compatibility)
 - [Usage Examples](#usage-examples)
+  - [Basic Workflow](#basic-workflow)
+  - [Advanced Features](#advanced-features)
+  - [Using with MCP Inspector](#using-with-mcp-inspector)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
+  - [Environment variables](#environment-variables)
+  - [Tool Surface Profiles (config.yaml)](#tool-surface-profiles-configyaml)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [Cite this work](#cite-this-work)
@@ -52,6 +68,7 @@ EnergyPlus MCP Server makes EnergyPlus building energy simulation accessible to 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (macOS / Windows) or Docker Engine (Linux), running
 - `git` on your PATH
 - The `energyplus-mcp-dev` image built locally (step 1 below — do this once)
+- Check out the revision whose tool-surface contract you intend to deploy.
 
 Choose the appropriate setup for your AI assistant or IDE:
 
@@ -88,16 +105,73 @@ Choose the appropriate setup for your AI assistant or IDE:
      }
    }
    ```
-   
-   **Important**: 
+
+   **Important**:
    - Replace `/path/to/EnergyPlus-MCP` with the absolute path to your cloned repo.
      - macOS/Linux example: `/Users/yourname/code/EnergyPlus-MCP`
      - Windows example: `C:\\Users\\yourname\\code\\EnergyPlus-MCP` (use double backslashes in JSON)
-   - Remove all comments (text after `//`) when adding to the actual config file, as JSON doesn't support comments.
+   - Remove all comments (text after `//`) when saving — JSON does not support comments.
 
 3. **Restart Claude Desktop**. The EnergyPlus server should appear in the MCP servers panel.
 
-4. **Verify**: in a new chat, ask *"List the EnergyPlus MCP tools you have access to."* You should see tools like `load_idf_model`, `run_energyplus_simulation`, `get_server_status`. If not, check [Troubleshooting](#troubleshooting).
+4. **Verify**: in a new chat, ask *"List the EnergyPlus MCP tools you have access to."* With the default `domains` profile you should see the domain managers (`envelope_manager`, `hvac_manager`, `internal_load_manager`, …) plus core tools (`model_preflight`, `model_upgrade`, `simulation_manager`, `idf_modification`, `example_library`, `reference_docs`, `list_skills`, `get_skill`, `file_utils`, `post_processing`, `server_manager`).
+
+#### Codex
+
+Codex supports local (stdio) MCP servers through its built-in *Connect to a custom MCP* dialog — no JSON editing required.
+
+1. **Build the Docker image** (same as Claude Desktop step 1 above).
+
+2. **Open the custom MCP dialog** in Codex (*Settings → MCP servers → Connect to a custom MCP*) and fill in:
+
+   | Field | Value |
+   |---|---|
+   | **Name** | `energyplus` |
+   | **Transport** | *STDIO* (the default tab) |
+   | **Command to launch** | `docker` |
+   | **Arguments** | Add each token as a **separate** entry via *Add argument* (see list below). Do not paste them as a single string. |
+   | **Environment variables** | *(leave empty)* |
+   | **Environment variable passthrough** | *(leave empty)* |
+   | **Working directory** | *(leave empty — Docker sets cwd via `-w`)* |
+
+   **Arguments**, one per entry, in order:
+   ```
+   run
+   --rm
+   -i
+   -v
+   /path/to/EnergyPlus-MCP:/workspace
+   -w
+   /workspace/energyplus-mcp-server
+   energyplus-mcp-dev
+   uv
+   run
+   python
+   -m
+   energyplus_mcp_server.server
+   ```
+
+   Replace `/path/to/EnergyPlus-MCP` with the absolute path to your cloned repo.
+   - macOS/Linux example: `/Users/yourname/code/EnergyPlus-MCP`
+   - Windows example: `C:\Users\yourname\code\EnergyPlus-MCP` *(single backslashes are fine here — this is a form field, not JSON)*
+
+3. Click **Save**, then restart any active Codex session so the new server is picked up.
+
+4. **Verify**: ask Codex *"What EnergyPlus tools are available?"* — you should see the domain managers (`envelope_manager`, `hvac_manager`, …) and core tools.
+
+> **Codex CLI users**: the terminal Codex reads MCP servers from `~/.codex/config.toml` instead of the UI:
+> ```toml
+> [mcp_servers.energyplus]
+> command = "docker"
+> args = [
+>   "run", "--rm", "-i",
+>   "-v", "/path/to/EnergyPlus-MCP:/workspace",
+>   "-w", "/workspace/energyplus-mcp-server",
+>   "energyplus-mcp-dev",
+>   "uv", "run", "python", "-m", "energyplus_mcp_server.server",
+> ]
+> ```
+> Windows users: escape backslashes in TOML strings (`"C:\\Users\\yourname\\code\\EnergyPlus-MCP:/workspace"`).
 
 #### VS Code
 
@@ -129,7 +203,7 @@ VS Code 1.102+ ships native MCP support. Config goes in `.vscode/mcp.json` at th
 
 3. **Reload VS Code** (`Ctrl/Cmd+Shift+P` → *Developer: Reload Window*). Open the Chat view and confirm the `energyplus` MCP server shows as *Running*.
 
-4. **Verify**: ask the chat *"What EnergyPlus tools are available?"* — you should see the tool list.
+4. **Verify**: ask the chat *"What EnergyPlus tools are available?"* — you should see the domain managers and core tools listed above.
 
 #### Cursor
 
@@ -165,7 +239,7 @@ VS Code 1.102+ ships native MCP support. Config goes in `.vscode/mcp.json` at th
 
 3. **Restart Cursor**. Open *Settings → MCP* and confirm the `energyplus` server is listed as connected.
 
-4. **Verify**: ask Cursor chat *"What EnergyPlus tools are available?"* — you should see the tool list.
+4. **Verify**: ask Cursor chat *"What EnergyPlus tools are available?"* — you should see the domain managers and core tools listed above.
 
 ### Development Setup
 
@@ -272,14 +346,27 @@ MCP_TOKENS=[{"label":"local-dev","token":"<paste-32+-char-hex-here>"}]
 - Labels and tokens must be unique within the array
 - An empty list while `MCP_TRANSPORT=streamable-http` causes the server to refuse to start (fail-closed)
 
-**Per-token file isolation.** Over HTTP, each token's `label` gets its own workspace at `<MCP_USER_DATA_ROOT>/<label>` (default `outputs/users/<label>`):
+**Per-token file isolation.** Over HTTP, each token's `label` gets its own workspace at `<MCP_USER_DATA_ROOT>/<label>` (default `work/runs/users/<label>`):
 
 - Tools can **read** only from that workspace and the shared reference folders (`sample_files/`, EnergyPlus `ExampleFiles/` and `WeatherData/`).
-- Tools can **write** only inside that workspace. Relative paths and default outputs (including outputs for shared sample models) land there. Absolute paths elsewhere, `..` traversal and symlinks out of the workspace are rejected.
-- An MCP session can only be used by the token that opened it.
-- `get_server_configuration`, `get_server_logs`, `get_error_logs` and `clear_logs` require a token whose label is listed in `MCP_ADMIN_LABELS` (comma-separated; must match labels in `MCP_TOKENS`).
+- Tools can **write** only inside that workspace, which uses the same layout as `work/` (`models/derived/`, `models/uploads/`, `runs/`, `reports/`). Relative paths and default outputs (including outputs for shared sample models) land there. Absolute paths elsewhere, `..` traversal and symlinks out of the workspace are rejected.
+- An MCP session can only be used by the token that opened it, and simulation runs are visible only to the token that submitted them.
+- `server_manager` actions `logs` and `clear_logs`, and `status` with the full configuration, require a token whose label is listed in `MCP_ADMIN_LABELS` (comma-separated; must match labels in `MCP_TOKENS`).
 
 Stdio mode is unaffected: a local stdio server keeps its unrestricted file access.
+
+**Models are checked before they run.** Over HTTP, EnergyPlus refuses a model (for simulations and output discovery) if it contains `PythonPlugin:*` objects, which run Python code from the model, `ExternalInterface:*` objects (co-simulation and FMUs), or file references (`Schedule:File`, `Table:Lookup` external files, and similar) that use `..` or point outside the caller's workspace and the shared folders. To use a schedule or data file, upload it with `file_transfer` and reference it by the full `server_path` that `upload_status` returns.
+
+> **Who should use the HTTP mode:** a group of trusted colleagues. EnergyPlus was not designed to run untrusted models, and bearer tokens do not expire and are not rate limited, so do not hand tokens to the public.
+
+**Moving files to and from a remote server.** A remote server cannot read paths on the user's machine, so over HTTP the server adds a `file_transfer` tool that hands out one-time links. The file travels directly over HTTP, not through the conversation:
+
+1. The agent calls `file_transfer(action="request_upload", filename="office.idf", size_bytes=...)` and gets an `upload_url`.
+2. The file is sent to that link, either by the agent (`curl --upload-file office.idf "<upload_url>"`) or by the user opening the link in a browser and choosing the file.
+3. `file_transfer(action="upload_status", file_id=...)` returns the file's `server_path` in the user's `models/uploads/` folder; other tools also find it by its bare name.
+4. `file_transfer(action="request_download", path=...)` returns a single-use `download_url` for an output file, or for a folder as a `.zip` (for example a whole simulation run).
+
+The code in each link is its credential, so the `/files/...` routes need no bearer token. Links belong to the token that requested them and expire after `MCP_TRANSFER_TTL_SECONDS` (default 900). Uploads accept `.idf .imf .epJSON .epw .ddy .stat .csv .json .txt .zip`, are capped by `MCP_UPLOAD_MAX_BYTES` (default 100 MB) and count against `MCP_USER_QUOTA_BYTES` (default 1 GB per user). Downloads are capped by `MCP_DOWNLOAD_MAX_BYTES` (default 500 MB). Behind a proxy, links use the request's forwarded host and scheme; set `MCP_PUBLIC_BASE_URL` (for example `https://energyplus-mcp-xxxx.run.app`) to override. Outstanding links are kept in memory, so a restart invalidates them but not files already stored. On Cloud Run, mount a Cloud Storage bucket at `MCP_USER_DATA_ROOT` so stored files survive restarts.
 
 **3. Start the server.** Pick the variant that matches your setup:
 
@@ -350,7 +437,22 @@ curl -i -X POST http://localhost:8000/mcp \
 - **JSON quoting in shells** — if you `export MCP_TOKENS=...` in zsh/bash instead of using `.env`, wrap the value in single quotes so the inner `"` characters survive.
 - **Port conflict on 8000** — set `MCP_HTTP_PORT=8001` in `.env` (the Cloud Run-style `PORT` env var is also honored).
 - **421 "Invalid Host header"** — `mcp>=1.10` ships DNS rebinding protection that rejects unrecognized Host headers. The server disables it by default for HTTP-behind-auth use cases. To re-enable with an allowlist, set `MCP_ALLOWED_HOSTS=host1.example.com,host2.example.com`.
-- **Tests** — transport and auth behavior is covered by `tests/test_config_transport.py` and `tests/test_auth.py`. Run with `uv run pytest tests/test_config_transport.py tests/test_auth.py`.
+- **Tests** — transport and auth behavior is covered by `tests/test_config_transport.py`, `tests/test_auth.py`, `tests/test_scope.py` and `tests/test_file_transfer.py`. Run with `uv run pytest`.
+
+#### Remote Deployment (Google Cloud Run)
+
+To share one server with colleagues, deploy the production image (`energyplus-mcp-server/Dockerfile.prod`) to Cloud Run with `energyplus-mcp-server/scripts/deploy.sh`. Each colleague gets their own bearer token and workspace, and uses `file_transfer` to move models and results.
+
+The script's header lists the one-time setup: an Artifact Registry repository, a `mcp-tokens` secret holding the `MCP_TOKENS` JSON, a Cloud Storage bucket for per-user files, and a dedicated runtime service account with access to only that secret and bucket. Avoid the default compute service account, which usually has broad project access. Then, from `energyplus-mcp-server/`:
+
+```bash
+PROJECT=my-project BUCKET=my-energyplus-mcp-users \
+SERVICE_ACCOUNT=energyplus-mcp-run@my-project.iam.gserviceaccount.com \
+ADMIN_LABELS=alice ./scripts/deploy.sh
+SVC_URL=https://<service>.run.app TOKEN=<a token> ./scripts/smoke.sh
+```
+
+The service runs a single instance (upload/download links and the simulation queue live in memory) that scales to zero when idle. The bucket is mounted at `MCP_USER_DATA_ROOT` (`/data/users`), so uploads and results survive restarts. Clients connect to `https://<service>.run.app/mcp` with `Authorization: Bearer <token>`. To rotate tokens, add a new version of the `mcp-tokens` secret and redeploy (or run `gcloud run services update` to start a new revision). The production image does not include the `reference_docs` index or the `model_upgrade` transition bundle; build from `.devcontainer/Dockerfile` if you need them.
 
 #### Building against a different EnergyPlus version
 
@@ -376,79 +478,278 @@ docker build \
 
 - `energyplus-mcp-server/energyplus_mcp_server/config.py` — `version` and `default_installation`
 - `energyplus-mcp-server/.vscode/mcp.json` — the two `EnergyPlusV26-1-0` strings
-- The client config JSON you created for Claude Desktop / VS Code / Cursor — only if it sets `EPLUS_IDD_PATH` explicitly; otherwise `config.py`'s update is enough.
+- The client config JSON you created for Claude Desktop / Codex / VS Code / Cursor — only if it sets `EPLUS_IDD_PATH` explicitly; otherwise `config.py`'s update is enough.
 
 Alternatively, set `EPLUS_IDD_PATH` to the new install location in your client config's `env` block — `config.py` will derive everything else from it.
 
 ## Available Tools
 
-The server provides **35 tools** organized into **5 categories**:
+### Tool Registration Modes
 
-### 🗂️ Model Config & Loading (9 tools)
-- `load_idf_model` - Load and validate IDF files
-- `validate_idf` - Comprehensive model validation
-- `list_available_files` - Browse sample files and weather data
-- `copy_file` - Intelligent file copying with path resolution
-- `get_model_summary` - Extract basic model information
-- `check_simulation_settings` - Review simulation control settings
-- `modify_simulation_control` - Modify simulation parameters
-- `modify_run_period` - Adjust simulation time periods
-- `get_server_configuration` - Get server configuration info
+The `mode` field in `config.yaml` controls how tools are organized and registered at startup:
 
-### 🔍 Model Inspection (9 tools)
-- `list_zones` - List all thermal zones with properties
-- `get_surfaces` - Get building surface information
-- `get_materials` - Extract material definitions
-- `inspect_schedules` - Analyze all schedule objects
-- `inspect_people` - Analyze occupancy settings
-- `inspect_lights` - Analyze lighting loads
-- `inspect_electric_equipment` - Analyze equipment loads
-- `get_output_variables` - Get/discover output variables
-- `get_output_meters` - Get/discover energy meters
+- **`domains`** (default): Tools organized by building domain - separate managers for envelope, internal loads, HVAC, and outputs. Best for domain-specific workflows.
+- **`masters`**: Unified tools that combine multiple operations - fewer tools with action/focus parameters. Best for reducing tool clutter.
+- **`hybrid`**: Both approaches available simultaneously.
 
-### ⚙️ Model Modification (8 tools)
-- `modify_people` - Update occupancy settings
-- `modify_lights` - Update lighting loads
-- `modify_electric_equipment` - Update equipment loads
-- `change_infiltration_by_mult` - Modify infiltration rates
-- `add_window_film_outside` - Add window films
-- `add_coating_outside` - Apply surface coatings
-- `add_output_variables` - Add output variables
-- `add_output_meters` - Add energy meters
+**Important:** MCP clients only see tools registered at startup. Change the mode in `config.yaml` before starting the server.
 
-### 🚀 Simulation & Results (4 tools)
-- `run_energyplus_simulation` - Execute simulations
-- `create_interactive_plot` - Generate HTML visualizations
-- `discover_hvac_loops` - Find all HVAC loops
-- `get_loop_topology` - Get HVAC loop details
+### Core Tools (Always Available)
+- `model_preflight` — Load, validate, info, resolve_paths, readiness (preflight)
+- `model_upgrade` — Read-only transition planning and copy-only one-model IDF upgrades
+- `simulation_manager` — Run simulations (one, several in parallel, or a batch), check/wait/cancel queued runs, update SimulationControl/RunPeriod
+- `idf_modification` — Direct IDD-validated object changes when no semantic domain operation exists, plus a read-only `find` action that looks objects up by type (wildcards allowed) or by a name used in any field (following NodeLists one hop)
+- `example_library` — Read-only search of the installed EnergyPlus ExampleFiles and DataSets, returning objects with `idf_modification` field names
+- `reference_docs` — Sections of the EnergyPlus manuals for the installed release; `get_field` pairs a field's IDD limits with its documentation
+- `list_skills` / `get_skill` — Step-by-step agent skills bundled with the server
+- `file_utils` — List and copy sample/weather files
+- `post_processing` — Interactive plots
+- `server_manager` — Status, logs, clear logs
 
-### 🖥️ Server Management (5 tools)
-- `visualize_loop_diagram` - Generate HVAC diagrams
-- `get_server_status` - Check server health
-- `get_server_logs` - View recent logs
-- `get_error_logs` - Get error logs
-- `clear_logs` - Clear/rotate log files
+### Mode-Specific Tools
+
+#### When `mode: masters` - Unified Tools
+- `inspect_model` - Inspect model with focus parameter (zones, surfaces, materials, people, lights, etc.)
+- `modify_basic_parameters` - Modify various parameters through a single tool
+- `hvac_loop_inspect` - HVAC analysis with actions (discover, topology, visualize)
+- `get_outputs` - Get output variables and meters
+
+#### When `mode: domains` (default) - Domain-Specific Managers
+- `envelope_manager` — Inspect/modify envelope (surfaces, materials, infiltration, window films, coatings)
+- `internal_load_manager` — Inspect/modify people, lights, and electric equipment
+- `schedule_manager` — Inspect schedule-reference graphs and safely edit selected load or availability schedules
+- `hvac_manager` — Discover HVAC topology and inspect/modify thermostats, availability, outdoor air, and economizers
+- `service_water_manager` — Inspect typed service-water targets and modify thermal efficiency or explicit target assignments
+- `outputs_manager` — List or add output variables/meters with discovery
+- `geometry_manager` — Extract, summarize, and visualize model geometry
+
+The modeling managers also expose workflow-neutral semantic parameter
+operations. `internal_load_manager` owns LPD, EPD, and occupancy density;
+`envelope_manager` owns infiltration, window U-factor, and window SHGC; and
+`hvac_manager` owns cooling COP, heating efficiency, and fan efficiency. Each
+uses the same actions: `parameter_capabilities`, `inspect_parameter`,
+`adjust_percentage`, and `set_parameter`.
+
+The new semantic families keep descriptive provider operations:
+`schedule_manager` scales bounded lighting, electric-equipment, and HVAC
+availability schedules; `hvac_manager` applies heating/cooling setpoint deltas,
+availability changes, outdoor-air changes, and economizer selections;
+`internal_load_manager` provides atomic coupled occupancy; and
+`service_water_manager` keeps thermal efficiency, fuel, flow, loss, and
+parasitic-power targets in distinct unit families. Apply operations write a
+separate IDF, can bind to an inspected source SHA-256, and pre-close incomplete
+or ambiguous model coverage.
+
+The read-only [SF semantic coverage audit](docs/sf-new-semantic-coverage-audit.md)
+records the per-operation results for all 111 original EnergyPlus 9.2 models
+and one pre-existing 26.1 comparison model.
+
+### Deprecated Workflow Compatibility
+
+`calibration_manager` and `retrofit_manager` are no longer part of the default
+surface. Existing consumers can temporarily enable both deprecated façades
+with `tool_surface.compatibility.workflow_managers: true` or
+`MCP_ENABLE_WORKFLOW_COMPATIBILITY=true`. They delegate to the same generic
+domain implementation and are not separate operation stacks. See the
+[tool-surface migration guide](docs/tool-surface-migration.md).
+
+The historical `enable_wrappers` setting and `MCP_EXPOSE_*_WRAPPERS` variables
+were documented but never implemented. Enabling them now fails at startup with
+an actionable migration error instead of silently changing nothing.
+
+### Copy-only IDF upgrades
+
+`model_upgrade` is intentionally separate from simulation and calibration. Use
+`action: "plan"` to read an IDF Version object and discover the complete local
+adjacent transition chain before any write. Use `action: "run"` only with a new
+`output_directory`; it stages one copied model plus each official transition
+executable, adjacent IDDs, and report-variable mapping CSV there. Existing
+output directories and downgrades are refused. The resulting
+`migration-manifest.json` records hashes, logs, warnings, and transition state,
+with `simulation_validated: false`; it is not a simulation `run_record.json`
+and does not establish model equivalence, calibration adoption, or a physical
+simulation budget event. The default target is the configured EnergyPlus
+runtime; a same-version `run` is an explicit no-op. See
+[IDF upgrade details](docs/idf-version-upgrade.md).
+
+### Native-IDF semantic parameter operations
+
+The domain managers support LPD, EPD, OCD, INF, WIN-U, WIN-SHGC, COP, HE,
+and FAN, plus generic schedule, thermostat, coupled-occupancy, outdoor-air,
+economizer, and service-water operations, without assigning calibration policy
+to EnergyPlus-MCP.
+`adjust_percentage` applies a signed percentage; `inspect_parameter` reports
+canonical quantities, units, and target IDs; `set_parameter` applies an
+absolute value or target-to-value `assignments` map. Edits use an explicit
+input and separate output, enforce physical limits without hidden clipping,
+and report model-specific complete/partial/none coverage. Calibration-MCP owns
+bounds and bounded-trial recipes. See [absolute setters and bounds](docs/calibration-absolute-setters.md),
+[percentage-slice verification](docs/calibration-idf-mvp.md), and the
+[migration map](docs/tool-surface-migration.md).
+
+For calibration evidence, pass `runs_dir` to `simulation_manager` (`run`, `submit`, or `run_batch`). Each run gets one unique directory at `<runs_dir>/<run_id>/`, with the staged input as `in.idf`, monthly `Electricity:Facility` and `NaturalGas:Facility` meters in `run/eplusout.sql`, and a `run_record.json` written when the run is queued and updated as it runs and finishes (`queued`, `running`, then `completed`, `failed`, or `cancelled`). Because the record exists from submission, a queued candidate already counts against the calibration budget. Use `run_batch` to simulate a sweep's candidates in parallel; see [Concurrent simulations](#concurrent-simulations).
+
+The first qualified measured-bill SF pilot is documented in
+[SF native-IDF calibration pilot](docs/sf-native-idf-calibration-pilot.md).
+Building 69 completed 81 distinct EnergyPlus 26.1 simulations on the explicit
+2019 calendar and produced a formal terminal report. Six sweeps improved the
+score, but the result did not converge. The generic operation families that
+were missing from that campaign now exist, while model-specific coverage still
+must be inspected before use. Treat the campaign as end-to-end integration proof, not as proof
+that the current parameter surface can calibrate every SF model.
+
+### Agent skills and the example library
+
+The server bundles agent skills: Markdown procedures in
+`energyplus_mcp_server/skills/<name>/SKILL.md` (Agent Skills layout, YAML
+front matter with `name` and `description`, optional Markdown/JSON supporting
+files, no scripts). Agents discover them with `list_skills` and load one with
+`get_skill(name, file=None)`; the server's MCP instructions tell agents that
+the skills exist. Tools are used because every MCP host exposes them; the same
+folder can later be published through the MCP skills extension (SEP-2640) or
+copied into a filesystem skill directory. A test fails if a skill calls a tool
+that the server does not register.
+
+| Skill | Use it to |
+|---|---|
+| `learn-from-examples` | Add an object type you have not modelled by finding a small EnergyPlus example that uses it, reading the object and everything it references, and adapting it to the target model. Includes a DataSets guide for realistic component data. |
+| `diagnose-simulation-errors` | Find and fix the cause of a failed, crashed, or suspicious run: read the run status and EnergyPlus's totals, take the first Severe message as the lead, inspect it with the matching domain tool and `reference_docs`, fix one cause on a copy, and verify with a design-day run. Includes an error catalog of real EnergyPlus 26.1 messages. |
+
+`example_library` indexes `ExampleFiles/` (about 760 runnable models for
+26.1) and `DataSets/` under the configured EnergyPlus installation:
+
+| Action | Returns |
+|---|---|
+| `status` | Installed version and library sizes |
+| `object_types` | Valid object type names matching a pattern, with file counts |
+| `search` | Files containing all requested object types, filtered by keywords, `ExampleFiles.html` features, or `max_zones`; smallest native files first |
+| `describe` | A file's description header, catalog metadata, and object counts |
+| `get_objects` | Objects with eppy field names plus the objects they reference, found through IDD reference lists |
+
+The inventory is never maintained by hand. It is built from the installed
+files with a plain-text scan on first use (about 1 s for 26.1), held in
+memory, and rebuilt when a fingerprint of the IDD and library files changes,
+so a different `EPLUS_VER` needs no inventory update. Set
+`EPLUS_EXAMPLE_INVENTORY_CACHE` to a writable directory to reuse the
+inventory across stdio sessions. Library files are only read; `get_objects`
+accepts only files in the inventory.
+
+### Reference documentation
+
+`reference_docs` serves the EnergyPlus manuals one section at a time: the
+Input Output Reference, Engineering Reference, Output Details and Examples,
+and Plant Application Guide.
+
+| Action | Returns |
+|---|---|
+| `status` | Whether the index is installed, its EnergyPlus version and source commit, section counts |
+| `get_field` | A field's IDD constraints (required, type, units, limits, choices, default, notes) with its Input Output Reference paragraph; accepts IDD or eppy names and numbered repeat fields |
+| `get_section` | One object (`object_type`), linked section (`label`), or search hit (`section_id`) as Markdown, paged with `max_chars`/`offset` |
+| `search` | Keyword search over titles and text, filtered by `doc` and `kind` (`object`, `field`, `output`, `section`) |
+
+The index is generated, not maintained by hand. A build stage in the
+Dockerfile fetches the LaTeX source of the manuals from the EnergyPlus
+release tag that matches `EPLUS_VER` (checked against `EPLUS_HASH`), converts
+it with pandoc, splits it at every heading, and copies only the result
+(about 20 MB, with the EnergyPlus license) to
+`<EnergyPlus>/ReferenceDocs`. For 26.1.0 that is about 20,000 sections, and
+830 of 858 IDD object types have their own section (the rest are mostly
+`GroundHeatTransfer:*` preprocessor objects documented in the Auxiliary
+Programs guide). Figures are not included. Outside Docker, build it with git
+and pandoc:
+
+```bash
+python .devcontainer/build_reference_docs.py --tag v26.1.0 --expected-commit 6f2e40d102 --out energyplus-mcp-server/work/reference_docs
+```
+
+### Concurrent simulations
+
+`simulation_manager` sends every simulation through one queue that runs up to
+`MCP_MAX_CONCURRENT_SIMULATIONS` EnergyPlus processes at once (default: one
+fewer than the CPU count). Each run is a separate EnergyPlus process with its
+own run directory, working directory, and log file (`energyplus.log`), so
+simulations do not interfere with each other and the server keeps answering
+other tool calls while they run.
+
+| Action | Behavior |
+|---|---|
+| `run` | Runs one simulation and returns the result when it finishes. Parallel `run` calls from an agent execute concurrently. |
+| `submit` | Queues one simulation and returns its `run_id` immediately. |
+| `run_batch` | Queues a list of runs (`runs`: dicts with `idf_path` and optional `weather_file`, `output_directory`, `runs_dir`, `run_id`, `annual`, `design_day`, ...; missing keys come from the call) and waits for them, up to `timeout_seconds` if given (`0` returns the run IDs at once). |
+| `status` | With `run_id`/`run_ids`: each run's state and, once finished, its result and an error summary. Without ids: the queue (limit, running, queued, recently finished). |
+| `wait` | Waits for `run_ids` (`wait_for`: `all` or `any`) up to `timeout_seconds` (default 600) and reports finished and pending runs. |
+| `cancel` | Cancels queued or running runs; a running EnergyPlus is stopped with its helper processes. |
+
+```json
+{
+  "tool": "simulation_manager",
+  "arguments": {
+    "action": "run_batch",
+    "runs_dir": "work/runs/campaign-01",
+    "weather_file": "USA_IL_Chicago-OHare.Intl.AP.725300_TMY3.epw",
+    "runs": [
+      {"idf_path": "work/models/derived/cand_lpd_minus10.idf", "run_id": "lpd-m10"},
+      {"idf_path": "work/models/derived/cand_lpd_plus10.idf", "run_id": "lpd-p10"}
+    ]
+  }
+}
+```
+
+Every run writes `run_record.json` (in its run directory, or at
+`<runs_dir>/<run_id>/` for calibration runs) and updates it at each status
+change. When a server starts, records left `queued` or `running` by a server
+process that no longer exists are marked `interrupted`. The limit applies per
+server process: two stdio sessions each run their own queue, so lower the
+limit when several agents simulate on the same machine.
+`MCP_SIMULATION_TIMEOUT_SECONDS` (default 0, no limit) stops runs that exceed
+a wall-clock limit.
+
+### Sample files and the work area
+
+The server separates the inputs it ships from everything it writes:
+
+| Location | Contents | Writable |
+|---|---|---|
+| `sample_files/basic/` | Compact EnergyPlus models for general workflows | No |
+| `sample_files/mcp_paper/` | EnergyPlus-MCP paper case studies (`5ZoneAirCooled_baseline`/`_improved`, `iUnit_Golden`) | No |
+| `sample_files/weather/` | Weather files for the samples | No |
+| `work/models/uploads/` | User-provided models | Yes |
+| `work/models/derived/` | Copies and edited models; the default for edits without `output_path` | Yes |
+| `work/runs/` | Simulation outputs (the default `output_directory`) | Yes |
+| `work/reports/` | HVAC diagrams, geometry viewers, and other reports | Yes |
+
+Every tool's `output_path`, `output_directory`, `target_path`, and `runs_dir`
+is checked when it is called: a destination inside `sample_files/` or the
+EnergyPlus installation (including `ExampleFiles/`, `DataSets/`, and
+`WeatherData/`) is rejected. Simulations stage their input copy in the run
+directory, so running a sample does not write beside it. A bare filename such
+as `5ZoneAirCooled.idf` resolves in `sample_files` (any category),
+`work/models/uploads`, and `work/models/derived` before the EnergyPlus
+installation, and the older `sample_files/<name>` form still works.
+`work/` is ignored by Git apart from its README and `.gitkeep` placeholders.
 
 ## Usage Examples
 
 ### Basic Workflow
 
-1. **Load a model**:
+1. **Preflight: Load a model**:
    ```json
    {
-     "tool": "load_idf_model",
+     "tool": "model_preflight",
      "arguments": {
-       "idf_path": "sample_files/1ZoneUncontrolled.idf"
+       "action": "load",
+       "idf_path": "sample_files/basic/1ZoneUncontrolled.idf"
      }
    }
    ```
 
-2. **Inspect zones**:
+2. **Inspect geometry and zones**:
    ```json
    {
-     "tool": "list_zones",
+     "tool": "geometry_manager",
      "arguments": {
-       "idf_path": "sample_files/1ZoneUncontrolled.idf"
+       "action": "extract_and_summary",
+       "idf_path": "sample_files/basic/1ZoneUncontrolled.idf"
      }
    }
    ```
@@ -456,10 +757,11 @@ The server provides **35 tools** organized into **5 categories**:
 3. **Run simulation**:
    ```json
    {
-     "tool": "run_energyplus_simulation",
+     "tool": "simulation_manager",
      "arguments": {
-       "idf_path": "sample_files/1ZoneUncontrolled.idf",
-       "weather_file": "sample_files/USA_CA_San.Francisco.Intl.AP.724940_TMY3.epw",
+       "action": "run",
+       "idf_path": "sample_files/basic/1ZoneUncontrolled.idf",
+       "weather_file": "sample_files/weather/USA_CA_San.Francisco.Intl.AP.724940_TMY3.epw",
        "annual": true
      }
    }
@@ -468,46 +770,164 @@ The server provides **35 tools** organized into **5 categories**:
 4. **Create visualization**:
    ```json
    {
-     "tool": "create_interactive_plot",
+     "tool": "post_processing",
      "arguments": {
-       "output_directory": "outputs/1ZoneUncontrolled",
+       "action": "interactive_plot",
+       "output_directory": "work/runs/1ZoneUncontrolled",
        "file_type": "variable"
      }
    }
    ```
 
+5. **Parse simulation errors** (if simulation fails):
+   ```json
+   {
+     "tool": "post_processing",
+     "arguments": {
+       "action": "parse_errors",
+       "err_file_path": "work/runs/1ZoneUncontrolled/1ZoneUncontrolled.err"
+     }
+   }
+   ```
+   Returns structured error analysis with severity levels, affected objects, and root cause analysis.
+
 ### Advanced Features
 
-**HVAC System Analysis**:
+**HVAC System Analysis (discover + visualize)**:
 ```json
 {
-  "tool": "discover_hvac_loops",
+  "tool": "hvac_loop_inspect",
   "arguments": {
-    "idf_path": "sample_files/5ZoneAirCooled.idf"
+    "action": "discover",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
+    "types": "all"
   }
 }
 ```
 
-**Generate HVAC Diagram**:
 ```json
 {
-  "tool": "visualize_loop_diagram",
+  "tool": "hvac_loop_inspect",
   "arguments": {
-    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "action": "visualize",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
     "loop_name": "VAV Sys 1",
-    "format": "png"
+    "image_format": "png"
   }
 }
 ```
 
-**Discover Output Variables**:
+**Preflight: Readiness check**
 ```json
 {
-  "tool": "get_output_variables",
+  "tool": "model_preflight",
   "arguments": {
-    "idf_path": "sample_files/5ZoneAirCooled.idf",
+    "action": "readiness",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
+    "weather_file": "sample_files/weather/USA_CA_San.Francisco.Intl.AP.724940_TMY3.epw"
+  }
+}
+```
+
+**Discover Outputs (variables/meters)**:
+```json
+{
+  "tool": "get_outputs",
+  "arguments": {
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
+    "type": "both",
     "discover_available": true,
     "run_days": 1
+  }
+}
+```
+
+**File Utilities: List**
+```json
+{
+  "tool": "file_utils",
+  "arguments": {
+    "action": "list",
+    "include_example_files": false,
+    "include_weather_data": true,
+    "extensions": [".idf", ".epw"],
+    "limit": 50
+  }
+}
+```
+
+**File Utilities: Copy (dry-run)**
+```json
+{
+  "tool": "file_utils",
+  "arguments": {
+    "action": "copy",
+    "source_path": "5ZoneAirCooled.idf",
+    "target_path": "work/models/derived/5ZoneAirCooled_copy.idf",
+    "file_types": [".idf"],
+    "mode": "dry_run"
+  }
+}
+```
+
+**Housekeeping: Status**
+```json
+{
+  "tool": "server_manager",
+  "arguments": { "action": "status" }
+}
+```
+
+**Housekeeping: Error Logs (raw)**
+```json
+{
+  "tool": "server_manager",
+  "arguments": { "action": "logs", "type": "error", "lines": 100, "format": "raw" }
+}
+```
+
+**Housekeeping: Rotate Logs (dry-run)**
+```json
+{
+  "tool": "server_manager",
+  "arguments": { "action": "clear_logs", "mode": "dry_run" }
+}
+```
+
+**Model Summary via Aggregator**:
+```json
+{
+  "tool": "inspect_model",
+  "arguments": {
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
+    "focus": ["summary"]
+  }
+}
+```
+
+**Modify Basic Parameters (dry-run plan)**:
+```json
+{
+  "tool": "modify_basic_parameters",
+  "arguments": {
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
+    "mode": "dry_run",
+    "operations": [
+      { "op": "people.update", "params": { "modifications": [{"target": "all", "field_updates": {"Number_of_People": 10}}] } },
+      { "op": "envelope.add_window_film", "params": { "u_value": 4.94, "shgc": 0.45, "visible_transmittance": 0.66 } }
+    ]
+  }
+}
+```
+
+**Discover Modifiable Parameters (capabilities)**:
+```json
+{
+  "tool": "modify_basic_parameters",
+  "arguments": {
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
+    "capabilities": true,
+    "detail": "summary"
   }
 }
 ```
@@ -526,10 +946,37 @@ npx @modelcontextprotocol/inspector \
     uv run python -m energyplus_mcp_server.server
 ```
 
-Or, if you have a local dev environment (see [Local Development](#local-development)):
+Or with a local dev environment (see [Local Development](#local-development)):
 ```bash
 cd energyplus-mcp-server
 npx @modelcontextprotocol/inspector uv run python -m energyplus_mcp_server.server
+```
+
+The Inspector opens a browser UI where you can list registered tools and invoke them with JSON arguments — useful for confirming the active `tool_surface.mode` matches what you expect before wiring up a client.
+
+**HVAC Loops: Discover**
+```json
+{
+  "tool": "hvac_loop_inspect",
+  "arguments": {
+    "action": "discover",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
+    "types": "all"
+  }
+}
+```
+
+**HVAC Loops: Topology**
+```json
+{
+  "tool": "hvac_loop_inspect",
+  "arguments": {
+    "action": "topology",
+    "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
+    "loop_name": "VAV Sys 1",
+    "detail": "detailed"
+  }
+}
 ```
 
 The Inspector opens a browser UI where you can list tools and invoke them with JSON arguments — useful for sanity-checking the install before wiring up a client.
@@ -542,7 +989,7 @@ The server follows a layered architecture:
 ┌─────────────────────────┐
 │   MCP Protocol Layer    │  FastMCP server handling client communications
 ├─────────────────────────┤
-│     Tools Layer         │  35 tools organized into 5 categories
+│     Tools Layer         │  Master tools + domain managers (registered per config)
 ├─────────────────────────┤
 │  Orchestration Layer    │  EnergyPlus Manager & Config Module
 ├─────────────────────────┤
@@ -553,23 +1000,91 @@ The server follows a layered architecture:
 **Project Structure:**
 ```
 energyplus-mcp-server/
+├── config.yaml                  # Tool-surface config (mode, per-domain toggles)
 ├── energyplus_mcp_server/
-│   ├── server.py              # FastMCP server with tools
-│   ├── energyplus_tools.py    # Core EnergyPlus integration
-│   ├── config.py              # Configuration management
-│   └── utils/                 # Specialized utilities
-├── sample_files/              # Sample IDF and weather files
-├── tests/                     # Unit tests
-└── pyproject.toml            # Dependencies
+│   ├── server.py                # Lean bootstrap: loads config, delegates registration
+│   ├── energyplus_tools.py      # Core EnergyPlus integration (EnergyPlusManager)
+│   ├── config.py                # Configuration management
+│   ├── domains/                 # Domain managers (envelope, HVAC, internal loads, outputs, geometry)
+│   ├── tools/                   # Master / core tools (inspect, modify, simulation, preflight, files, post, server)
+│   └── utils/                   # Specialized utilities (idf_modifier, geometry, plots, …)
+├── sample_files/                # Read-only curated inputs: basic/, mcp_paper/, weather/
+├── work/                        # Writable area (Git-ignored): models/uploads, models/derived, runs, reports
+├── tests/                       # Unit tests
+└── pyproject.toml               # Dependencies
 ```
 
 ## Configuration
 
-The server auto-detects EnergyPlus installation and uses sensible defaults. Configuration can be customized via environment variables:
+The server auto-detects EnergyPlus installation and uses sensible defaults.
+
+### Environment variables
 
 - `EPLUS_IDD_PATH`: Path to EnergyPlus IDD file
-- `EPLUS_SAMPLE_PATH`: Custom sample files directory
-- `EPLUS_OUTPUT_PATH`: Output directory for results
+- `WORKSPACE_ROOT`: Server workspace; `sample_files/` and `work/` are resolved under it
+- `MCP_CONFIG_PATH`: Override path to `config.yaml` (default: `energyplus-mcp-server/config.yaml`)
+- `MCP_EXPOSE_MASTERS`, `MCP_EXPOSE_DOMAIN_MANAGERS`: mode controls when no YAML mode is supplied
+- `MCP_ENABLE_WORKFLOW_COMPATIBILITY`: opt in to deprecated workflow-manager aliases
+- `EPLUS_EXAMPLE_INVENTORY_CACHE`: optional directory for persisting the `example_library` inventory across sessions
+- `EPLUS_REFERENCE_DOCS_DIR`: reference documentation index for `reference_docs` (default: `<EnergyPlus>/ReferenceDocs`, then `work/reference_docs`)
+- `MCP_MAX_CONCURRENT_SIMULATIONS`: EnergyPlus processes allowed at once (default: CPU count minus one)
+- `MCP_SIMULATION_TIMEOUT_SECONDS`: wall-clock limit per simulation; `0` (default) means no limit
+
+### Tool Surface Profiles (config.yaml)
+
+You can control how tools are presented via `config.yaml`. The server reads this on startup to decide which tool groups to register. **A restart is required after edits** — MCP clients only see tools registered at startup.
+
+- Location: `energyplus-mcp-server/config.yaml` (checked first), or the path in `MCP_CONFIG_PATH`.
+- Parser: requires `pyyaml` (included in dependencies); invalid configuration fails closed.
+- Precedence: YAML, when present, overrides the `MCP_EXPOSE_MASTERS` / `MCP_EXPOSE_DOMAIN_MANAGERS` env flags for mode selection.
+
+Schema (minimal):
+```yaml
+tool_surface:
+  mode: masters | domains | hybrid
+  domains:                        # optional fine-grained controls
+    envelope: true | false
+    internal_loads: true | false
+    schedules: true | false
+    hvac: true | false
+    service_water: true | false
+    outputs: true | false
+    geometry: true | false
+  compatibility:
+    workflow_managers: false      # deprecated calibration/retrofit façades
+```
+
+**Profiles:**
+
+Masters-only (fewer, unified tools):
+```yaml
+tool_surface:
+  mode: masters
+```
+
+Domains-only (the default; one manager per building domain):
+```yaml
+tool_surface:
+  mode: domains
+  domains:
+    envelope: true
+    internal_loads: true
+    schedules: true
+    hvac: true
+    service_water: true
+    outputs: true
+    geometry: true
+  compatibility:
+    workflow_managers: false
+```
+
+Hybrid (expose both surfaces simultaneously):
+```yaml
+tool_surface:
+  mode: hybrid
+  domains:
+    outputs: true
+```
 
 ## Troubleshooting
 
@@ -580,10 +1095,13 @@ The server auto-detects EnergyPlus installation and uses sensible defaults. Conf
 3. **"Permission denied"**: Check file permissions
 4. **"Simulation failed"**: Check EnergyPlus error messages in output directory
 
-**Debugging:**
-- Check server status: `get_server_status`
-- View logs: `get_server_logs`
-- Check errors: `get_error_logs`
+**Debugging (use the `server_manager` tool with an `action`):**
+- Check server status: `{"tool": "server_manager", "arguments": {"action": "status"}}`
+- View logs: `{"tool": "server_manager", "arguments": {"action": "logs", "type": "all", "lines": 200}}`
+- Check errors: `{"tool": "server_manager", "arguments": {"action": "logs", "type": "error", "lines": 100, "format": "raw"}}`
+
+Use `server_manager` for status and logs. Historical per-function wrapper flags
+were never implemented and are deliberately rejected; see the migration guide.
 
 ## Contributing
 

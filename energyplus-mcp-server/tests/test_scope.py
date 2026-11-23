@@ -1,6 +1,7 @@
 """Per-token file-access isolation for the streamable-http transport."""
 import json
 import os
+from pathlib import Path
 import socket
 import threading
 import time
@@ -133,26 +134,64 @@ def test_stdio_mode_is_unscoped(http_config, tmp_path):
 # --- manager-level behavior ----------------------------------------------------
 
 def test_default_output_for_shared_input_goes_to_own_workspace(http_config, as_alice, tmp_path):
-    from energyplus_mcp_server.energyplus_tools import EnergyPlusManager
-    mgr = EnergyPlusManager.__new__(EnergyPlusManager)
-    mgr.config = http_config
+    from energyplus_mcp_server.utils.path_utils import derived_model_path, report_path, resolve_output_location
     shared = str(tmp_path / "sample_files/shared.idf")
-    out = mgr._output_path(None, shared, "shared_modified.idf")
-    assert out == _real(tmp_path / "users/alice/shared_modified.idf")
+    # Same work/ layout as stdio, but inside the caller's workspace.
+    assert derived_model_path(http_config, shared) == str(
+        tmp_path / "users/alice/models/derived/shared_modified.idf")
+    assert report_path(http_config, "plan.html") == str(tmp_path / "users/alice/reports/plan.html")
     with pytest.raises(ScopeError):
-        mgr._output_path(str(tmp_path / "users/bob/x.idf"), shared, "unused.idf")
+        resolve_output_location(http_config, str(tmp_path / "users/bob/x.idf"), "output_path")
+
+
+def test_stdio_keeps_shared_work_folders(http_config, tmp_path, monkeypatch):
+    from energyplus_mcp_server.utils.path_utils import derived_model_path, work_dir
+    monkeypatch.setattr(http_config.transport, "transport", "stdio")
+    monkeypatch.setattr(http_config.paths, "derived_models_dir", str(tmp_path / "work/models/derived"))
+    shared = str(tmp_path / "sample_files/shared.idf")
+    assert derived_model_path(http_config, shared) == str(
+        os.path.join(http_config.paths.derived_models_dir, "shared_modified.idf"))
+    assert work_dir(http_config, "runs") == http_config.paths.output_dir
 
 
 def test_simulation_and_plot_dirs_are_scoped(http_config, as_alice, tmp_path):
-    from energyplus_mcp_server.energyplus_tools import EnergyPlusManager
-    mgr = EnergyPlusManager.__new__(EnergyPlusManager)
-    mgr.config = http_config
-    default = mgr._output_directory(None, str(tmp_path / "sample_files/shared.idf"))
-    assert default.startswith(str(tmp_path / "users/alice"))
-    with pytest.raises(ScopeError):
-        mgr._output_directory(str(tmp_path / "users/bob/run1"), "x.idf")
-    with pytest.raises(ScopeError):
-        mgr._scoped_directory(str(tmp_path / "users/bob"), "output directory")
+    from energyplus_mcp_server.utils.path_utils import resolve_output_location, work_dir
+    assert work_dir(http_config, "runs") == str(tmp_path / "users/alice/runs")
+    assert resolve_output_location(http_config, "run1", "output_directory") == _real(
+        tmp_path / "users/alice/run1")
+    for target in (str(tmp_path / "users/bob/run1"), "../bob/run1", str(tmp_path / "outputs")):
+        with pytest.raises(ScopeError):
+            resolve_output_location(http_config, target, "output_directory")
+
+
+def test_edited_outputs_can_be_found_again_by_name(http_config, as_alice, tmp_path):
+    from energyplus_mcp_server.utils.path_utils import derived_model_path, resolve_path
+    saved = derived_model_path(http_config, str(tmp_path / "sample_files/shared.idf"))
+    Path(saved).write_text("! edited\n")
+    assert resolve_path(http_config, "shared_modified.idf", file_types=[".idf"]) == _real(saved)
+
+
+def test_bare_sample_name_finds_category_folder(http_config, as_alice, tmp_path):
+    from energyplus_mcp_server.utils.path_utils import resolve_path
+    nested = tmp_path / "sample_files/basic/Nested.idf"
+    nested.parent.mkdir(parents=True, exist_ok=True)
+    nested.write_text("! nested sample\n")
+    assert resolve_path(http_config, "Nested.idf", file_types=[".idf"]) == _real(nested)
+
+
+def test_tool_guard_confines_output_arguments(http_config, as_alice, tmp_path):
+    from energyplus_mcp_server.utils.output_guard import guard_tool
+
+    def tool(idf_path, output_path=None, output_directory=None):
+        return output_path, output_directory
+
+    guarded = guard_tool(tool, http_config)
+    # Relative outputs are rewritten into the caller's workspace before the tool runs.
+    assert guarded("m.idf", "edited.idf", output_directory="runs/a") == (
+        _real(tmp_path / "users/alice/edited.idf"), _real(tmp_path / "users/alice/runs/a"))
+    for bad in (str(tmp_path / "users/bob/x.idf"), "../bob/x.idf", str(tmp_path / "server_secret.idf")):
+        with pytest.raises(ScopeError):
+            guarded("m.idf", output_path=bad)
 
 
 def test_copy_file_cannot_exfiltrate_other_users_file(http_config, as_alice, tmp_path):

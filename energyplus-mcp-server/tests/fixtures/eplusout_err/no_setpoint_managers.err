@@ -1,0 +1,63 @@
+Program Version,EnergyPlus, Version 26.1.0-6f2e40d102, YMD=2026.10.06 19:47,
+   ************* Beginning Zone Sizing Calculations
+   ************* Beginning System Sizing Calculations
+   ** Warning ** CheckForSensorAndSetpointNode: Coil:Heating:Water="OA HEATING COIL 1". 
+   **   ~~~   **  ..Temperature setpoint not found on coil air outlet node.
+   **   ~~~   **  ..The setpoint may have been placed on a node downstream of the coil or on an airloop outlet node.
+   **   ~~~   **  ..Specify the setpoint and the sensor on the coil air outlet node when possible.
+   **   ~~~   **  ..Temperature setpoint not found on coil air outlet node.
+   **   ~~~   **  ..The setpoint may have been placed on a node downstream of the coil or on an airloop outlet node.
+   **   ~~~   **  ..Specify the setpoint and the sensor on the coil air outlet node when possible.
+   ** Warning ** CheckForSensorAndSetpointNode: Coil:Cooling:Water="OA COOLING COIL 1". 
+   **   ~~~   **  ..Temperature setpoint not found on coil air outlet node.
+   **   ~~~   **  ..The setpoint may have been placed on a node downstream of the coil or on an airloop outlet node.
+   **   ~~~   **  ..Specify the setpoint and the sensor on the coil air outlet node when possible.
+   **   ~~~   **  ..Temperature setpoint not found on coil air outlet node.
+   **   ~~~   **  ..The setpoint may have been placed on a node downstream of the coil or on an airloop outlet node.
+   **   ~~~   **  ..Specify the setpoint and the sensor on the coil air outlet node when possible.
+   ** Warning ** CheckForSensorAndSetpointNode: Coil:Cooling:Water="MAIN COOLING COIL 1". 
+   **   ~~~   **  ..Temperature setpoint not found on coil air outlet node.
+   **   ~~~   **  ..The setpoint may have been placed on a node downstream of the coil or on an airloop outlet node.
+   **   ~~~   **  ..Specify the setpoint and the sensor on the coil air outlet node when possible.
+   **   ~~~   **  ..Temperature setpoint not found on coil air outlet node.
+   **   ~~~   **  ..The setpoint may have been placed on a node downstream of the coil or on an airloop outlet node.
+   **   ~~~   **  ..Specify the setpoint and the sensor on the coil air outlet node when possible.
+   ** Warning ** CheckForSensorAndSetpointNode: Coil:Heating:Water="MAIN HEATING COIL 1". 
+   **   ~~~   **  ..Temperature setpoint not found on coil air outlet node.
+   **   ~~~   **  ..The setpoint may have been placed on a node downstream of the coil or on an airloop outlet node.
+   **   ~~~   **  ..Specify the setpoint and the sensor on the coil air outlet node when possible.
+   **   ~~~   **  ..Temperature setpoint not found on coil air outlet node.
+   **   ~~~   **  ..The setpoint may have been placed on a node downstream of the coil or on an airloop outlet node.
+   **   ~~~   **  ..Specify the setpoint and the sensor on the coil air outlet node when possible.
+   ************* Beginning Plant Sizing Calculations
+   ** Warning ** Missing temperature setpoint for LeavingSetpointModulated mode chiller named CENTRAL CHILLER
+   **   ~~~   **   A temperature setpoint is needed at the outlet node of a chiller in variable flow mode, use a SetpointManager
+   **   ~~~   **   The overall loop setpoint will be assumed for chiller. The simulation continues ... 
+   ** Warning ** Missing temperature setpoint for LeavingSetpointModulated mode Boiler named CENTRAL BOILER
+   **   ~~~   **   A temperature setpoint is needed at the outlet node of a boiler in variable flow mode, use a SetpointManager
+   **   ~~~   **   The overall loop setpoint will be assumed for Boiler. The simulation continues ... 
+   ** Severe  ** HVACControllers: Missing temperature setpoint for controller type=Controller:WaterCoil Name="OA HC CONTROLLER 1"
+   **   ~~~   ** Node Referenced (by Controller)=OA HEATING COIL 1 AIR OUTLET NODE
+   **   ~~~   **   use a Setpoint Manager with Control Variable = "Temperature" to establish a setpoint at the controller sensed node.
+   ** Severe  ** HVACControllers: Missing temperature setpoint for controller type=Controller:WaterCoil Name="OA CC CONTROLLER 1"
+   **   ~~~   ** Node Referenced (by Controller)=OA MIXING BOX 1 INLET NODE
+   **   ~~~   **   use a Setpoint Manager with Control Variable = "Temperature" to establish a setpoint at the controller sensed node.
+   ** Severe  ** HVACControllers: Missing temperature setpoint for controller type=Controller:WaterCoil Name="CENTRAL COOLING COIL CONTROLLER 1"
+   **   ~~~   ** Node Referenced (by Controller)=MAIN COOLING COIL 1 OUTLET NODE
+   **   ~~~   **   use a Setpoint Manager with Control Variable = "Temperature" to establish a setpoint at the controller sensed node.
+   ** Severe  ** HVACControllers: Missing temperature setpoint for controller type=Controller:WaterCoil Name="CENTRAL HEATING COIL CONTROLLER 1"
+   **   ~~~   ** Node Referenced (by Controller)=MAIN HEATING COIL 1 OUTLET NODE
+   **   ~~~   **   use a Setpoint Manager with Control Variable = "Temperature" to establish a setpoint at the controller sensed node.
+   ** Severe  ** PlantManager: No Setpoint Manager Defined for Node=HW SUPPLY OUTLET NODE in PlantLoop=HOT WATER LOOP
+   **   ~~~   ** Add Temperature Setpoint Manager with Control Variable = "Temperature" for this PlantLoop.
+   ** Severe  ** PlantManager: No Setpoint Manager Defined for Node=CW SUPPLY OUTLET NODE in PlantLoop=CHILLED WATER LOOP
+   **   ~~~   ** Add Temperature Setpoint Manager with Control Variable = "Temperature" for this PlantLoop.
+   **  Fatal  ** Previous severe set point errors cause program termination
+   ...Summary of Errors that led to program termination:
+   ..... Reference severe error count=6
+   ..... Last severe error=PlantManager: No Setpoint Manager Defined for Node=CW SUPPLY OUTLET NODE in PlantLoop=CHILLED WATER LOOP
+   ************* Warning:  Node connection errors not checked - most system input has not been read (see previous warning).
+   ************* Fatal error -- final processing.  Program exited before simulations began.  See previous error messages.
+   ************* EnergyPlus Warmup Error Summary. During Warmup: 0 Warning; 0 Severe Errors.
+   ************* EnergyPlus Sizing Error Summary. During Sizing: 4 Warning; 0 Severe Errors.
+   ************* EnergyPlus Terminated--Fatal Error Detected. 6 Warning; 6 Severe Errors; Elapsed Time=00hr 00min  0.07sec
