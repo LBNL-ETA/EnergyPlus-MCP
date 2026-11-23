@@ -44,6 +44,9 @@ include = ["energyplus_mcp_server*"]
 energyplus_mcp_server = ["skills/*/*.md", "skills/*/*.json"]
 
 [tool.pytest.ini_options]
+# Only collect the test suite; test_sqlite_queries.py at the project root is a
+# manual script that needs a local EnergyPlus install and simulation output.
+testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
