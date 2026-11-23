@@ -331,3 +331,92 @@ def test_command_enables_expandobjects_for_hvac_templates(tmp_path):
 
     assert "--expandobjects" in command
     assert command[-1] == str(model.resolve())
+
+
+# --- per-token privacy over HTTP -------------------------------------------------
+
+def _sleeping_job(tmp_path, owner, run_id, directory):
+    from energyplus_mcp_server.utils.simulation_queue import SimulationJob
+    output = tmp_path / directory
+    output.mkdir(parents=True)
+    return SimulationJob(
+        owner=owner,
+        run_id=run_id,
+        name=run_id,
+        command=[sys.executable, "-c", "import time; time.sleep(30)"],
+        output_directory=output,
+        record_path=output / "run_record.json",
+        record={},
+        finalize=lambda job: {"success": job.status == "completed"},
+    )
+
+
+def test_runs_are_private_to_their_token(tmp_path):
+    queue = SimulationQueue(max_concurrency=2)
+    alice = queue.submit(_sleeping_job(tmp_path, "alice", "baseline", "alice"))
+    # Bob may reuse the same run_id without colliding with Alice's run.
+    bob = queue.submit(_sleeping_job(tmp_path, "bob", "baseline", "bob"))
+    try:
+        assert queue.get("baseline", "alice") is alice
+        assert queue.get("baseline", "bob") is bob
+        assert queue.get("baseline") is None  # stdio/no-token callers see neither
+        assert queue.cancel("baseline", "mallory") is None
+
+        overview = queue.overview(owner="alice")
+        listed = overview["running"] + overview["queued"]
+        assert listed == ["baseline"]
+        assert queue.overview(owner="mallory")["running"] == []
+
+        with pytest.raises(KeyError):
+            asyncio.run(queue.wait(["baseline"], owner="mallory", timeout_seconds=0))
+
+        # Another token reusing a busy directory is refused without naming the run.
+        with pytest.raises(ValueError) as busy:
+            queue.ensure_available("other", alice.output_directory, owner="bob")
+        assert "baseline" not in str(busy.value)
+        with pytest.raises(ValueError) as own_busy:
+            queue.ensure_available("other", alice.output_directory, owner="alice")
+        assert "baseline" in str(own_busy.value)
+    finally:
+        for owner, job in (("alice", alice), ("bob", bob)):
+            queue.cancel(job.run_id, owner)
+            queue.wait_sync(job)
+
+    assert alice.status == "cancelled" and bob.status == "cancelled"
+
+
+def test_simulation_manager_hides_runs_from_other_tokens(workspace, tmp_path):
+    from energyplus_mcp_server.auth import _token_label
+
+    manager = workspace.make_manager(max_concurrency=2)
+    manager.config.transport.transport = "streamable-http"
+    manager.config.paths.user_data_root = str(tmp_path / "users")
+    mcp = FakeMCP()
+    simulation_tool.register(mcp, manager, manager.config)
+    tool = mcp.tools["simulation_manager"]
+    model = workspace.model("Shared", "sleep=0.2")
+
+    async def as_token(label, **kwargs):
+        # Set and reset inside the coroutine: the ContextVar belongs to this task.
+        tok = _token_label.set(label)
+        try:
+            return json.loads(await tool(**kwargs))
+        finally:
+            _token_label.reset(tok)
+
+    async def exercise():
+        submitted = await as_token("alice", action="submit", idf_path=str(model))
+        run_id = submitted["run_id"]
+        bob_status = await as_token("bob", action="status", run_id=run_id)
+        bob_cancel = await as_token("bob", action="cancel", run_id=run_id)
+        bob_overview = await as_token("bob", action="status")
+        done = await as_token("alice", action="wait", run_id=run_id)
+        return submitted, bob_status, bob_cancel, bob_overview, done
+
+    submitted, bob_status, bob_cancel, bob_overview, done = asyncio.run(exercise())
+    assert submitted["output_directory"].startswith(str(tmp_path / "users" / "alice" / "runs"))
+    assert bob_status["runs"][0]["status"] == "unknown"
+    assert "error" in bob_cancel["runs"][0]
+    assert bob_overview["running"] == [] and bob_overview["queued"] == []
+    assert bob_overview["recently_finished"] == []
+    assert done["finished"][0]["status"] == "completed"

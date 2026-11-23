@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional, Literal
 import asyncio
 import json
 
+from energyplus_mcp_server.scope import current_label
 from energyplus_mcp_server.utils.path_utils import resolve_output_location
 
 # Per-run settings a run_batch entry may override; the rest come from the call.
@@ -71,6 +72,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         writes run_record.json, updated at each status change.
         """
         queue = ep_manager.simulation_queue
+        # HTTP token label (None over stdio): runs are visible only to their owner.
+        owner = current_label()
 
         def run_kwargs(entry: Dict[str, Any]) -> Dict[str, Any]:
             defaults = {
@@ -122,7 +125,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             job = await asyncio.to_thread(ep_manager.submit_simulation, **run_kwargs({}))
             if action == "submit":
                 return json.dumps(ep_manager.simulation_status(job), indent=2)
-            await queue.wait([job.run_id])
+            await queue.wait([job.run_id], owner=owner)
             return f"Simulation run complete:\n{json.dumps(job.result, indent=2)}"
 
         if action == "run_batch":
@@ -137,7 +140,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     jobs.append(await asyncio.to_thread(ep_manager.submit_simulation, **kwargs))
                 except Exception as error:
                     errors.append({"index": index, "error": str(error)})
-            finished, pending = await queue.wait([job.run_id for job in jobs], "all", timeout_seconds)
+            finished, pending = await queue.wait([job.run_id for job in jobs], "all", timeout_seconds, owner=owner)
             return json.dumps({
                 "submitted": len(jobs),
                 "completed": sum(job.status == "completed" for job in finished),
@@ -150,10 +153,10 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         if action == "status":
             ids = requested_ids()
             if not ids:
-                return json.dumps(queue.overview(), indent=2)
+                return json.dumps(queue.overview(owner=owner), indent=2)
             statuses = []
             for requested in ids:
-                job = queue.get(requested)
+                job = queue.get(requested, owner)
                 if job is not None:
                     statuses.append(ep_manager.simulation_status(job))
                     continue
@@ -169,7 +172,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             if not ids:
                 return json.dumps({"error": "wait requires run_id or run_ids"})
             try:
-                finished, pending = await queue.wait(ids, wait_for, 600 if timeout_seconds is None else timeout_seconds)
+                finished, pending = await queue.wait(ids, wait_for, 600 if timeout_seconds is None else timeout_seconds, owner=owner)
             except KeyError as missing:
                 return json.dumps({"error": f"Run is not tracked by this server: {missing.args[0]}"})
             return json.dumps({
@@ -183,7 +186,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 return json.dumps({"error": "cancel requires run_id or run_ids"})
             results = []
             for requested in ids:
-                job = queue.cancel(requested)
+                job = queue.cancel(requested, owner)
                 results.append(job.summary() if job else {"run_id": requested, "error": "Run is not tracked by this server"})
             return json.dumps({"runs": results}, indent=2)
 

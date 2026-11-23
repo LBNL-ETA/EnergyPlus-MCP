@@ -53,6 +53,9 @@ class SimulationJob:
     ``finalize`` builds the tool's result dictionary once the process has
     ended (or was never started); it reads ``exit_code`` and ``error`` and may
     add fields to ``record``.
+
+    ``owner`` is the HTTP token label that submitted the run (None over
+    stdio). The queue only shows a run to callers with the same owner.
     """
 
     run_id: str
@@ -75,6 +78,7 @@ class SimulationJob:
     done: threading.Event = field(default_factory=threading.Event)
     future: Optional[Future] = None
     process: Optional[subprocess.Popen] = None
+    owner: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.log_path is None:
@@ -106,28 +110,31 @@ class SimulationQueue:
             max_workers=self.max_concurrency, thread_name_prefix="energyplus-run"
         )
         self._lock = threading.RLock()
-        self._jobs: dict[str, SimulationJob] = {}
+        # Keyed by (owner, run_id): HTTP tokens never see or collide with
+        # each other's runs, even when they pick the same run_id.
+        self._jobs: dict[tuple[Optional[str], str], SimulationJob] = {}
 
     # -- submission -----------------------------------------------------
 
-    def ensure_available(self, run_id: str, output_directory: Path) -> None:
-        """Raise if an active run already uses ``run_id`` or ``output_directory``."""
+    def ensure_available(self, run_id: str, output_directory: Path, owner: Optional[str] = None) -> None:
+        """Raise if an active run already uses ``run_id`` (for this owner) or
+        ``output_directory`` (for anyone)."""
         with self._lock:
-            existing = self._jobs.get(run_id)
+            existing = self._jobs.get((owner, run_id))
             if existing is not None and existing.status in ACTIVE_STATUSES:
                 raise ValueError(f"run_id is already queued or running: {run_id}")
             directory = Path(output_directory).resolve()
             for other in self._jobs.values():
                 if other.status in ACTIVE_STATUSES and other.output_directory.resolve() == directory:
-                    raise ValueError(
-                        f"output_directory is in use by active run {other.run_id}: {directory}"
-                    )
+                    # Name the other run only to its own owner.
+                    busy = f"active run {other.run_id}" if other.owner == owner else "another active run"
+                    raise ValueError(f"output_directory is in use by {busy}: {directory}")
 
     def submit(self, job: SimulationJob) -> SimulationJob:
         """Register ``job`` and queue it; raises if its run_id or directory is busy."""
         with self._lock:
-            self.ensure_available(job.run_id, job.output_directory)
-            self._jobs[job.run_id] = job
+            self.ensure_available(job.run_id, job.output_directory, job.owner)
+            self._jobs[(job.owner, job.run_id)] = job
             job.status = "queued"
             self._persist(job, queued_at=job.created_at)
             job.future = self._executor.submit(self._execute, job)
@@ -136,7 +143,7 @@ class SimulationQueue:
     def add_finished(self, job: SimulationJob) -> SimulationJob:
         """Track a run that failed during staging, so status and wait can report it."""
         with self._lock:
-            self._jobs[job.run_id] = job
+            self._jobs[(job.owner, job.run_id)] = job
         job.done.set()
         return job
 
@@ -220,14 +227,14 @@ class SimulationQueue:
 
     # -- control and inspection ------------------------------------------
 
-    def get(self, run_id: str) -> Optional[SimulationJob]:
+    def get(self, run_id: str, owner: Optional[str] = None) -> Optional[SimulationJob]:
         with self._lock:
-            return self._jobs.get(run_id)
+            return self._jobs.get((owner, run_id))
 
-    def cancel(self, run_id: str) -> Optional[SimulationJob]:
+    def cancel(self, run_id: str, owner: Optional[str] = None) -> Optional[SimulationJob]:
         """Cancel a queued or running run; a finished run is returned unchanged."""
         with self._lock:
-            job = self._jobs.get(run_id)
+            job = self._jobs.get((owner, run_id))
             if job is None or job.status not in ACTIVE_STATUSES:
                 return job
             job.cancel_requested = True
@@ -239,9 +246,10 @@ class SimulationQueue:
             energyplus_process.stop(process)
         return job
 
-    def overview(self, recent: int = 20) -> dict[str, Any]:
+    def overview(self, recent: int = 20, owner: Optional[str] = None) -> dict[str, Any]:
+        """Queue settings plus the caller's own running, queued, and recent runs."""
         with self._lock:
-            jobs = list(self._jobs.values())
+            jobs = [job for job in self._jobs.values() if job.owner == owner]
         running = [job.run_id for job in jobs if job.status == "running"]
         queued = [job.run_id for job in jobs if job.status == "queued"]
         finished = sorted(
@@ -258,12 +266,13 @@ class SimulationQueue:
         }
 
     async def wait(
-        self, run_ids: Iterable[str], mode: str = "all", timeout_seconds: Optional[float] = None
+        self, run_ids: Iterable[str], mode: str = "all", timeout_seconds: Optional[float] = None,
+        owner: Optional[str] = None,
     ) -> tuple[list[SimulationJob], list[SimulationJob]]:
         """Wait without blocking the event loop; returns (finished, pending) jobs."""
         jobs = []
         for run_id in run_ids:
-            job = self.get(run_id)
+            job = self.get(run_id, owner)
             if job is None:
                 raise KeyError(run_id)
             jobs.append(job)

@@ -3642,6 +3642,10 @@ class EnergyPlusManager:
         if not idf_path:
             raise ValueError("Missing required parameter: idf_path")
         queue = self.simulation_queue
+        # Over HTTP, the run belongs to the calling token; only it can see,
+        # wait on, or cancel the run. None over stdio.
+        from .scope import current_label
+        owner = current_label()
         calibration_context: Optional[Dict[str, Any]] = None
         resolved_idf_path = idf_path
         resolved_weather_path = None
@@ -3693,7 +3697,7 @@ class EnergyPlusManager:
                     if not output_dir.is_absolute():
                         output_dir = Path(self.config.paths.workspace_root) / output_dir
                 # Check before staging so a busy directory's in.idf is never replaced.
-                queue.ensure_available(job_id, output_dir)
+                queue.ensure_available(job_id, output_dir, owner)
                 output_dir.mkdir(parents=True, exist_ok=True)
                 run_input_idf = output_dir / "in.idf"
                 with self._EPPY_LOCK:
@@ -3734,6 +3738,7 @@ class EnergyPlusManager:
                 output_suffix=output_suffix,
             )
             job = SimulationJob(
+                owner=owner,
                 run_id=job_id,
                 name=Path(resolved_idf_path).stem,
                 command=command,
@@ -3758,6 +3763,7 @@ class EnergyPlusManager:
                     calibration_context, "failed", input_idf=str(resolved_idf_path), error=str(error),
                 )
                 job = SimulationJob(
+                    owner=owner,
                     run_id=calibration_context["run_id"],
                     name=Path(str(resolved_idf_path)).stem,
                     command=[],
