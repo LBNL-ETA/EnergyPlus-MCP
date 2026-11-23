@@ -80,7 +80,9 @@ DEPLOY_ARGS=(
     --memory=4Gi
     --cpu=2
     --timeout=3600
-    --concurrency=8
+    # Connections per instance. Simulations are limited separately by the
+    # server's own queue, so this only needs to cover open MCP requests.
+    --concurrency=80
     --cpu-boost
     --no-cpu-throttling
     --execution-environment=gen2

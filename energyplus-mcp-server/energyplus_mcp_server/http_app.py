@@ -19,7 +19,7 @@ import logging
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from energyplus_mcp_server.auth import AuthMiddleware
@@ -33,6 +33,16 @@ async def _health(_request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+async def _no_event_stream(_request: Request) -> Response:
+    """Decline the optional server-to-client event stream (GET on the MCP path).
+
+    The MCP spec lets a server answer 405 here. This server never sends
+    messages outside a call's own response, and an idle stream would hold one
+    of Cloud Run's per-instance connection slots for up to an hour.
+    """
+    return Response(status_code=405, headers={"Allow": "POST, DELETE"})
+
+
 def build_app(mcp: FastMCP, config: Config) -> Starlette:
     """Compose FastMCP's streamable-http app with /health and auth middleware.
 
@@ -41,6 +51,7 @@ def build_app(mcp: FastMCP, config: Config) -> Starlette:
       /files/...     → one-time upload/download links; the code in the URL is
                        the credential, so no bearer token
       POST /mcp      → FastMCP, behind AuthMiddleware
+      GET  /mcp      → 405: no standalone event stream (see _no_event_stream)
     """
     # FastMCP exposes its Starlette app via .streamable_http_app() in mcp>=1.8.
     # If your installed mcp version uses a different accessor, adapt here.
@@ -68,6 +79,9 @@ def build_app(mcp: FastMCP, config: Config) -> Starlette:
             Route("/health", _health, methods=["GET"]),
             *file_routes(),
             *oauth_routes,
+            # Runs after AuthMiddleware, so unauthenticated clients still get
+            # the 401 that starts OAuth sign-in.
+            Route(config.transport.http_path, _no_event_stream, methods=["GET"]),
             Mount("/", app=inner),  # everything else routes into FastMCP
         ],
         lifespan=_lifespan,
