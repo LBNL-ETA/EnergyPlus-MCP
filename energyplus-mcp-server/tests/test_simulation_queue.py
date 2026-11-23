@@ -420,3 +420,42 @@ def test_simulation_manager_hides_runs_from_other_tokens(workspace, tmp_path):
     assert bob_overview["running"] == [] and bob_overview["queued"] == []
     assert bob_overview["recently_finished"] == []
     assert done["finished"][0]["status"] == "completed"
+
+
+def test_http_caller_cannot_run_a_model_with_a_python_plugin(workspace, tmp_path):
+    from energyplus_mcp_server.auth import _token_label
+
+    manager = workspace.make_manager()
+    manager.config.transport.transport = "streamable-http"
+    manager.config.paths.user_data_root = str(tmp_path / "users")
+    mcp = FakeMCP()
+    simulation_tool.register(mcp, manager, manager.config)
+    tool = mcp.tools["simulation_manager"]
+    evil = workspace.model("Evil", "sleep=0.1")
+    evil.write_text(evil.read_text() + "PythonPlugin:Instance, Evil, No, evil, Evil;\n")
+    safe = workspace.model("Safe", "sleep=0.1")
+
+    async def as_alice(**kwargs):
+        tok = _token_label.set("alice")
+        try:
+            return await tool(**kwargs)
+        finally:
+            _token_label.reset(tok)
+
+    async def exercise():
+        # Like other submit failures, the refusal is raised; MCP returns it as a tool error.
+        try:
+            await as_alice(action="submit", idf_path=str(evil))
+            refused = ""
+        except RuntimeError as error:
+            refused = str(error)
+        batch = json.loads(await as_alice(action="run_batch", runs=[{"idf_path": str(evil)}]))
+        allowed = await as_alice(action="run", idf_path=str(safe))
+        return refused, batch, allowed
+
+    refused, batch, allowed = asyncio.run(exercise())
+    assert "PythonPlugin:Instance" in refused and "cannot run on a remote server" in refused
+    assert batch["submitted"] == 0 and "PythonPlugin" in batch["submission_errors"][0]["error"]
+    assert allowed.startswith("Simulation run complete:")
+    # Only the safe model ever reached EnergyPlus.
+    assert [Path(item["cwd"]).name.startswith("Safe") for item in workspace.launches()] == [True]

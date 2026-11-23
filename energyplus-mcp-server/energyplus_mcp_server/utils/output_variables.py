@@ -24,6 +24,7 @@ from difflib import get_close_matches
 from eppy.modeleditor import IDF
 
 from . import energyplus_process
+from .model_guard import check_model_for_caller
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,8 @@ class OutputVariableManager:
             start_time = datetime.now()
             # A separate EnergyPlus process with its own working directory;
             # eppy's IDF.run would change the server's cwd and stdout.
+            # Discovery runs the model too: apply the same remote-caller check.
+            check_model_for_caller(self.config, temp_idf_path)
             command = energyplus_process.build_command(
                 self.config.energyplus.executable_path,
                 temp_idf_path,

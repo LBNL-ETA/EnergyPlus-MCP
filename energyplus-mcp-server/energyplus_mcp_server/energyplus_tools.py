@@ -45,6 +45,7 @@ from plotly.subplots import make_subplots
 
 from .config import get_config, Config
 from .utils.diagrams import HVACDiagramGenerator
+from .utils.model_guard import check_model_for_caller
 from .utils.path_utils import (
     derived_model_path,
     report_path,
@@ -3658,6 +3659,9 @@ class EnergyPlusManager:
                 # Reject bad paths, incompatible models, and invalid IDFs before
                 # reserving a physical-run record.
                 resolved_idf_path = self._resolve_idf_path(idf_path)
+                # Over HTTP, refuse models that run external code or read
+                # files outside the caller's folders.
+                check_model_for_caller(self.config, resolved_idf_path)
                 version_info = self._assert_simulation_version_matches(resolved_idf_path)
                 if weather_file:
                     resolved_weather_path = self._resolve_weather_file_path(weather_file)
@@ -3682,6 +3686,9 @@ class EnergyPlusManager:
                 output_prefix, output_suffix = None, "L"
             else:
                 resolved_idf_path = self._resolve_idf_path(idf_path)
+                # Over HTTP, refuse models that run external code or read
+                # files outside the caller's folders.
+                check_model_for_caller(self.config, resolved_idf_path)
                 if weather_file:
                     resolved_weather_path = self._resolve_weather_file_path(weather_file)
                 stem = Path(resolved_idf_path).stem

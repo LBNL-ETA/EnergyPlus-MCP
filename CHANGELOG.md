@@ -33,16 +33,24 @@ work developed on `develop` (formerly `agentic-bem`).
 - Simulation runs are private to the token that submitted them: other tokens
   cannot see, wait on, or cancel them, and two tokens may use the same
   `run_id`.
+- Over HTTP, models that would escape the caller's workspace are refused
+  before EnergyPlus runs them (simulations and output discovery runs):
+  `PythonPlugin:*` objects, which make EnergyPlus run Python code from the
+  model, `ExternalInterface:*` objects (co-simulation and FMUs), and file
+  references (`Schedule:File`, `Schedule:File:Shading`,
+  `Construction:WindowDataFile`, ASHRAE 205 representation files, and
+  `Table:Lookup`/`Table:IndependentVariable` external files) that use `..` or
+  point outside the caller's readable folders. Stdio users are unaffected.
 - `server_manager` actions `logs`, `clear_logs`, and `status` with the full
   configuration require a token listed in `MCP_ADMIN_LABELS`. Tokens are
   compared in constant time.
 
 ### Known limitations
-- The HTTP transport is experimental. Links issued by `file_transfer` are kept
-  in memory, so a server restart invalidates outstanding links (stored files
-  are kept).
-- File paths referenced inside a model (for example `Schedule:File`) are not
-  checked against the caller's workspace.
+- The HTTP transport is experimental and meant for a group of trusted
+  colleagues, not the public: EnergyPlus was not designed to run untrusted
+  models, and tokens do not expire and are not rate limited.
+- Links issued by `file_transfer` are kept in memory, so a server restart
+  invalidates outstanding links (stored files are kept).
 
 ### Added
 - **Streamable-HTTP transport** with bearer-token authentication

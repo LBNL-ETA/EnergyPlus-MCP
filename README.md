@@ -355,6 +355,10 @@ MCP_TOKENS=[{"label":"local-dev","token":"<paste-32+-char-hex-here>"}]
 
 Stdio mode is unaffected: a local stdio server keeps its unrestricted file access.
 
+**Models are checked before they run.** Over HTTP, EnergyPlus refuses a model (for simulations and output discovery) if it contains `PythonPlugin:*` objects, which run Python code from the model, `ExternalInterface:*` objects (co-simulation and FMUs), or file references (`Schedule:File`, `Table:Lookup` external files, and similar) that use `..` or point outside the caller's workspace and the shared folders. To use a schedule or data file, upload it with `file_transfer` and reference it by the full `server_path` that `upload_status` returns.
+
+> **Who should use the HTTP mode:** a group of trusted colleagues. EnergyPlus was not designed to run untrusted models, and bearer tokens do not expire and are not rate limited, so do not hand tokens to the public.
+
 **Moving files to and from a remote server.** A remote server cannot read paths on the user's machine, so over HTTP the server adds a `file_transfer` tool that hands out one-time links. The file travels directly over HTTP, not through the conversation:
 
 1. The agent calls `file_transfer(action="request_upload", filename="office.idf", size_bytes=...)` and gets an `upload_url`.
