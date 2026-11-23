@@ -3,14 +3,51 @@
 All notable changes to this project are documented here.
 This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-Once the project starts cutting tagged releases, entries will graduate from
-`[Unreleased]` to a dated version heading (e.g. `[0.2.0] - 2026-05-01`).
-Until then, `[Unreleased]` captures all changes landed on the `agentic-bem`
-branch since the README/install-instructions cleanup.
+The project follows [Semantic Versioning](https://semver.org/). Before 0.2.0
+there were no tagged releases; untagged snapshots of `main` also reported
+version `0.1.0`.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-23
+
+First tagged release. It combines the `main` branch with the domain-manager
+work developed on `develop` (formerly `agentic-bem`).
+
+### Security
+- **Per-token file isolation for the streamable-HTTP transport** (#5, fixes
+  #3). Before this release, any valid bearer token could read and write any
+  file the server process could reach, including other users' files and
+  `/proc/self/environ`. Each token is now confined to its own workspace
+  (`<MCP_USER_DATA_ROOT>/<label>`) plus the read-only shared sample, example,
+  and weather folders; `..` traversal and symlinks out of the workspace are
+  rejected; file access fails closed when a request has no identity; and an
+  MCP session is bound to the token that opened it. Operators who ran the HTTP
+  transport with real tokens before 0.2.0 should rotate `MCP_TOKENS`.
+  Reported by Syed Anas Mohiuddin (@SyedAnas01).
+- Over HTTP, every tool output (edited models, simulation runs, reports,
+  `output_path`/`output_directory`/`runs_dir`/`target_path` arguments) is
+  written inside the caller's workspace, using the same layout as `work/`:
+  `models/derived/`, `models/uploads/`, `runs/`, `reports/`. Paths outside
+  it, including other users' workspaces, are rejected.
+- Simulation runs are private to the token that submitted them: other tokens
+  cannot see, wait on, or cancel them, and two tokens may use the same
+  `run_id`.
+- `server_manager` actions `logs`, `clear_logs`, and `status` with the full
+  configuration require a token listed in `MCP_ADMIN_LABELS`. Tokens are
+  compared in constant time.
+
+### Known limitations
+- The HTTP transport is experimental. Remote clients have no tool to upload
+  their own models or download results yet (#1).
+- File paths referenced inside a model (for example `Schedule:File`) are not
+  checked against the caller's workspace.
+
 ### Added
+- **Streamable-HTTP transport** with bearer-token authentication
+  (`MCP_TRANSPORT=streamable-http`, `MCP_TOKENS`), a `/health` endpoint, and
+  optional DNS-rebinding protection (`MCP_ALLOWED_HOSTS`).
+- GitHub Actions CI running the test suite on Python 3.10-3.13.
 - **`idf_modification(action="find")`**, a read-only object lookup: objects of
   a type (exact or wildcard, e.g. `SetpointManager:*`), objects with any field
   equal to a name (node, schedule, construction; case-insensitive), or both,
@@ -65,6 +102,18 @@ branch since the README/install-instructions cleanup.
   wall-clock limit. Every run writes `run_record.json` at submission and at
   each status change; records orphaned by a stopped server are marked
   `interrupted` on the next start.
+- `EPLUS_DIST_SUFFIX` Docker build-arg so users can rebuild against older
+  (`Ubuntu22.04`) or newer EnergyPlus releases without editing the Dockerfile.
+- README section **"Building against a different EnergyPlus version"**
+  documenting the `EPLUS_VER` / `EPLUS_HASH` / `EPLUS_PREFIX` /
+  `EPLUS_DIST_SUFFIX` overrides, including the extra files that still need
+  manual updates when overriding (until path auto-detection lands).
+- README **Codex** setup section — UI form fields for the *Connect to a
+  custom MCP* dialog plus a `~/.codex/config.toml` variant for the CLI.
+- A prerequisites block in the README listing Docker and git.
+- Cross-platform config paths (macOS / Windows / Linux) for Claude Desktop
+  and Cursor; Windows path-escaping guidance (JSON vs form vs TOML).
+- Verify step after each client config.
 
 ### Changed
 - **Error parsing** (`post_processing(action="parse_errors")`, run status).
@@ -93,6 +142,7 @@ branch since the README/install-instructions cleanup.
 - Calibration run records start as `queued` (with `started_at` updated when
   EnergyPlus launches) instead of `running`.
 - `simulation_timeout` now defaults to 0 (no limit); it was never enforced.
+- `mcp` is pinned below 2.0, whose API the server does not support yet.
 - `illustrative examples/` is gone: its two models are now
   `sample_files/mcp_paper/5ZoneAirCooled_baseline.idf` and
   `5ZoneAirCooled_improved.idf`, its weather file is in `sample_files/weather/`,
@@ -106,24 +156,9 @@ branch since the README/install-instructions cleanup.
   `Linux-Ubuntu24.04-*`. NREL stopped shipping Ubuntu 22.04 builds starting
   with 26.1.0.
 
-### Added
-- `EPLUS_DIST_SUFFIX` Docker build-arg so users can rebuild against older
-  (`Ubuntu22.04`) or newer EnergyPlus releases without editing the Dockerfile.
-- README section **"Building against a different EnergyPlus version"**
-  documenting the `EPLUS_VER` / `EPLUS_HASH` / `EPLUS_PREFIX` /
-  `EPLUS_DIST_SUFFIX` overrides, including the extra files that still need
-  manual updates when overriding (until path auto-detection lands).
-- README **Codex** setup section — UI form fields for the *Connect to a
-  custom MCP* dialog plus a `~/.codex/config.toml` variant for the CLI.
-- Branch callout at the top of the README linking back to the `main` README,
-  and a prerequisites block listing Docker/git plus the `git checkout
-  agentic-bem` reminder.
-- Cross-platform config paths (macOS / Windows / Linux) for Claude Desktop
-  and Cursor; Windows path-escaping guidance (JSON vs form vs TOML).
-- Verify step after each client config, with a branch-mismatch check
-  (if the agent sees a flat list like `modify_lights`, the user is on `main`).
-
 ### Fixed
+- Output variable and meter discovery use unique temporary files and clean
+  them up on failure, so concurrent requests no longer collide.
 - The `.err` parser matched only unindented lines, but EnergyPlus indents
   every message, so warning, severe, and fatal counts were always zero.
 - Repo URL and folder name across all install snippets

@@ -85,7 +85,7 @@ class PathConfig:
 class ServerConfig:
     """Server configuration"""
     name: str = "energyplus-mcp-server"
-    version: str = "0.1.0"
+    version: str = "0.2.0"
     log_level: str = "INFO"
     # Wall-clock limit per EnergyPlus run; 0 means no limit.
     # Env: MCP_SIMULATION_TIMEOUT_SECONDS.

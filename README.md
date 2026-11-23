@@ -7,7 +7,7 @@ A Model Context Protocol (MCP) server for EnergyPlus that exposes a **compact, a
 > fine-grained tool layout; always use the documentation from the checked-out
 > revision.
 >
-> **Version**: 0.1.0
+> **Version**: 0.2.0
 > **EnergyPlus Compatibility**: 26.1.0 (default; see [Building against a different EnergyPlus version](#building-against-a-different-energyplus-version))
 > **Python**: 3.10+
 
@@ -156,7 +156,7 @@ Codex supports local (stdio) MCP servers through its built-in *Connect to a cust
 
 3. Click **Save**, then restart any active Codex session so the new server is picked up.
 
-4. **Verify**: ask Codex *"What EnergyPlus tools are available?"* — you should see the domain managers (`envelope_manager`, `hvac_manager`, …) and core tools. Same "flat-list → wrong branch" check as above applies.
+4. **Verify**: ask Codex *"What EnergyPlus tools are available?"* — you should see the domain managers (`envelope_manager`, `hvac_manager`, …) and core tools.
 
 > **Codex CLI users**: the terminal Codex reads MCP servers from `~/.codex/config.toml` instead of the UI:
 > ```toml
