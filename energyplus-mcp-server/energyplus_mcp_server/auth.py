@@ -37,9 +37,14 @@ from starlette.responses import JSONResponse  # noqa: E402
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """Bearer-token middleware that bypasses /health and stamps _token_label."""
+    """Bearer-token middleware that bypasses /health and stamps _token_label.
+
+    /files/... is also exempt: those routes check the one-time code in their
+    own path (see energyplus_mcp_server.file_routes).
+    """
 
     BYPASS_PATHS = frozenset({"/health"})
+    BYPASS_PREFIXES = ("/files/upload/", "/files/download/")
     SESSION_HEADER = "mcp-session-id"
     MAX_TRACKED_SESSIONS = 10_000
 
@@ -52,7 +57,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self._session_owner: "OrderedDict[str, str]" = OrderedDict()
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in self.BYPASS_PATHS:
+        path = request.url.path
+        if path in self.BYPASS_PATHS or path.startswith(self.BYPASS_PREFIXES):
             return await call_next(request)
 
         header = request.headers.get("authorization", "")

@@ -87,6 +87,12 @@ SERVER_INSTRUCTIONS = (
     "are read-only; edited models go to work/models/derived, simulations to "
     "work/runs, and reports to work/reports."
 )
+if config.transport.transport == "streamable-http":
+    SERVER_INSTRUCTIONS += (
+        " This server is remote: it cannot read paths on the user's machine. Use "
+        "file_transfer to upload the user's models and weather files and to "
+        "download results; over HTTP, work/ folders are per user."
+    )
 mcp = FastMCP(config.server.name, instructions=SERVER_INSTRUCTIONS, **_mcp_kwargs)
 
 # Initialize EnergyPlus manager
@@ -96,6 +102,12 @@ logger.info(f"EnergyPlus MCP Server '{config.server.name}' v{config.server.versi
 STARTUP_TIME = datetime.utcnow()
 
 registered_tools = register_tool_surface(mcp, ep_manager, config, tool_surface_cfg)
+if config.transport.transport == "streamable-http":
+    # Remote clients need a way to move files; stdio clients use local paths.
+    from energyplus_mcp_server.tools import file_transfer as file_transfer_tool
+
+    file_transfer_tool.register(mcp, ep_manager, config)
+    registered_tools = registered_tools | {"file_transfer"}
 from energyplus_mcp_server.tools import server as tools_server
 
 tools_server.STARTUP_TIME = STARTUP_TIME

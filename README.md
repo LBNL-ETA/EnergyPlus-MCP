@@ -348,11 +348,20 @@ MCP_TOKENS=[{"label":"local-dev","token":"<paste-32+-char-hex-here>"}]
 **Per-token file isolation.** Over HTTP, each token's `label` gets its own workspace at `<MCP_USER_DATA_ROOT>/<label>` (default `work/runs/users/<label>`):
 
 - Tools can **read** only from that workspace and the shared reference folders (`sample_files/`, EnergyPlus `ExampleFiles/` and `WeatherData/`).
-- Tools can **write** only inside that workspace. Relative paths and default outputs (including outputs for shared sample models) land there. Absolute paths elsewhere, `..` traversal and symlinks out of the workspace are rejected.
-- An MCP session can only be used by the token that opened it.
-- `get_server_configuration`, `get_server_logs`, `get_error_logs` and `clear_logs` require a token whose label is listed in `MCP_ADMIN_LABELS` (comma-separated; must match labels in `MCP_TOKENS`).
+- Tools can **write** only inside that workspace, which uses the same layout as `work/` (`models/derived/`, `models/uploads/`, `runs/`, `reports/`). Relative paths and default outputs (including outputs for shared sample models) land there. Absolute paths elsewhere, `..` traversal and symlinks out of the workspace are rejected.
+- An MCP session can only be used by the token that opened it, and simulation runs are visible only to the token that submitted them.
+- `server_manager` actions `logs` and `clear_logs`, and `status` with the full configuration, require a token whose label is listed in `MCP_ADMIN_LABELS` (comma-separated; must match labels in `MCP_TOKENS`).
 
 Stdio mode is unaffected: a local stdio server keeps its unrestricted file access.
+
+**Moving files to and from a remote server.** A remote server cannot read paths on the user's machine, so over HTTP the server adds a `file_transfer` tool that hands out one-time links. The file travels directly over HTTP, not through the conversation:
+
+1. The agent calls `file_transfer(action="request_upload", filename="office.idf", size_bytes=...)` and gets an `upload_url`.
+2. The file is sent to that link, either by the agent (`curl --upload-file office.idf "<upload_url>"`) or by the user opening the link in a browser and choosing the file.
+3. `file_transfer(action="upload_status", file_id=...)` returns the file's `server_path` in the user's `models/uploads/` folder; other tools also find it by its bare name.
+4. `file_transfer(action="request_download", path=...)` returns a single-use `download_url` for an output file, or for a folder as a `.zip` (for example a whole simulation run).
+
+The code in each link is its credential, so the `/files/...` routes need no bearer token. Links belong to the token that requested them and expire after `MCP_TRANSFER_TTL_SECONDS` (default 900). Uploads accept `.idf .imf .epJSON .epw .ddy .stat .csv .json .txt .zip`, are capped by `MCP_UPLOAD_MAX_BYTES` (default 100 MB) and count against `MCP_USER_QUOTA_BYTES` (default 1 GB per user). Downloads are capped by `MCP_DOWNLOAD_MAX_BYTES` (default 500 MB). Behind a proxy, links use the request's forwarded host and scheme; set `MCP_PUBLIC_BASE_URL` (for example `https://energyplus-mcp-xxxx.run.app`) to override. Outstanding links are kept in memory, so a restart invalidates them but not files already stored. On Cloud Run, mount a Cloud Storage bucket at `MCP_USER_DATA_ROOT` so stored files survive restarts.
 
 **3. Start the server.** Pick the variant that matches your setup:
 

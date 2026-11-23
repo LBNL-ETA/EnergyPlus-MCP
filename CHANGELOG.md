@@ -38,8 +38,9 @@ work developed on `develop` (formerly `agentic-bem`).
   compared in constant time.
 
 ### Known limitations
-- The HTTP transport is experimental. Remote clients have no tool to upload
-  their own models or download results yet (#1).
+- The HTTP transport is experimental. Links issued by `file_transfer` are kept
+  in memory, so a server restart invalidates outstanding links (stored files
+  are kept).
 - File paths referenced inside a model (for example `Schedule:File`) are not
   checked against the caller's workspace.
 
@@ -47,6 +48,15 @@ work developed on `develop` (formerly `agentic-bem`).
 - **Streamable-HTTP transport** with bearer-token authentication
   (`MCP_TRANSPORT=streamable-http`, `MCP_TOKENS`), a `/health` endpoint, and
   optional DNS-rebinding protection (`MCP_ALLOWED_HOSTS`).
+- **`file_transfer` tool for remote clients** (#1). Over HTTP, the server
+  issues one-time upload and download links: `request_upload`,
+  `upload_status`, `list_uploads`, `delete_upload`, `request_download`. Files
+  move directly over HTTP (`curl` or a browser upload page) instead of through
+  the conversation. Uploads go to the caller's `models/uploads/` folder;
+  downloads are single use, limited to files the caller may read, and send
+  folders as `.zip`. Links expire (`MCP_TRANSFER_TTL_SECONDS`), and uploads are
+  capped per file and per user (`MCP_UPLOAD_MAX_BYTES`,
+  `MCP_USER_QUOTA_BYTES`). Registered only with the HTTP transport.
 - GitHub Actions CI running the test suite on Python 3.10-3.13.
 - **`idf_modification(action="find")`**, a read-only object lookup: objects of
   a type (exact or wildcard, e.g. `SetpointManager:*`), objects with any field
