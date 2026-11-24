@@ -122,7 +122,9 @@ def test_tool_find_action(model, tmp_path):
         workspace_root=str(tmp_path), sample_files_path=str(tmp_path / "sample_files"),
         work_dir=str(tmp_path / "work"), uploads_dir=str(tmp_path / "work" / "models" / "uploads"),
         derived_models_dir=str(tmp_path / "work" / "models" / "derived"),
-    ), energyplus=SimpleNamespace(example_files_path=str(tmp_path / "none")))
+    ), energyplus=SimpleNamespace(example_files_path=str(tmp_path / "none")),
+        # Path resolution checks the transport to decide whether to confine the caller.
+        transport=SimpleNamespace(transport="stdio"))
     tool_module.register(FakeMCP(), object(), config)
     tool = tools["idf_modification"]
 
