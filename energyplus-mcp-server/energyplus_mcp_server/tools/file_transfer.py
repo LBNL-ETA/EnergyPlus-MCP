@@ -27,6 +27,7 @@ from energyplus_mcp_server.utils.file_transfer import (
     zip_folder,
 )
 from energyplus_mcp_server.utils.path_utils import resolve_path, work_dir
+from energyplus_mcp_server.utils.tool_threads import eppy_free
 
 
 def _request_base_url() -> str:
@@ -53,6 +54,7 @@ def _link(route: str, code: str) -> str:
 
 def register(mcp: Any, ep_manager: Any, config: Any) -> None:
     @mcp.tool()
+    @eppy_free
     async def file_transfer(
         action: Literal["request_upload", "upload_status", "list_uploads", "delete_upload", "request_download"],
         filename: Optional[str] = None,

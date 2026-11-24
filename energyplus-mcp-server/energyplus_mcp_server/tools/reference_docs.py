@@ -9,10 +9,12 @@ from energyplus_mcp_server.utils.reference_docs import (
     ReferenceDocsError,
     get_reference_docs,
 )
+from energyplus_mcp_server.utils.tool_threads import eppy_free
 
 
 def register(mcp: Any, ep_manager: Any, config: Any) -> None:
     @mcp.tool()
+    @eppy_free
     async def reference_docs(
         action: Literal["capabilities", "status", "search", "get_section", "get_field"],
         query: Optional[str] = None,

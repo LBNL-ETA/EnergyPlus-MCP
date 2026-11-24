@@ -2,12 +2,14 @@ import json
 from typing import Any, Optional
 
 from energyplus_mcp_server.utils.skill_catalog import SkillCatalog, SkillError
+from energyplus_mcp_server.utils.tool_threads import eppy_free
 
 
 def register(mcp: Any, ep_manager: Any, config: Any) -> None:
     catalog = SkillCatalog()
 
     @mcp.tool()
+    @eppy_free
     async def list_skills() -> str:
         """List EnergyPlus-MCP agent skills: step-by-step guides for native-IDF work.
 
@@ -21,6 +23,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             return json.dumps({"error": str(exc)}, indent=2)
 
     @mcp.tool()
+    @eppy_free
     async def get_skill(name: str, file: Optional[str] = None) -> str:
         """Load an EnergyPlus-MCP skill's instructions, or one of its supporting files.
 

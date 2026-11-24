@@ -4,6 +4,7 @@ import json
 
 from energyplus_mcp_server.scope import current_label
 from energyplus_mcp_server.utils.path_utils import resolve_output_location
+from energyplus_mcp_server.utils.tool_threads import native_async, run_eppy_in_thread
 
 # Per-run settings a run_batch entry may override; the rest come from the call.
 RUN_FIELDS = (
@@ -14,6 +15,7 @@ RUN_FIELDS = (
 
 def register(mcp: Any, ep_manager: Any, config: Any) -> None:
     @mcp.tool()
+    @native_async
     async def simulation_manager(
         action: Literal[
             "run", "submit", "run_batch", "status", "wait", "cancel",
@@ -160,7 +162,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 if job is not None:
                     statuses.append(ep_manager.simulation_status(job))
                     continue
-                record = ep_manager.find_run_record(requested, runs_dir)
+                record = await asyncio.to_thread(ep_manager.find_run_record, requested, runs_dir)
                 statuses.append(
                     {"run_id": requested, "tracked_by_this_server": False, **record}
                     if record else {"run_id": requested, "status": "unknown", "error": "No such run"}
@@ -193,11 +195,18 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         if action == "update_settings":
             if not idf_path or not isinstance(settings, dict) or not settings:
                 return "Missing required parameters: idf_path, settings"
-            result = ep_manager.modify_simulation_settings(idf_path=idf_path, object_type="SimulationControl", field_updates=settings, output_path=None)
+            result = await run_eppy_in_thread(
+                ep_manager.modify_simulation_settings, idf_path=idf_path,
+                object_type="SimulationControl", field_updates=settings, output_path=None,
+            )
             return f"SimulationControl updated:\n{result}"
         if action == "update_run_period":
             if not idf_path or not isinstance(run_period, dict) or not run_period:
                 return "Missing required parameters: idf_path, run_period"
-            result = ep_manager.modify_simulation_settings(idf_path=idf_path, object_type="RunPeriod", field_updates=run_period, run_period_index=int(run_period_index or 0), output_path=None)
+            result = await run_eppy_in_thread(
+                ep_manager.modify_simulation_settings, idf_path=idf_path,
+                object_type="RunPeriod", field_updates=run_period,
+                run_period_index=int(run_period_index or 0), output_path=None,
+            )
             return f"RunPeriod updated:\n{result}"
         return f"Unsupported action: {action}"

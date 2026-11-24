@@ -35,6 +35,11 @@ commit simulation outputs there. The server writes only under
 tool and rejects `output_path`/`output_directory`/`target_path`/`runs_dir`
 values inside `sample_files` or the EnergyPlus installation; new default
 outputs should use `path_utils.derived_model_path` or `report_path`.
+The same wrapper runs each tool in a worker thread so the event loop stays
+free (`utils/tool_threads.py`): tool bodies hold the process-wide `EPPY_LOCK`
+unless marked `@eppy_free`, and a tool that awaits real async work must be
+marked `@native_async` and move its own blocking work off the loop.
+`tests/test_tool_threads.py` enforces the marking.
 `tests/test_workspace_layout.py` enforces the layout.
 
 ## Simulation queue

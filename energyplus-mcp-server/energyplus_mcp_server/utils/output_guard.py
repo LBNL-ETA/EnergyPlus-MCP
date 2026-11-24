@@ -9,6 +9,10 @@ tool at registration checks those arguments, so a new tool with an
 - Over streamable-http, the argument is replaced by an absolute path inside
   the caller's own workspace (relative paths are taken relative to it), so a
   tool never sees a destination outside that workspace.
+
+The same wrapper also moves each tool's synchronous work off the event loop
+(see ``tool_threads``): tools run in a worker thread unless marked
+``native_async``.
 """
 
 from __future__ import annotations
@@ -18,18 +22,28 @@ import inspect
 from typing import Any, Callable
 
 from .path_utils import resolve_output_location
+from .tool_threads import is_native_async, run_tool_in_thread
 
 OUTPUT_ARGUMENTS = ("output_path", "output_directory", "target_path", "runs_dir")
 
 
 def guard_tool(fn: Callable[..., Any], config: Any) -> Callable[..., Any]:
-    """Validate, and over HTTP confine, a tool's output arguments before it runs."""
+    """Check a tool's output arguments, then run it without blocking the event loop.
+
+    Output arguments are validated, and over HTTP confined, before the tool
+    runs. The returned wrapper is always ``async``: tools marked
+    ``native_async`` are awaited on the loop; every other tool runs in a
+    worker thread (see ``tool_threads.run_tool_in_thread``).
+    """
     signature = inspect.signature(fn)
     guarded = [name for name in OUTPUT_ARGUMENTS if name in signature.parameters]
-    if not guarded:
-        return fn
+    native = is_native_async(fn)
+    if native and not inspect.iscoroutinefunction(fn):
+        raise TypeError(f"{fn.__name__} is marked native_async but is not a coroutine function")
 
     def check(args: tuple, kwargs: dict) -> tuple[tuple, dict]:
+        if not guarded:
+            return args, kwargs
         bound = signature.bind_partial(*args, **kwargs)
         for name in guarded:
             value = bound.arguments.get(name)
@@ -39,18 +53,12 @@ def guard_tool(fn: Callable[..., Any], config: Any) -> Callable[..., Any]:
 
     # functools.wraps sets __wrapped__, so FastMCP still builds the tool schema
     # from the original signature and docstring.
-    if inspect.iscoroutinefunction(fn):
-        @functools.wraps(fn)
-        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            args, kwargs = check(args, kwargs)
-            return await fn(*args, **kwargs)
-
-        return async_wrapper
-
     @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
         args, kwargs = check(args, kwargs)
-        return fn(*args, **kwargs)
+        if native:
+            return await fn(*args, **kwargs)
+        return await run_tool_in_thread(fn, *args, **kwargs)
 
     return wrapper
 
