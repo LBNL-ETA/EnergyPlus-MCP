@@ -7,6 +7,7 @@ import math
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
 
 from ..utils.schedule_graph import ScheduleEditor
+from ..utils.model_cache import with_shared_models
 
 
 SCHEDULE_SCOPES = {
@@ -22,6 +23,7 @@ def _editor(ep_manager: Any) -> ScheduleEditor:
     return ScheduleEditor(path_resolver=resolver)
 
 
+@with_shared_models
 def _parameter_capabilities(ep_manager: Any, idf_path: Optional[str]) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "success": True,

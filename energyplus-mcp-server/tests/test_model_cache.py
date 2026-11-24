@@ -1,0 +1,264 @@
+"""Read-only parsed models are shared within one capability call, and only there."""
+
+import os
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from energyplus_mcp_server.utils import model_cache
+from energyplus_mcp_server.utils.model_cache import read_only_idf, shared_models, with_shared_models
+
+REAL_IDD = os.getenv("EPLUS_IDD_PATH", "/app/software/EnergyPlusV26-1-0/Energy+.idd")
+
+
+class FakeIDF:
+    def __init__(self, path):
+        self.path = path
+        self.text = Path(path).read_text()
+
+    def idfstr(self):
+        return self.text
+
+
+class CountingLoader:
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, path):
+        self.calls += 1
+        return FakeIDF(path)
+
+
+@pytest.fixture
+def model(tmp_path):
+    path = tmp_path / "model.idf"
+    path.write_text("Version,26.1;\n")
+    return path
+
+
+def test_outside_a_scope_every_call_parses(model):
+    loader = CountingLoader()
+
+    first = read_only_idf(str(model), loader)
+    second = read_only_idf(str(model), loader)
+
+    assert loader.calls == 2 and first is not second
+
+
+def test_inside_a_scope_one_parse_per_file(model, tmp_path):
+    other = tmp_path / "other.idf"
+    other.write_text("Version,26.1;\n")
+    loader = CountingLoader()
+
+    with shared_models():
+        first = read_only_idf(str(model), loader)
+        again = read_only_idf(str(model.resolve()), loader)
+        with shared_models():  # nested scopes reuse the outer cache
+            nested = read_only_idf(str(model), loader)
+        different = read_only_idf(str(other), loader)
+
+    assert first is again is nested
+    assert different is not first
+    assert loader.calls == 2
+
+
+def test_cache_ends_with_the_outermost_scope(model):
+    loader = CountingLoader()
+
+    with shared_models():
+        first = read_only_idf(str(model), loader)
+    with shared_models():
+        second = read_only_idf(str(model), loader)
+
+    assert first is not second and loader.calls == 2
+
+
+def test_a_changed_file_is_parsed_again(model):
+    loader = CountingLoader()
+
+    with shared_models():
+        before = read_only_idf(str(model), loader)
+        time.sleep(0.01)
+        model.write_text("Version,26.1;\nZone,Z1;\n")
+        after = read_only_idf(str(model), loader)
+
+    assert before is not after
+    assert after.text.endswith("Zone,Z1;\n")
+
+
+def test_different_loaders_do_not_share(model):
+    first_loader, second_loader = CountingLoader(), CountingLoader()
+
+    with shared_models():
+        first = read_only_idf(str(model), first_loader)
+        second = read_only_idf(str(model), second_loader)
+
+    assert first is not second
+
+
+def test_threads_do_not_share_models(model):
+    loader = CountingLoader()
+    seen = {}
+
+    def other_thread():
+        seen["model"] = read_only_idf(str(model), loader)
+
+    with shared_models():
+        mine = read_only_idf(str(model), loader)
+        thread = threading.Thread(target=other_thread)
+        thread.start()
+        thread.join()
+
+    assert seen["model"] is not mine
+
+
+def test_decorator_scopes_one_call(model):
+    loader = CountingLoader()
+
+    @with_shared_models
+    def capability_check():
+        return [read_only_idf(str(model), loader) for _ in range(5)]
+
+    models = capability_check()
+    capability_check()
+
+    assert all(m is models[0] for m in models)
+    assert loader.calls == 2
+
+
+def test_tripwire_catches_a_modified_shared_model(model, monkeypatch):
+    monkeypatch.setenv(model_cache.VERIFY_ENV, "1")
+    loader = CountingLoader()
+
+    with pytest.raises(AssertionError, match="modified in memory"):
+        with shared_models():
+            read_only_idf(str(model), loader).text += "Zone,Changed;\n"
+
+
+def test_tripwire_passes_when_models_are_untouched(model, monkeypatch):
+    monkeypatch.setenv(model_cache.VERIFY_ENV, "1")
+    loader = CountingLoader()
+
+    with shared_models():
+        read_only_idf(str(model), loader)
+
+
+@pytest.mark.skipif(not os.path.isfile(REAL_IDD), reason="EnergyPlus IDD not installed")
+def test_aggregate_capabilities_parse_the_model_once(monkeypatch):
+    from energyplus_mcp_server.domains import capabilities
+    from energyplus_mcp_server.energyplus_tools import EnergyPlusManager
+
+    sample = Path(__file__).resolve().parents[1] / "sample_files" / "basic" / "5ZoneAirCooled.idf"
+    manager = EnergyPlusManager()
+    # Earlier tests may leave the shared config in HTTP mode; this test only counts parses.
+    manager._resolve_idf_path = lambda path: str(Path(path).resolve())
+    manager._assert_simulation_version_matches = lambda path: {"runtime_version": "26.1.0", "model_version": "26.1"}
+    manager._runtime_energyplus_version = lambda: "26.1.0"
+    parses = []
+    original = model_cache._default_loader
+
+    def counting(path):
+        parses.append(path)
+        return original(path)
+
+    monkeypatch.setattr(model_cache, "_default_loader", counting)
+    monkeypatch.setenv(model_cache.VERIFY_ENV, "1")
+    managers = [tool for _, tool, _ in capabilities.PARAMETER_DOMAINS]
+
+    result = capabilities.combined_capabilities(manager, str(sample), managers, "summary")
+
+    assert result["success"] is True, (result.get("error"), result.get("errors"))
+    # One shared parse, plus one more by the tripwire's own re-parse.
+    assert len(parses) == 2
+
+
+def test_derived_data_is_shared_only_for_shared_models(model):
+    loader = CountingLoader()
+    builds = []
+
+    def build():
+        builds.append(1)
+        return object()
+
+    private = FakeIDF(str(model))
+    with shared_models():
+        shared = read_only_idf(str(model), loader)
+        first = model_cache.derived(shared, "graph", build)
+        again = model_cache.derived(shared, "graph", build)
+        other_name = model_cache.derived(shared, "geometry", build)
+        # A model that is not shared (e.g. an applied edit's private copy) always computes.
+        private_one = model_cache.derived(private, "graph", build)
+        private_two = model_cache.derived(private, "graph", build)
+    outside = model_cache.derived(shared, "graph", build)
+
+    assert first is again
+    assert other_name is not first
+    assert private_one is not private_two
+    assert outside is not first
+    assert len(builds) == 5
+
+
+def test_schedule_reference_check_is_memoized_and_unchanged():
+    from energyplus_mcp_server.utils import schedule_graph
+
+    check = schedule_graph._is_schedule_reference_field
+    original = check.__wrapped__
+    for field in ("Schedule_Name", "Availability_Schedule_Name", "Name", "Schedule_Type_Limits_Name",
+                  "Heating_Setpoint_Temperature_Schedule_Name", "Field_1", "Through_1", "SCHEDULE_NAME"):
+        assert check(field) == original(field)
+    assert check.cache_info().hits > 0
+
+
+@pytest.mark.skipif(not os.path.isfile(REAL_IDD), reason="EnergyPlus IDD not installed")
+def test_aggregate_capabilities_build_the_schedule_graph_once(monkeypatch):
+    from energyplus_mcp_server.domains import capabilities
+    from energyplus_mcp_server.energyplus_tools import EnergyPlusManager
+    from energyplus_mcp_server.utils import schedule_graph
+
+    sample = Path(__file__).resolve().parents[1] / "sample_files" / "basic" / "5ZoneAirCooled.idf"
+    manager = EnergyPlusManager()
+    manager._resolve_idf_path = lambda path: str(Path(path).resolve())
+    manager._assert_simulation_version_matches = lambda path: {"runtime_version": "26.1.0", "model_version": "26.1"}
+    manager._runtime_energyplus_version = lambda: "26.1.0"
+    builds = []
+    original_build = schedule_graph.ScheduleGraph._build
+
+    def counting_build(self):
+        builds.append(1)
+        return original_build(self)
+
+    monkeypatch.setattr(schedule_graph.ScheduleGraph, "_build", counting_build)
+    managers = [tool for _, tool, _ in capabilities.PARAMETER_DOMAINS]
+
+    result = capabilities.combined_capabilities(manager, str(sample), managers, "summary")
+
+    assert result["success"] is True, (result.get("error"), result.get("errors"))
+    assert len(builds) == 1
+
+
+def test_zone_geometry_is_computed_once_and_copied_per_caller(model, monkeypatch):
+    from energyplus_mcp_server.utils import parameter_load_setters as setters
+
+    computed = []
+
+    def fake_compute(idf):
+        computed.append(idf)
+        return {"zone 1": {"name": "Zone 1", "floor_area_m2": 10.0}}
+
+    monkeypatch.setattr(setters, "_compute_zone_geometry", fake_compute)
+    loader = CountingLoader()
+    private = FakeIDF(str(model))
+
+    with shared_models():
+        shared = read_only_idf(str(model), loader)
+        first = setters._zone_geometry(shared)
+        first["zone 1"]["floor_area_m2"] = 999.0  # a caller modifying its copy
+        second = setters._zone_geometry(shared)
+        setters._zone_geometry(private)
+        setters._zone_geometry(private)
+
+    assert second["zone 1"]["floor_area_m2"] == 10.0
+    assert computed.count(shared) == 1
+    assert computed.count(private) == 2

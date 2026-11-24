@@ -7,6 +7,7 @@ from pathlib import Path
 from eppy.modeleditor import IDF
 
 from ..utils import coupled_occupancy
+from ..utils.model_cache import read_only_idf, with_shared_models
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ def _tag_parameter_response(payload: Dict[str, Any], action: str) -> Dict[str, A
     return result
 
 
+@with_shared_models
 def _parameter_capabilities(ep_manager: Any, idf_path: Optional[str]) -> Dict[str, Any]:
     payload = ep_manager.parameter_capabilities(idf_path, list(PARAMETERS))
     result = _tag_parameter_response(payload, "parameter_capabilities")
@@ -44,7 +46,7 @@ def _parameter_capabilities(ep_manager: Any, idf_path: Optional[str]) -> Dict[st
     if idf_path and hasattr(ep_manager, "_resolve_idf_path"):
         resolved = ep_manager._resolve_idf_path(idf_path)
         ep_manager._assert_simulation_version_matches(resolved)
-        detail = coupled_occupancy.capabilities(IDF(resolved))
+        detail = coupled_occupancy.capabilities(read_only_idf(resolved))
         detail.update({
             "parameter": "coupled_occupancy",
             "tool": "internal_load_manager",

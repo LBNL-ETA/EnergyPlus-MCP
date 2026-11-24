@@ -11,6 +11,7 @@ from typing import Any, Dict, Literal, Mapping, Optional
 from eppy.modeleditor import IDF
 
 from ..utils import service_water
+from ..utils.model_cache import read_only_idf, with_shared_models
 
 
 def capabilities(idf: Any | None = None) -> dict[str, Any]:
@@ -109,7 +110,10 @@ def _capability(ep_manager: Any, idf_path: Optional[str]) -> Dict[str, Any]:
     }
     if not idf_path:
         return {**base, "coverage": "unverified", "supported": False}
-    resolved, idf, source_hash = _load(ep_manager, idf_path)
+    resolved = ep_manager._resolve_idf_path(idf_path)
+    ep_manager._assert_simulation_version_matches(resolved)
+    idf = read_only_idf(resolved)
+    source_hash = sha256(Path(resolved).read_bytes()).hexdigest()
     inspection = service_water.inspect(idf)
     efficiency_targets = [
         target for target in inspection["applicable_targets"]
@@ -133,6 +137,7 @@ def _capability(ep_manager: Any, idf_path: Optional[str]) -> Dict[str, Any]:
     }
 
 
+@with_shared_models
 def _parameter_capabilities(ep_manager: Any, idf_path: Optional[str]) -> Dict[str, Any]:
     return {
         "success": True,

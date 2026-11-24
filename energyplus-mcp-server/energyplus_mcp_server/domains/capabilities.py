@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
+from ..utils.model_cache import with_shared_models
+
 # (tool_surface domain name, manager tool name, module name)
 PARAMETER_DOMAINS: Tuple[Tuple[str, str, str], ...] = (
     ("internal_loads", "internal_load_manager", "internal_loads"),
@@ -79,6 +81,7 @@ def _compact_domain(response: Dict[str, Any]) -> Dict[str, Any]:
     return compact
 
 
+@with_shared_models
 def combined_capabilities(
     ep_manager: Any,
     idf_path: str,
