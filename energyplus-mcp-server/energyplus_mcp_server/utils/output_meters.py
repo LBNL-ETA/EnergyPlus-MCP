@@ -1020,6 +1020,33 @@ class OutputMeterManager:
             "will_add": len(new_meters)
         }
 
+    def _remove_redundant_file_only(self, idf: Any, specs: List[Dict]) -> List[Dict]:
+        """Drop MeterFileOnly objects for requested meters that also have the full meter."""
+        removed: List[Dict] = []
+        for full_type in ("Output:Meter", "Output:Meter:Cumulative"):
+            file_only_type = f"{full_type}:MeterFileOnly"
+            wanted = {
+                self._meter_identity(spec.get("meter_name", ""), spec.get("frequency", ""), full_type)
+                for spec in specs
+                if self._full_meter_type(spec.get("meter_type", "Output:Meter")) == full_type
+            }
+            full = {
+                self._meter_identity(getattr(obj, "Key_Name", ""), getattr(obj, "Reporting_Frequency", ""), full_type)
+                for obj in idf.idfobjects.get(full_type, [])
+            }
+            for obj in list(idf.idfobjects.get(file_only_type, [])):
+                identity = self._meter_identity(
+                    getattr(obj, "Key_Name", ""), getattr(obj, "Reporting_Frequency", ""), file_only_type
+                )
+                if identity in wanted and identity in full:
+                    idf.removeidfobject(obj)
+                    removed.append({
+                        "meter_type": file_only_type,
+                        "meter_name": getattr(obj, "Key_Name", ""),
+                        "frequency": getattr(obj, "Reporting_Frequency", ""),
+                    })
+        return removed
+
     @staticmethod
     def _full_meter_type(meter_type: str) -> str:
         """Output:Meter[:Cumulative]:MeterFileOnly -> Output:Meter[:Cumulative]."""
@@ -1034,9 +1061,14 @@ class OutputMeterManager:
             cls._full_meter_type(meter_type),
         )
 
-    def add_meters_to_idf(self, idf_path: str, meters: List[Dict], 
-                         output_path: str) -> Dict[str, Any]:
-        """Add output meters to IDF file and save"""
+    def add_meters_to_idf(self, idf_path: str, meters: List[Dict],
+                         output_path: str, tidy: Optional[List[Dict]] = None) -> Dict[str, Any]:
+        """Add output meters to IDF file and save.
+
+        ``tidy`` lists requested meters (including skipped duplicates): for each,
+        a MeterFileOnly variant is removed when the model also has the full
+        meter, since the full meter already writes the .mtr file.
+        """
         try:
             # Load IDF
             idf = IDF(idf_path)
@@ -1075,13 +1107,16 @@ class OutputMeterManager:
                 added_meters.append(meter_spec)
                 logger.debug(f"Added {meter_type}: {meter_spec}")
             
+            removed = self._remove_redundant_file_only(idf, tidy or [])
+
             # Save modified IDF
             idf.save(output_path)
-            
+
             return {
                 "success": True,
                 "added_count": len(added_meters),
                 "added_meters": added_meters,
+                "removed_redundant_meters": removed,
                 "output_file": output_path
             }
             

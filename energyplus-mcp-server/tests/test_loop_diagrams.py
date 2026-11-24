@@ -227,3 +227,71 @@ def test_hvac_manager_tool_defaults_to_html():
     source = inspect.getsource(hvac)
     assert 'image_format: str = "png"' not in source
     assert '= "html"' in inspect.getsource(hvac_loop)
+
+
+# -- review fixes ------------------------------------------------------------------------------
+
+
+def _unreadable(manager, *bad_loops):
+    good = manager.get_loop_topology
+
+    def _topology(path, name):
+        if name in bad_loops:
+            raise RuntimeError(f"Error getting loop topology: broken {name}")
+        return good(path, name)
+
+    manager.get_loop_topology = _topology
+
+
+def test_html_skips_an_unreadable_loop_and_draws_the_rest(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    _unreadable(manager, "Chilled Water Loop")
+
+    result = json.loads(manager.visualize_loop_diagram("Model.idf"))
+
+    assert result["success"] is True
+    assert result["diagram_type"] == "html_topology"
+    assert result["loops_drawn"] == ["Hot Water Loop", "VAV Sys 1"]
+    assert result["skipped_loops"][0]["loop_name"] == "Chilled Water Loop"
+    assert "broken Chilled Water Loop" in result["skipped_loops"][0]["error"]
+
+
+def test_unreadable_topology_falls_back_to_sketch_and_blames_topology(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch, render=_no_dot)
+    _unreadable(manager, "Hot Water Loop")
+    sketches = []
+
+    def _sketch(idf_path, loop_name, output_path, fmt):
+        sketches.append((output_path, fmt))
+        return {"success": True, "output_file": output_path, "diagram_type": "simplified"}
+
+    manager._create_simplified_diagram = _sketch
+
+    for fmt in ("html", "png"):
+        result = json.loads(manager.visualize_loop_diagram("Model.idf", "Hot Water Loop", format=fmt))
+        assert result["diagram_type"] == "simplified"
+        assert result["fallback_reason"].startswith("Could not read loop topology")
+        assert "Graphviz" not in result["fallback_reason"]
+        assert result["requested_format"] == fmt
+
+    # matplotlib cannot write HTML: the sketch for an html request is a PNG.
+    assert [Path(path).suffix for path, _ in sketches] == [".png", ".png"]
+    assert [fmt for _, fmt in sketches] == ["png", "png"]
+
+
+def test_html_creates_a_missing_output_folder(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    target = tmp_path / "new" / "nested" / "loops.html"
+
+    result = json.loads(manager.visualize_loop_diagram("Model.idf", output_path=str(target)))
+
+    assert result["success"] is True
+    assert target.is_file()
+
+
+def test_format_none_means_html(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch, render=lambda *a, **k: pytest.fail("Graphviz ran"))
+
+    result = json.loads(manager.visualize_loop_diagram("Model.idf", None, None, None))
+
+    assert result["diagram_type"] == "html_topology"

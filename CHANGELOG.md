@@ -73,8 +73,9 @@ version `0.1.0`.
   example does) made EnergyPlus warn and report the meter twice. Checks now
   ignore case; a `MeterFileOnly` request already covered by the full meter is
   skipped, and a full-meter request replaces its `MeterFileOnly` variant
-  (reported as `replaced_meter_file_only`). The monthly meters that
-  calibration runs add follow the same rules.
+  (reported as `replaced_meter_file_only`). A model that already had both is
+  tidied for the requested meters (`removed_redundant_meters`). The monthly
+  meters that calibration runs add follow the same rules.
 - `hvac_manager` `visualize` never drew the detailed loop diagram on Cloud
   Run: the production image lacked the Graphviz `dot` program, so every call
   fell back to a sketch of plant-loop boxes while reporting success, and for
@@ -83,7 +84,11 @@ version `0.1.0`.
   gives `fallback_reason`; an unknown `loop_name` or a model without loops is
   an error listing `available_loops`; `image_format` (svg, pdf, jpg) now
   reaches Graphviz instead of always producing PNG; and a failed render no
-  longer leaves the DOT source file in `reports/`.
+  longer leaves the DOT source file in `reports/`. A loop whose topology
+  cannot be read is skipped (`skipped_loops`) instead of failing the whole
+  call, and only when no loop can be read does the plant-loop sketch run, with
+  a `fallback_reason` that names the failing step. The HTML writer creates a
+  missing output folder.
 
 ## [0.2.0] - 2026-11-23
 

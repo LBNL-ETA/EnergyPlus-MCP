@@ -168,3 +168,39 @@ def test_calibration_outputs_replace_file_only_variants():
         ("Output:Meter", "NaturalGas:Facility", "Monthly"),
         ("Output:Meter:MeterFileOnly", "Electricity:Facility", "hourly"),
     ]
+
+
+def test_existing_full_and_file_only_pair_is_tidied_for_requested_meters(monkeypatch):
+    # The model already has both, so the request adds nothing but still tidies the pair.
+    configured = [
+        ("Output:Meter", "Electricity:Facility", "Monthly"),
+        ("Output:Meter:MeterFileOnly", "Electricity:Facility", "monthly"),
+        ("Output:Meter:MeterFileOnly", "Gas:Facility", "monthly"),
+    ]
+    manager = _manager(monkeypatch, configured)
+    idf = _FakeIDF(*configured)
+    monkeypatch.setattr(output_meters, "IDF", lambda _path: idf)
+    request = [_spec("Electricity:Facility", "Monthly")]
+
+    report = manager.check_duplicate_meters("m.idf", request)
+    result = manager.add_meters_to_idf("m.idf", report["new_meters"], "out.idf", tidy=request)
+
+    assert report["new_meters"] == []
+    assert result["removed_redundant_meters"] == [
+        {"meter_type": "Output:Meter:MeterFileOnly", "meter_name": "Electricity:Facility", "frequency": "monthly"}
+    ]
+    # Meters that were not requested are left alone.
+    assert idf.meters() == [
+        ("Output:Meter", "Electricity:Facility", "Monthly"),
+        ("Output:Meter:MeterFileOnly", "Gas:Facility", "monthly"),
+    ]
+
+
+def test_calibration_outputs_tidy_an_existing_pair():
+    assert _calibration_meters(
+        ("Output:Meter", "Electricity:Facility", "Monthly"),
+        ("Output:Meter:MeterFileOnly", "electricity:facility", "monthly"),
+    ) == [
+        ("Output:Meter", "Electricity:Facility", "Monthly"),
+        ("Output:Meter", "NaturalGas:Facility", "Monthly"),
+    ]

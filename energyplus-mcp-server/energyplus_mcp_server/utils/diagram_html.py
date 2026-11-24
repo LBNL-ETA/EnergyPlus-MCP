@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from html import escape
+from pathlib import Path
 from typing import Any, Iterable
 
 from energyplus_mcp_server.utils.diagrams import HVACDiagramGenerator
@@ -496,6 +497,7 @@ def render_loops_html(topologies: list[dict], title: str, show_legend: bool = Tr
 
 def write_loops_html(topologies: list[dict], output_path: str, title: str, show_legend: bool = True) -> dict[str, Any]:
     html, total = render_loops_html(topologies, title, show_legend)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as handle:
         handle.write(html)
     return {

@@ -407,16 +407,6 @@ class ModelUpgrade:
         artifact_dir = output_dir / "transition-artifacts"
         for directory in (stages_dir, artifact_dir):
             directory.mkdir()
-        # Transition programs run from a local scratch directory, never from
-        # the output directory: over HTTP that is the caller's workspace, which
-        # on Cloud Run is a Cloud Storage mount that refuses chmod/utime and
-        # cannot execute programs. Only stages, logs, and the manifest are
-        # written to the output directory, with plain data copies.
-        scratch = tempfile.TemporaryDirectory(prefix="eplus-transition-")
-        runtime_dir = Path(scratch.name) / "transition-runtime"
-        work_dir = Path(scratch.name) / "work"
-        for directory in (runtime_dir, work_dir):
-            directory.mkdir()
         manifest_path = output_dir / "migration-manifest.json"
         manifest: dict[str, Any] = {
             "tool": "model_upgrade",
@@ -441,7 +431,18 @@ class ModelUpgrade:
             }
         )
 
+        # Transition programs run from a local scratch directory, never from
+        # the output directory: over HTTP that is the caller's workspace, which
+        # on Cloud Run is a Cloud Storage mount that refuses chmod/utime and
+        # cannot execute programs. Only stages, logs, and the manifest are
+        # written to the output directory, with plain data copies. The scratch
+        # directory is created immediately before the try whose finally removes it.
+        scratch = tempfile.TemporaryDirectory(prefix="eplus-transition-")
         try:
+            runtime_dir = Path(scratch.name) / "transition-runtime"
+            work_dir = Path(scratch.name) / "work"
+            for directory in (runtime_dir, work_dir):
+                directory.mkdir()
             current = stages_dir / f"{source.stem}-{EnergyPlusVersion.parse(plan['source_version']).label}{source.suffix}"
             shutil.copyfile(source, current)
             manifest["source_copy"] = str(current.relative_to(output_dir))

@@ -6,6 +6,8 @@ import re
 from subprocess import TimeoutExpired
 from types import SimpleNamespace
 
+import pytest
+
 from energyplus_mcp_server.utils.model_upgrade import EnergyPlusVersion, ModelUpgrade
 
 
@@ -205,3 +207,59 @@ def test_run_never_copies_metadata_or_executes_in_the_output_directory(tmp_path,
     }
     assert EnergyPlusVersion.parse("9.4") == upgrade._idf_version(Path(result["final_path"]))
     assert any(name.endswith("__runtime-Transition.audit") for name in os.listdir(output / "transition-artifacts"))
+
+
+def test_no_scratch_directory_is_left_when_setup_fails(tmp_path, monkeypatch):
+    """A failure before the transition loop (here, the first manifest write) must not
+    leave a scratch directory behind."""
+    upgrade, transition_dir = _upgrade(tmp_path, monkeypatch)
+    source = _source(tmp_path)
+    _step(transition_dir, "9.2", "9.3")
+    import tempfile as real_tempfile
+
+    created: list[Path] = []
+    real_temporary_directory = real_tempfile.TemporaryDirectory
+
+    def _tracking(*args, **kwargs):
+        scratch = real_temporary_directory(*args, **kwargs)
+        created.append(Path(scratch.name))
+        return scratch
+
+    def _fail_manifest(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("energyplus_mcp_server.utils.model_upgrade.tempfile.TemporaryDirectory", _tracking)
+    monkeypatch.setattr(ModelUpgrade, "_write_manifest", staticmethod(_fail_manifest))
+
+    with pytest.raises(OSError, match="disk full"):
+        upgrade.run(str(source), "9.3", str(tmp_path / "upgrade"))
+
+    assert all(not path.exists() for path in created)
+    assert created == [], "the scratch directory should only be created inside the guarded block"
+
+
+def test_scratch_directory_is_removed_when_staging_fails(tmp_path, monkeypatch):
+    upgrade, transition_dir = _upgrade(tmp_path, monkeypatch)
+    source = _source(tmp_path)
+    _step(transition_dir, "9.2", "9.3")
+    import tempfile as real_tempfile
+
+    created: list[Path] = []
+    real_temporary_directory = real_tempfile.TemporaryDirectory
+
+    def _tracking(*args, **kwargs):
+        scratch = real_temporary_directory(*args, **kwargs)
+        created.append(Path(scratch.name))
+        return scratch
+
+    def _fail_copy(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("energyplus_mcp_server.utils.model_upgrade.tempfile.TemporaryDirectory", _tracking)
+    monkeypatch.setattr("energyplus_mcp_server.utils.model_upgrade.shutil.copyfile", _fail_copy)
+
+    result = upgrade.run(str(source), "9.3", str(tmp_path / "upgrade"))
+
+    assert result["status"] == "failed"
+    assert "disk full" in result["error"]
+    assert len(created) == 1 and not created[0].exists()
