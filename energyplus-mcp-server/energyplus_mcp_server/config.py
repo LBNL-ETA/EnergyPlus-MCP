@@ -115,6 +115,28 @@ class AuthConfig:
     tokens: dict[str, str] = field(default_factory=dict)
     # Labels allowed to call server-wide admin tools (logs, configuration).
     admin_labels: frozenset = frozenset()
+    # OAuth sign-in through Google (streamable-http only); None when disabled.
+    oauth: Optional["OAuthSettings"] = None
+
+
+DEFAULT_OAUTH_REDIRECT_HOSTS = ("chatgpt.com", "claude.ai", "localhost", "127.0.0.1")
+
+
+@dataclass
+class OAuthSettings:
+    """OAuth 2.1 sign-in for clients that cannot send a fixed bearer token.
+
+    Read from the MCP_OAUTH environment variable (a JSON object; keep it in a
+    secret). The server is its own authorization server and uses Google
+    sign-in to identify people; only emails listed in ``users`` get in, and
+    each is mapped to a workspace label.
+    """
+    issuer_url: str                    # public base URL, e.g. https://x.run.app
+    google_client_id: str
+    google_client_secret: str
+    signing_key: str                   # signs codes and tokens; rotate to log everyone out
+    users: dict[str, str]              # lower-case email -> label
+    redirect_hosts: tuple[str, ...] = DEFAULT_OAUTH_REDIRECT_HOSTS
 
 
 @dataclass
@@ -215,24 +237,70 @@ class Config:
                 seen_labels.add(label)
                 tokens[token] = label
 
-        if self.transport.transport == "streamable-http" and not tokens:
+        oauth = self._parse_oauth() if self.transport.transport == "streamable-http" else None
+        if self.transport.transport == "streamable-http" and not tokens and oauth is None:
             raise ValueError(
-                "streamable-http transport requires non-empty MCP_TOKENS"
+                "streamable-http transport requires non-empty MCP_TOKENS or MCP_OAUTH"
             )
         self.auth.tokens = tokens
+        self.auth.oauth = oauth
 
         admin_raw = os.getenv("MCP_ADMIN_LABELS", "").strip()
         admin_labels = frozenset(a.strip() for a in admin_raw.split(",") if a.strip())
-        unknown = admin_labels - set(tokens.values())
+        known = set(tokens.values()) | (set(oauth.users.values()) if oauth else set())
+        unknown = admin_labels - known
         if unknown:
             raise ValueError(
-                f"MCP_ADMIN_LABELS names labels not in MCP_TOKENS: {sorted(unknown)}"
+                f"MCP_ADMIN_LABELS names labels not in MCP_TOKENS or MCP_OAUTH users: {sorted(unknown)}"
             )
         self.auth.admin_labels = admin_labels
 
         user_root = os.getenv("MCP_USER_DATA_ROOT", "").strip()
         if user_root:
             self.paths.user_data_root = user_root
+
+    def _parse_oauth(self) -> Optional[OAuthSettings]:
+        """Parse MCP_OAUTH (JSON); None when unset. Fails closed on bad values."""
+        raw = os.getenv("MCP_OAUTH", "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"MCP_OAUTH must be valid JSON: {e}") from e
+        if not isinstance(parsed, dict):
+            raise ValueError("MCP_OAUTH must be a JSON object")
+        for key in ("google_client_id", "google_client_secret", "signing_key", "users"):
+            if not parsed.get(key):
+                raise ValueError(f"MCP_OAUTH is missing {key!r}")
+        if len(parsed["signing_key"]) < self._MIN_TOKEN_LEN:
+            raise ValueError(f"MCP_OAUTH signing_key must be at least {self._MIN_TOKEN_LEN} characters")
+        if not isinstance(parsed["users"], dict):
+            raise ValueError('MCP_OAUTH users must map emails to labels, e.g. {"me@lbl.gov": "me"}')
+        users = {}
+        for email, label in parsed["users"].items():
+            if not isinstance(email, str) or "@" not in email:
+                raise ValueError(f"MCP_OAUTH users has an invalid email {email!r}")
+            if not isinstance(label, str) or not self._LABEL_RE.match(label):
+                raise ValueError(
+                    f"MCP_OAUTH users[{email!r}] invalid label {label!r}; must match [a-z0-9_-]{{1,32}}"
+                )
+            users[email.strip().lower()] = label
+        issuer = os.getenv("MCP_PUBLIC_BASE_URL", "").strip().rstrip("/")
+        local = issuer.startswith(("http://localhost", "http://127.0.0.1"))
+        if not (issuer.startswith("https://") or local):
+            raise ValueError("MCP_OAUTH requires MCP_PUBLIC_BASE_URL set to the server's https URL")
+        hosts = parsed.get("redirect_hosts") or list(DEFAULT_OAUTH_REDIRECT_HOSTS)
+        if not isinstance(hosts, list) or not all(isinstance(h, str) and h for h in hosts):
+            raise ValueError("MCP_OAUTH redirect_hosts must be a list of host names")
+        return OAuthSettings(
+            issuer_url=issuer,
+            google_client_id=parsed["google_client_id"],
+            google_client_secret=parsed["google_client_secret"],
+            signing_key=parsed["signing_key"],
+            users=users,
+            redirect_hosts=tuple(h.lower() for h in hosts),
+        )
 
     def _setup_energyplus_paths(self):
         """Set up EnergyPlus paths from environment variables or defaults"""

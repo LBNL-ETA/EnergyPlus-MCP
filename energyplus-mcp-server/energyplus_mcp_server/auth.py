@@ -48,10 +48,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
     SESSION_HEADER = "mcp-session-id"
     MAX_TRACKED_SESSIONS = 10_000
 
-    def __init__(self, app, tokens: dict):
-        """tokens: dict mapping raw token string → human label."""
+    def __init__(self, app, tokens: dict, oauth=None):
+        """tokens: dict mapping raw token string → human label.
+
+        oauth: optional GoogleOAuthProvider (energyplus_mcp_server.oauth). When
+        set, its sign-in routes are public and its access tokens are accepted
+        alongside the fixed tokens.
+        """
         super().__init__(app)
         self._tokens = tokens
+        self._oauth = oauth
         # MCP session id → label of the token that created it. A session may
         # only be used by the identity that opened it.
         self._session_owner: "OrderedDict[str, str]" = OrderedDict()
@@ -60,21 +66,25 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if path in self.BYPASS_PATHS or path.startswith(self.BYPASS_PREFIXES):
             return await call_next(request)
+        if self._oauth is not None and _is_oauth_path(path):
+            return await call_next(request)
 
         header = request.headers.get("authorization", "")
         if not header:
             logger.info("auth.fail reason=missing_header path=%s", request.url.path)
-            return _unauthorized()
+            return self._unauthorized()
 
         if not header.startswith("Bearer "):
             logger.info("auth.fail reason=malformed_header path=%s", request.url.path)
-            return _unauthorized()
+            return self._unauthorized()
 
         token = header[len("Bearer "):]
         label = _lookup_label(self._tokens, token)
+        if label is None and self._oauth is not None:
+            label = await self._oauth.label_for_token(token)
         if label is None:
             logger.info("auth.fail reason=unknown_token path=%s", request.url.path)
-            return _unauthorized()
+            return self._unauthorized()
 
         session_id = request.headers.get(self.SESSION_HEADER)
         if session_id:
@@ -104,6 +114,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.method == "DELETE" and session_id:
             self._session_owner.pop(session_id, None)
         return response
+
+
+    def _unauthorized(self) -> JSONResponse:
+        if self._oauth is None:
+            return _unauthorized()
+        # Tells OAuth clients where to start signing in (RFC 9728, MCP spec).
+        return JSONResponse(
+            {"error": "invalid_token", "error_description": "authentication required"},
+            status_code=401,
+            headers={"WWW-Authenticate":
+                     f'Bearer resource_metadata="{self._oauth.resource_metadata_url}"'},
+        )
+
+
+def _is_oauth_path(path: str) -> bool:
+    from energyplus_mcp_server.oauth import OAUTH_PATHS, WELL_KNOWN_PREFIX
+
+    return path in OAUTH_PATHS or path.startswith(WELL_KNOWN_PREFIX)
 
 
 def _lookup_label(tokens: dict, presented: str) -> Optional[str]:

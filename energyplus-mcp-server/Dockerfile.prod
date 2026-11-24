@@ -6,8 +6,9 @@
 # Build from the energyplus-mcp-server directory:
 #   docker build -f Dockerfile.prod -t energyplus-mcp .
 #
-# Not included (they need the larger dev build): the reference_docs index and
-# the model_upgrade transition bundle. Those tools report themselves unavailable.
+# Not included (it needs the larger dev build): the reference_docs index, so
+# that tool reports itself unavailable. model_upgrade uses the transition
+# programs in the EnergyPlus release (PreProcess/IDFVersionUpdater).
 
 # ── Stage 1: builder — EnergyPlus + locked Python dependencies ───────────────
 FROM python:3.12-slim AS builder
@@ -44,8 +45,10 @@ RUN pip install --no-cache-dir uv \
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
+# graphviz provides the `dot` program that hvac_manager visualize uses for
+# image diagrams; without it the server falls back to HTML diagrams.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libxext6 libsm6 \
+        libgl1 libxext6 libsm6 graphviz \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 mcp
 

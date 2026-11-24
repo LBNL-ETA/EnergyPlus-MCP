@@ -393,3 +393,44 @@ async def test_session_cannot_be_reused_by_another_token(http_config):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+async def test_event_stream_is_declined_but_calls_work(http_config):
+    """GET on the MCP path returns 405 (no idle stream holding a Cloud Run slot),
+    after auth, while normal calls keep working."""
+    import httpx
+    import uvicorn
+    from mcp.server.fastmcp import FastMCP
+    from mcp.server.transport_security import TransportSecuritySettings
+    from energyplus_mcp_server.http_app import build_app
+
+    fastmcp = FastMCP(
+        "stream-test",
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(build_app(fastmcp, http_config),
+                                           host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.time() + 10
+    while not server.started and time.time() < deadline:
+        time.sleep(0.05)
+
+    url = f"http://127.0.0.1:{port}/mcp"
+    auth = {"Authorization": f"Bearer {ALICE_TOKEN}"}
+    base = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "t", "version": "0"}}}
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            assert (await c.get(url, headers={"Accept": "text/event-stream"})).status_code == 401
+            r = await c.post(url, json=init, headers={**base, **auth})
+            assert r.status_code == 200
+            stream = await c.get(url, headers={**auth, "Accept": "text/event-stream",
+                                               "mcp-session-id": r.headers["mcp-session-id"]})
+            assert stream.status_code == 405 and stream.headers["allow"] == "POST, DELETE"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)

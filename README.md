@@ -27,6 +27,7 @@ A Model Context Protocol (MCP) server for EnergyPlus that exposes a **compact, a
     - [Local Development](#local-development)
     - [Streamable HTTP Transport (Local Testing)](#streamable-http-transport-local-testing)
     - [Remote Deployment (Google Cloud Run)](#remote-deployment-google-cloud-run)
+    - [Signing in with Google (OAuth)](#signing-in-with-google-oauth-for-chatgpt-apps-and-other-hosted-clients)
     - [Building against a different EnergyPlus version](#building-against-a-different-energyplus-version)
 - [Available Tools](#available-tools)
   - [Tool Registration Modes](#tool-registration-modes)
@@ -452,7 +453,32 @@ ADMIN_LABELS=alice ./scripts/deploy.sh
 SVC_URL=https://<service>.run.app TOKEN=<a token> ./scripts/smoke.sh
 ```
 
-The service runs a single instance (upload/download links and the simulation queue live in memory) that scales to zero when idle. The bucket is mounted at `MCP_USER_DATA_ROOT` (`/data/users`), so uploads and results survive restarts. Clients connect to `https://<service>.run.app/mcp` with `Authorization: Bearer <token>`. To rotate tokens, add a new version of the `mcp-tokens` secret and redeploy (or run `gcloud run services update` to start a new revision). The production image does not include the `reference_docs` index or the `model_upgrade` transition bundle; build from `.devcontainer/Dockerfile` if you need them.
+The service runs a single instance (upload/download links and the simulation queue live in memory) that scales to zero when idle. The bucket is mounted at `MCP_USER_DATA_ROOT` (`/data/users`), so uploads and results survive restarts. Clients connect to `https://<service>.run.app/mcp` with `Authorization: Bearer <token>`. To rotate tokens, add a new version of the `mcp-tokens` secret and redeploy (or run `gcloud run services update` to start a new revision). The production image does not include the `reference_docs` index; build from `.devcontainer/Dockerfile` if you need it. `model_upgrade` works there, using the transition programs shipped with EnergyPlus.
+
+#### Signing in with Google (OAuth) for ChatGPT apps and other hosted clients
+
+Hosted clients such as ChatGPT apps cannot send a fixed bearer token; they need OAuth. With `MCP_OAUTH` set, the server becomes its own OAuth authorization server and uses Google sign-in to identify people. Only emails on its list get in, and each email maps to a workspace label, just like an `MCP_TOKENS` label. Fixed tokens keep working alongside it.
+
+1. In the Google Cloud console, under **APIs & Services → OAuth consent screen**, create a consent screen. Leave it in **Testing** and add each person's Google account as a test user. Then, under **Credentials**, create an **OAuth client ID** of type *Web application* with this authorized redirect URI: `https://<your-service-url>/oauth/google/callback`.
+2. Store the settings in a secret:
+
+   ```bash
+   cat > /tmp/mcp-oauth.json <<EOF
+   {"google_client_id": "<id>.apps.googleusercontent.com",
+    "google_client_secret": "<secret>",
+    "signing_key": "$(openssl rand -hex 32)",
+    "users": {"you@example.org": "you", "colleague@example.org": "colleague"}}
+   EOF
+   gcloud secrets create mcp-oauth --data-file=/tmp/mcp-oauth.json && rm /tmp/mcp-oauth.json
+   gcloud secrets add-iam-policy-binding mcp-oauth \
+       --member="serviceAccount:$SERVICE_ACCOUNT" --role=roles/secretmanager.secretAccessor
+   ```
+
+   Optional: `"redirect_hosts"` lists the hosts that clients may register as their redirect (default `chatgpt.com`, `claude.ai`, `localhost`, `127.0.0.1`).
+3. Deploy with `OAUTH_SECRET=mcp-oauth PUBLIC_BASE_URL=https://<your-service-url>` added to the `deploy.sh` command. `PUBLIC_BASE_URL` must be the same URL as in the redirect URI.
+4. In the client, add the server URL `https://<your-service-url>/mcp` with OAuth authentication. The client registers itself and opens Google sign-in.
+
+To remove someone, delete their email from `users` and redeploy: their tokens stop working at the next request. Changing `signing_key` signs everyone out. Access tokens last an hour and refresh tokens 30 days.
 
 #### Building against a different EnergyPlus version
 
@@ -529,6 +555,16 @@ operations. `internal_load_manager` owns LPD, EPD, and occupancy density;
 `hvac_manager` owns cooling COP, heating efficiency, and fan efficiency. Each
 uses the same actions: `parameter_capabilities`, `inspect_parameter`,
 `adjust_percentage`, and `set_parameter`.
+
+`parameter_capabilities(idf_path)` runs `parameter_capabilities` on every
+enabled parameter-owning manager (internal loads, envelope, schedules, HVAC,
+service water) in one call. It states the model format, IDF path, EnergyPlus
+version, monthly meters, and simulation evidence contract once, and returns
+each manager's response under `domain_capabilities`, so a consumer gate (for
+example a calibration service) can take the whole result unchanged. The
+default `detail="summary"` omits per-object target and relationship lists
+(coverage, skipped and ambiguous objects, and bounds are kept); use
+`detail="full"` for everything.
 
 The new semantic families keep descriptive provider operations:
 `schedule_manager` scales bounded lighting, electric-equipment, and HVAC
@@ -811,11 +847,12 @@ installation, and the older `sample_files/<name>` form still works.
   "arguments": {
     "action": "visualize",
     "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
-    "loop_name": "VAV Sys 1",
-    "image_format": "png"
+    "loop_name": "VAV Sys 1"
   }
 }
 ```
+
+`visualize` writes a self-contained HTML page by default (inline SVG: clickable supply/demand frames, node tooltips, and a component/node table; every loop when `loop_name` is omitted). Pass `"image_format": "png"` (or `svg`, `pdf`, `jpg`) for a Graphviz image of one loop.
 
 **Preflight: Readiness check**
 ```json

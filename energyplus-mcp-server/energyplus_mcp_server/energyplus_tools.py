@@ -44,6 +44,7 @@ from plotly.subplots import make_subplots
 
 from .config import get_config, Config
 from .utils.diagrams import HVACDiagramGenerator
+from .utils.diagram_html import write_loops_html
 from .utils.model_guard import check_model_for_caller
 from .utils.path_utils import (
     derived_model_path,
@@ -63,6 +64,22 @@ from .utils.electric_equipment_utils import ElectricEquipmentManager
 from .utils.error_parser import ErrorParser
 
 logger = logging.getLogger(__name__)
+
+
+# Monthly facility meters that simulation_manager(action="run", runs_dir=...)
+# stages in canonical SQL, and where that evidence lands. Capability reports
+# state both; domain/capabilities.py states them for the aggregate tool.
+MONTHLY_FACILITY_METERS = ("Electricity:Facility", "NaturalGas:Facility")
+
+
+def simulation_evidence_contract() -> Dict[str, Any]:
+    return {
+        "tool": "simulation_manager",
+        "action": "run",
+        "required_args": ["idf_path", "runs_dir"],
+        "optional_args": ["run_id", "weather_file"],
+        "paths": "<runs_dir>/<run_id>/run/eplusout.sql and <runs_dir>/<run_id>/run_record.json",
+    }
 
 
 class EnergyPlusManager:
@@ -335,7 +352,13 @@ class EnergyPlusManager:
             # Perform the copy
             import shutil
             start_time = datetime.now()
-            shutil.copy2(resolved_source_path, resolved_target_path)
+            shutil.copyfile(resolved_source_path, resolved_target_path)
+            try:
+                shutil.copystat(resolved_source_path, resolved_target_path)
+            except OSError:
+                # Some destinations (e.g. a Cloud Storage mount on Cloud Run)
+                # refuse chmod/utime; the copied data is what matters.
+                logger.debug("Could not copy file metadata to %s", resolved_target_path)
             end_time = datetime.now()
             copy_duration = end_time - start_time
             
@@ -1769,8 +1792,10 @@ class EnergyPlusManager:
                 output_path = derived_model_path(self.config, str(path_obj), "_with_meters")
             
             # Add meters to IDF
+            valid_specs = [m["specification"] for m in validation_report["valid_meters"]]
             addition_result = self.output_meter_manager.add_meters_to_idf(
-                resolved_path, duplicate_report["new_meters"], output_path
+                resolved_path, duplicate_report["new_meters"], output_path,
+                tidy=[] if allow_duplicates else valid_specs,
             )
             
             # Compile comprehensive result
@@ -1784,6 +1809,8 @@ class EnergyPlusManager:
                 "resolved_meters": len(resolved_meters),
                 "added_meters": addition_result["added_count"],
                 "skipped_duplicates": duplicate_report["duplicates_found"],
+                "replaced_meter_file_only": len(duplicate_report.get("replaced_meters", [])),
+                "removed_redundant_meters": addition_result.get("removed_redundant_meters", []),
                 "validation_summary": {
                     "total_valid": len(validation_report["valid_meters"]),
                     "total_invalid": len(validation_report["invalid_meters"]),
@@ -2628,100 +2655,133 @@ class EnergyPlusManager:
         return zone_equipment
 
 
-    def visualize_loop_diagram(self, idf_path: str, loop_name: str = None, 
-                            output_path: Optional[str] = None, format: str = "png", 
+    def visualize_loop_diagram(self, idf_path: str, loop_name: str = None,
+                            output_path: Optional[str] = None, format: str = "html",
                             show_legend: bool = True) -> str:
         """
-        Generate and save a visual diagram of HVAC loop(s) using custom topology-based approach
-        
-        Args:
-            idf_path: Path to the IDF file
-            loop_name: Optional specific loop name (if None, creates diagram for first found loop)
-            output_path: Optional custom output path (if None, creates one automatically)
-            format: Image format for the diagram (png, jpg, pdf, svg)
-            show_legend: Whether to include legend in topology-based diagrams (default: True)
-        
+        Draw HVAC loop topology as an image (Graphviz) or a self-contained HTML page.
+
+        ``format`` is html (the default) or png, jpg, pdf, svg (Graphviz). HTML needs
+        no Graphviz and, with no ``loop_name``, draws every loop on one page; the image formats
+        draw ``loop_name`` or, without it, the first loop found. When Graphviz
+        cannot run, the diagram is written as HTML instead and the result says why
+        (``fallback_reason``). Only if the topology itself cannot be read is a
+        plant-loop-only sketch drawn.
+
         Returns:
             JSON string with diagram generation results and file path
         """
         resolved_path = self._resolve_idf_path(idf_path)
-        
+        fmt = (format or "html").lower().lstrip(".")
+        if fmt not in {"png", "jpg", "pdf", "svg", "html"}:
+            return json.dumps({
+                "success": False,
+                "input_file": resolved_path,
+                "error": f"Unsupported format {format!r}; use html, png, jpg, pdf or svg",
+            }, indent=2)
+
         try:
-            logger.info(f"Creating custom loop diagram for: {resolved_path}")
-            
-            # Determine output path
+            loops_info = json.loads(self.discover_hvac_loops(resolved_path))
+            available = [
+                loop.get("name")
+                for key in ("plant_loops", "condenser_loops", "air_loops")
+                for loop in loops_info.get(key, [])
+            ]
+            if not available:
+                return json.dumps({
+                    "success": False, "input_file": resolved_path,
+                    "error": "No HVAC loops (PlantLoop, CondenserLoop, AirLoopHVAC) found in the model",
+                }, indent=2)
+            if loop_name and loop_name not in available:
+                return json.dumps({
+                    "success": False, "input_file": resolved_path,
+                    "error": f"Loop {loop_name!r} not found", "available_loops": available,
+                }, indent=2)
+
+            path_obj = Path(resolved_path)
+            stem = f"{path_obj.stem}_hvac_diagram" if not loop_name else f"{path_obj.stem}_{loop_name}_diagram"
             if output_path is None:
-                path_obj = Path(resolved_path)
-                diagram_name = f"{path_obj.stem}_hvac_diagram" if not loop_name else f"{path_obj.stem}_{loop_name}_diagram"
-                output_path = report_path(self.config, f"{diagram_name}.{format}")
-            
-            # Method 1: Use topology data for custom diagram (PRIMARY)
-            try:
-                result = self._create_topology_based_diagram(resolved_path, loop_name, output_path, show_legend)
-                if result["success"]:
-                    logger.info(f"Custom topology diagram created: {output_path}")
+                output_path = report_path(self.config, f"{stem}.{fmt}")
+
+            # Image formats draw one loop; HTML draws the named loop or all of them.
+            targets = [loop_name] if loop_name else (available if fmt == "html" else available[:1])
+            topologies, skipped = self._read_loop_topologies(resolved_path, targets)
+            if not topologies:
+                fallback_reason = "Could not read loop topology: " + "; ".join(
+                    f"{s['loop_name']}: {s['error']}" for s in skipped
+                )
+                logger.warning(f"{fallback_reason}. Using simplified approach.")
+                sketch_path = output_path if fmt != "html" else str(Path(output_path).with_suffix(".png"))
+                result = self._create_simplified_diagram(
+                    resolved_path, loop_name, sketch_path, "png" if fmt == "html" else fmt
+                )
+                result.update({"requested_format": fmt, "fallback_reason": fallback_reason,
+                               "skipped_loops": skipped, "available_loops": available})
+                return json.dumps(result, indent=2)
+
+            fallback_reason = None
+            if fmt != "html":
+                try:
+                    result = self._create_topology_based_diagram(
+                        resolved_path, topologies[0], output_path, show_legend, fmt, len(available)
+                    )
+                    result["available_loops"] = available
                     return json.dumps(result, indent=2)
-            except Exception as e:
-                logger.warning(f"Topology-based diagram failed: {e}. Using simplified approach.")
-            
-            # Method 2: Simplified diagram (LAST RESORT)
-            result = self._create_simplified_diagram(resolved_path, loop_name, output_path, format)
-            logger.info(f"Simplified diagram created: {output_path}")
+                except Exception as e:
+                    fallback_reason = f"Graphviz could not draw the diagram: {e}"
+                    logger.warning(f"{fallback_reason}. Writing an HTML diagram instead.")
+                    output_path = str(Path(output_path).with_suffix(".html"))
+
+            result = self._create_html_diagram(resolved_path, topologies, output_path, show_legend)
+            result["available_loops"] = available
+            if skipped:
+                result["skipped_loops"] = skipped
+            if fallback_reason:
+                result.update({"requested_format": fmt, "fallback_reason": fallback_reason})
             return json.dumps(result, indent=2)
-            
+
         except Exception as e:
             logger.error(f"Error creating loop diagram for {resolved_path}: {e}")
             raise RuntimeError(f"Error creating loop diagram: {str(e)}")
 
+    def _read_loop_topologies(self, idf_path: str, loop_names: List[str]) -> tuple[list[dict], list[dict]]:
+        """Read each loop's topology; a loop that cannot be read is skipped with its error."""
+        topologies, skipped = [], []
+        for name in loop_names:
+            try:
+                topology = json.loads(self.get_loop_topology(idf_path, name))
+                if not isinstance(topology, dict) or "supply_side" not in topology:
+                    raise ValueError("topology has no supply side")
+                topologies.append(topology)
+            except Exception as e:
+                logger.warning(f"Could not read topology for loop {name!r}: {e}")
+                skipped.append({"loop_name": name, "error": str(e)})
+        return topologies, skipped
 
-    def _create_topology_based_diagram(self, idf_path: str, loop_name: Optional[str], 
-                                     output_path: str, show_legend: bool = True) -> Dict[str, Any]:
-        """
-        Create diagram using topology data from get_loop_topology
-        """
-        # Get available loops
-        loops_info = json.loads(self.discover_hvac_loops(idf_path))
-        
-        # Determine which loop to diagram
-        target_loop = None
-        if loop_name:
-            # Find specific loop
-            for loop_type in ['plant_loops', 'condenser_loops', 'air_loops']:
-                for loop in loops_info.get(loop_type, []):
-                    if loop.get('name') == loop_name:
-                        target_loop = loop_name
-                        break
-                if target_loop:
-                    break
-        else:
-            # Use first available loop
-            for loop_type in ['plant_loops', 'condenser_loops', 'air_loops']:
-                loops = loops_info.get(loop_type, [])
-                if loops:
-                    target_loop = loops[0].get('name')
-                    break
-        
-        if not target_loop:
-            raise ValueError("No HVAC loops found or specified loop not found")
-        
-        # Get detailed topology for the target loop
-        topology_json = self.get_loop_topology(idf_path, target_loop)
-        
-        # Create custom diagram using the topology data
+    def _create_html_diagram(self, idf_path: str, topologies: List[dict],
+                             output_path: str, show_legend: bool = True) -> Dict[str, Any]:
+        """Write a self-contained HTML/SVG diagram of the given loop topologies."""
+        title = f"{Path(idf_path).stem} — HVAC loops"
+        result = write_loops_html(topologies, output_path, title, show_legend)
+        result.update({"input_file": idf_path, "method": "topology_based", "format": "html"})
+        return result
+
+    def _create_topology_based_diagram(self, idf_path: str, topology: dict, output_path: str,
+                                     show_legend: bool = True, fmt: str = "png",
+                                     total_loops: int = 0) -> Dict[str, Any]:
+        """Draw one loop's topology with Graphviz (needs the ``dot`` program)."""
+        target_loop = topology.get("loop_name")
         result = self.diagram_generator.create_diagram_from_topology(
-            topology_json, output_path, f"Custom HVAC Diagram - {target_loop}", show_legend=show_legend
+            json.dumps(topology), output_path, f"Custom HVAC Diagram - {target_loop}",
+            fmt=fmt, show_legend=show_legend
         )
-        
-        # Add additional metadata
         result.update({
             "input_file": idf_path,
             "method": "topology_based",
-            "total_loops_available": sum(len(loops_info.get(key, [])) 
-                                       for key in ['plant_loops', 'condenser_loops', 'air_loops'])
+            "format": fmt,
+            "total_loops_available": total_loops,
         })
-        
         return result
-    
 
     def _create_simplified_diagram(self, idf_path: str, loop_name: str, 
                                 output_path: str, format: str) -> Dict[str, Any]:
@@ -2778,11 +2838,13 @@ class EnergyPlusManager:
         ax.axis('off')
         
         plt.tight_layout()
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
         return {
-            "success": True,
+            # The sketch only knows plant loops; drawing none is not a success.
+            "success": bool(loops_info),
             "input_file": idf_path,
             "output_file": output_path,
             "loop_name": loop_name or "all_loops",
@@ -3203,11 +3265,24 @@ class EnergyPlusManager:
             ("Electricity:Facility", "Monthly"),
             ("NaturalGas:Facility", "Monthly"),
         }
-        existing = {
-            (str(getattr(meter, "Key_Name", "")), str(getattr(meter, "Reporting_Frequency", "")))
-            for meter in idf.idfobjects.get("Output:Meter", [])
-        }
-        for meter_name, frequency in sorted(required - existing):
+
+        def identity(meter: Any) -> tuple[str, str]:
+            # EnergyPlus compares meter names and frequencies case-insensitively.
+            return (
+                str(getattr(meter, "Key_Name", "")).strip().lower(),
+                str(getattr(meter, "Reporting_Frequency", "")).strip().lower(),
+            )
+
+        existing = {identity(meter) for meter in idf.idfobjects.get("Output:Meter", [])}
+        for meter_name, frequency in sorted(required):
+            wanted = (meter_name.lower(), frequency.lower())
+            # Output:Meter also writes the .mtr file, so a MeterFileOnly
+            # request for the same meter would only make EnergyPlus warn.
+            for file_only in list(idf.idfobjects.get("Output:Meter:MeterFileOnly", [])):
+                if identity(file_only) == wanted:
+                    idf.removeidfobject(file_only)
+            if wanted in existing:
+                continue
             idf.newidfobject(
                 "Output:Meter",
                 Key_Name=meter_name,
@@ -3234,7 +3309,27 @@ class EnergyPlusManager:
         return ".".join(str(int(number)) for number in numbers)
 
     def _runtime_energyplus_version(self) -> str:
+        """Installed EnergyPlus version, cached per executable file.
+
+        Capability checks ask for it once per manager; each ask started an
+        ``energyplus --version`` process. The cache key includes the file's
+        modification time, so replacing the executable is noticed.
+        """
         executable = self.config.energyplus.executable_path
+        try:
+            stat = os.stat(executable)
+            key = (executable, stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            key = None
+        cached = getattr(self, "_runtime_version_cache", None)
+        if key is not None and cached is not None and cached[0] == key:
+            return cached[1]
+        version = self._query_runtime_energyplus_version(executable)
+        if key is not None:
+            self._runtime_version_cache = (key, version)
+        return version
+
+    def _query_runtime_energyplus_version(self, executable: str) -> str:
         completed = subprocess.run(
             [executable, "--version"],
             check=True,
@@ -3597,15 +3692,9 @@ class EnergyPlusManager:
                 "lights_count": lights_count,
                 "lpd_reachable": capabilities.get("LPD", {}).get("supported"),
             },
-            "monthly_meters": ["Electricity:Facility", "NaturalGas:Facility"],
+            "monthly_meters": list(MONTHLY_FACILITY_METERS),
             "parameters": capabilities,
-            "simulation_evidence": {
-                "tool": "simulation_manager",
-                "action": "run",
-                "required_args": ["idf_path", "runs_dir"],
-                "optional_args": ["run_id", "weather_file"],
-                "paths": "<runs_dir>/<run_id>/run/eplusout.sql and <runs_dir>/<run_id>/run_record.json",
-            },
+            "simulation_evidence": simulation_evidence_contract(),
         }
 
     def calibration_capabilities(self, idf_path: Optional[str] = None) -> Dict[str, Any]:

@@ -9,6 +9,40 @@ version `0.1.0`.
 
 ## [Unreleased]
 
+### Added
+- Google sign-in (OAuth) for the streamable-HTTP transport, for clients such
+  as ChatGPT apps that cannot send a fixed bearer token. Set `MCP_OAUTH` and
+  `MCP_PUBLIC_BASE_URL`; only listed emails get in, each mapped to a workspace
+  label. Registered clients, codes and tokens are signed and self-contained,
+  so no database is needed. `deploy.sh` takes `OAUTH_SECRET` and
+  `PUBLIC_BASE_URL`.
+- `parameter_capabilities(idf_path, detail="summary")` tool: the
+  `parameter_capabilities` reports of every enabled parameter-owning domain
+  manager (internal loads, envelope, schedules, HVAC, service water) in one
+  response, with the model format, IDF path, EnergyPlus version, monthly
+  meters, and simulation-evidence contract stated once and each manager's
+  report under `domain_capabilities`. A consumer such as the calibration
+  service's meter and measure-reach gates takes it unchanged. Agents
+  previously called five managers and assembled the result by hand; in an
+  LLM-driven calibration pilot the hand-built object dropped the heating and
+  cooling setpoint, outdoor-air, and economizer reports, closing those
+  parameters as unreachable. `detail="summary"` omits per-object target and
+  relationship listings (on a 15-zone office model, a 31K-character response
+  instead of 398K characters across the five manager calls);
+  `detail="full"` keeps them. The tool is registered whenever at least one of
+  those domain managers is enabled.
+- `hvac_manager` `visualize` now writes HTML by default (`image_format`
+  defaults to `html`; pass `png`, `svg`, `pdf` or `jpg` for a Graphviz image
+  of one loop): a self-contained
+  page (inline SVG; no Graphviz or network access) that draws each loop's
+  supply side (left to right) and demand side (right to left) in dashed
+  frames, with splitters, parallel branches, and mixers, and closes the loop
+  outside the frames with arrows labelled by their nodes. Hovering a component
+  shows its inlet and outlet nodes, and a table lists every component and its
+  nodes. Clicking a frame focuses that side and filters the table (a short
+  inline script; without scripts the frames still work as links). Without
+  `loop_name` it draws every loop on one page.
+
 ### Fixed
 - **Tools no longer block the server's event loop.** Most tools are `async`
   but did synchronous eppy and file work, so one large IDF load or capability
@@ -23,6 +57,51 @@ version `0.1.0`.
   `update_settings`/`update_run_period` edits and run-record lookups now run
   in a thread as well. The caller's identity, and so the per-user workspace,
   is visible inside the worker thread.
+- Schedule capability checks and schedule edits were quadratic in a
+  schedule's field count: `_field_names` removed duplicate names with a
+  list-membership test, and reading every field through Eppy attributes
+  scans the field list once per name. Both are now linear, with field values
+  read by position under Eppy's own lookup rules. Results are byte-identical
+  (capability reports, edit reports, and edited IDFs on three models). The
+  aggregate `parameter_capabilities` call on the ASHRAE 90.1 medium office
+  example went from 205 s to 8 s, the small office from 103 s to 4 s, and a
+  15-zone SF office from 42 s to 5 s.
+- The installed EnergyPlus version is cached per executable (keyed by path,
+  size, and modification time) instead of starting `energyplus --version`
+  for every manager.
+- `model_upgrade` `action="run"` failed on Cloud Run with `[Errno 1]
+  Operation not permitted`. It copied the transition programs into the output
+  directory with `shutil.copy2` and ran them there; over HTTP that directory
+  is the caller's workspace, which on Cloud Run is a Cloud Storage mount that
+  refuses `chmod`/`utime` and cannot execute programs. Transitions now run in
+  a local temporary directory that is removed afterwards, and only the
+  stages, logs, and manifest are written to the output directory, as plain
+  data copies. The output directory no longer contains `transition-runtime/`
+  or `work/`. `file_utils` copy also no longer fails when the destination
+  refuses file metadata.
+- Duplicate meter checks compared names and frequencies case-sensitively and
+  treated `Output:Meter` and `Output:Meter:MeterFileOnly` for the same meter
+  as unrelated, so adding `Electricity:Facility, Monthly` to a model that
+  already had it as `MeterFileOnly, monthly` (as the 26.1 `5ZoneAirCooled`
+  example does) made EnergyPlus warn and report the meter twice. Checks now
+  ignore case; a `MeterFileOnly` request already covered by the full meter is
+  skipped, and a full-meter request replaces its `MeterFileOnly` variant
+  (reported as `replaced_meter_file_only`). A model that already had both is
+  tidied for the requested meters (`removed_redundant_meters`). The monthly
+  meters that calibration runs add follow the same rules.
+- `hvac_manager` `visualize` never drew the detailed loop diagram on Cloud
+  Run: the production image lacked the Graphviz `dot` program, so every call
+  fell back to a sketch of plant-loop boxes while reporting success, and for
+  an air loop drew nothing. `Dockerfile.prod` now installs `graphviz`. If
+  Graphviz still cannot run, the diagram is written as HTML and the result
+  gives `fallback_reason`; an unknown `loop_name` or a model without loops is
+  an error listing `available_loops`; `image_format` (svg, pdf, jpg) now
+  reaches Graphviz instead of always producing PNG; and a failed render no
+  longer leaves the DOT source file in `reports/`. A loop whose topology
+  cannot be read is skipped (`skipped_loops`) instead of failing the whole
+  call, and only when no loop can be read does the plant-loop sketch run, with
+  a `fallback_reason` that names the failing step. The HTML writer creates a
+  missing output folder.
 
 ## [0.2.0] - 2026-11-23
 

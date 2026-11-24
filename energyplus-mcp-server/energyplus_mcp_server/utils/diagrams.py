@@ -106,7 +106,13 @@ class HVACDiagramGenerator:
         # Remove extension from output_path since dot.render() will add it automatically
         filename_without_ext = os.path.splitext(output_path)[0]
         
-        filepath = dot.render(filename=filename_without_ext, format=fmt, cleanup=True)
+        try:
+            filepath = dot.render(filename=filename_without_ext, format=fmt, cleanup=True)
+        except Exception:
+            # render() writes the DOT source before running Graphviz; don't leave it behind.
+            if os.path.isfile(filename_without_ext):
+                os.remove(filename_without_ext)
+            raise
 
         return {
             "success": True,
