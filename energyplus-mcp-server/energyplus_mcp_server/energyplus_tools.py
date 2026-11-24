@@ -65,6 +65,22 @@ from .utils.error_parser import ErrorParser
 logger = logging.getLogger(__name__)
 
 
+# Monthly facility meters that simulation_manager(action="run", runs_dir=...)
+# stages in canonical SQL, and where that evidence lands. Capability reports
+# state both; domain/capabilities.py states them for the aggregate tool.
+MONTHLY_FACILITY_METERS = ("Electricity:Facility", "NaturalGas:Facility")
+
+
+def simulation_evidence_contract() -> Dict[str, Any]:
+    return {
+        "tool": "simulation_manager",
+        "action": "run",
+        "required_args": ["idf_path", "runs_dir"],
+        "optional_args": ["run_id", "weather_file"],
+        "paths": "<runs_dir>/<run_id>/run/eplusout.sql and <runs_dir>/<run_id>/run_record.json",
+    }
+
+
 class EnergyPlusManager:
     """Manager class for EnergyPlus operations using eppy with configuration management"""
     
@@ -3597,15 +3613,9 @@ class EnergyPlusManager:
                 "lights_count": lights_count,
                 "lpd_reachable": capabilities.get("LPD", {}).get("supported"),
             },
-            "monthly_meters": ["Electricity:Facility", "NaturalGas:Facility"],
+            "monthly_meters": list(MONTHLY_FACILITY_METERS),
             "parameters": capabilities,
-            "simulation_evidence": {
-                "tool": "simulation_manager",
-                "action": "run",
-                "required_args": ["idf_path", "runs_dir"],
-                "optional_args": ["run_id", "weather_file"],
-                "paths": "<runs_dir>/<run_id>/run/eplusout.sql and <runs_dir>/<run_id>/run_record.json",
-            },
+            "simulation_evidence": simulation_evidence_contract(),
         }
 
     def calibration_capabilities(self, idf_path: Optional[str] = None) -> Dict[str, Any]:

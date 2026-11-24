@@ -530,6 +530,16 @@ operations. `internal_load_manager` owns LPD, EPD, and occupancy density;
 uses the same actions: `parameter_capabilities`, `inspect_parameter`,
 `adjust_percentage`, and `set_parameter`.
 
+`parameter_capabilities(idf_path)` runs `parameter_capabilities` on every
+enabled parameter-owning manager (internal loads, envelope, schedules, HVAC,
+service water) in one call. It states the model format, IDF path, EnergyPlus
+version, monthly meters, and simulation evidence contract once, and returns
+each manager's response under `domain_capabilities`, so a consumer gate (for
+example a calibration service) can take the whole result unchanged. The
+default `detail="summary"` omits per-object target and relationship lists
+(coverage, skipped and ambiguous objects, and bounds are kept); use
+`detail="full"` for everything.
+
 The new semantic families keep descriptive provider operations:
 `schedule_manager` scales bounded lighting, electric-equipment, and HVAC
 availability schedules; `hvac_manager` applies heating/cooling setpoint deltas,

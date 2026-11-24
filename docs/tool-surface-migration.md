@@ -9,7 +9,7 @@ modeling-domain managers and no workflow-specific manager.
 
 | Historical call | Generic replacement |
 |---|---|
-| `calibration_manager(action="capabilities")` | Call `parameter_capabilities` on `internal_load_manager`, `envelope_manager`, and `hvac_manager`; the workflow owner aggregates the reports. |
+| `calibration_manager(action="capabilities")` | Call the `parameter_capabilities` tool, which aggregates every enabled domain manager's report in one response. |
 | `calibration_manager(action="inspect", parameter=...)` | Call the owning manager with `action="inspect_parameter"`. |
 | `calibration_manager(action="perturb", parameter=...)` | Call the owning manager with `action="adjust_percentage"`. |
 | `calibration_manager(action="set", parameter=...)` | Call the owning manager with `action="set_parameter"`. |

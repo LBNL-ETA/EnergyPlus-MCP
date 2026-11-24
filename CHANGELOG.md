@@ -9,6 +9,23 @@ version `0.1.0`.
 
 ## [Unreleased]
 
+### Added
+- `parameter_capabilities(idf_path, detail="summary")` tool: the
+  `parameter_capabilities` reports of every enabled parameter-owning domain
+  manager (internal loads, envelope, schedules, HVAC, service water) in one
+  response, with the model format, IDF path, EnergyPlus version, monthly
+  meters, and simulation-evidence contract stated once and each manager's
+  report under `domain_capabilities`. A consumer such as the calibration
+  service's meter and measure-reach gates takes it unchanged. Agents
+  previously called five managers and assembled the result by hand; in an
+  LLM-driven calibration pilot the hand-built object dropped the heating and
+  cooling setpoint, outdoor-air, and economizer reports, closing those
+  parameters as unreachable. `detail="summary"` omits per-object target and
+  relationship listings (on a 15-zone office model, a 31K-character response
+  instead of 398K characters across the five manager calls);
+  `detail="full"` keeps them. The tool is registered whenever at least one of
+  those domain managers is enabled.
+
 ## [0.2.0] - 2026-11-23
 
 First tagged release. It combines the `main` branch with the domain-manager
