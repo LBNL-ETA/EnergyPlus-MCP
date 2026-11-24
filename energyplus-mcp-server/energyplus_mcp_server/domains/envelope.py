@@ -3,6 +3,7 @@ import json
 import logging
 
 from ..utils.model_cache import with_shared_models
+from ..utils import reply_summary
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         assignments: Optional[Dict[str, float]] = None,
         expected_model_sha256: Optional[str] = None,
         mode: Literal["apply", "dry_run"] = "apply",
+        detail: Literal["summary", "full"] = "summary",
     ) -> str:
         """
         Envelope domain manager for building envelope components.
@@ -92,6 +94,10 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             action: The operation to perform
             idf_path: Path to the IDF file (required for all actions except capabilities)
             focus: Level of detail for inspect action (all/surfaces/constructions/materials/relationships)
+            detail: inspect with focus="all" returns the summary, constructions,
+                materials and relationships, with surfaces as counts ("summary",
+                the default); "full" adds every surface. focus="surfaces" always
+                lists every surface.
             op: Operation type for modify action (material.edit/construction.edit)
             target: Material or construction name for modify action
             properties: Dictionary of material properties for material.edit
@@ -267,7 +273,10 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             if action == "inspect":
                 if focus == "all":
                     # Comprehensive inspection
-                    return ep_manager.inspect_envelope_comprehensive(idf_path)
+                    text = ep_manager.inspect_envelope_comprehensive(idf_path)
+                    if detail == "full":
+                        return text
+                    return reply_summary.summarize_text(text, reply_summary.envelope_inspection)
                 elif focus == "surfaces":
                     return ep_manager.get_surfaces(idf_path)
                 elif focus == "constructions":

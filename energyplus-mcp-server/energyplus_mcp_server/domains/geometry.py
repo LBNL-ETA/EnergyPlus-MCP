@@ -7,6 +7,8 @@ Provides actions for extracting, analyzing, and visualizing building geometry.
 from typing import Any, Optional, Literal
 import logging
 
+from ..utils import reply_summary
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,6 +22,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         idf_path: Optional[str] = None,
         pretty: bool = True,
         output_path: Optional[str] = None,  # Deprecated, kept for backwards compatibility
+        detail: Literal["summary", "full"] = "summary",
     ) -> str:
         """
         Geometry domain manager for building geometry operations.
@@ -33,6 +36,9 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             action: The operation to perform
             idf_path: Path to the IDF file (required for extract_and_summary/generate_html_str)
             pretty: Whether to format JSON with indentation (default: True)
+            detail: extract_and_summary returns the summary and zones by default
+                ("summary"); "full" adds every surface, subsurface and shading
+                surface with its vertices
 
         Returns:
             For generate_html_str: HTML string for interactive 3D viewer
@@ -62,7 +68,10 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 return '{"error":"Missing required parameter: idf_path"}'
             
             if action == "extract_and_summary":
-                return ep_manager.extract_geometry_with_summary(idf_path, pretty=pretty)
+                text = ep_manager.extract_geometry_with_summary(idf_path, pretty=pretty)
+                if detail == "full":
+                    return text
+                return reply_summary.summarize_text(text, reply_summary.geometry_summary, indent=2 if pretty else None)
 
             if action == "generate_html_str":
                 return ep_manager.generate_geometry_html(idf_path)

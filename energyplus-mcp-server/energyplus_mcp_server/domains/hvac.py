@@ -14,6 +14,7 @@ from ..utils.hvac_controls import (
 )
 from ..utils.model_cache import read_only_idf, with_shared_models
 from ..utils.schedule_graph import GraphScheduleControlAdapter
+from ..utils import reply_summary
 
 logger = logging.getLogger(__name__)
 
@@ -127,11 +128,16 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         clone_on_write: bool = True,
         deadband_c: float = 1.0,
         setpoint_bounds_c: Optional[List[float]] = None,
+        detail: Literal["summary", "full"] = "summary",
     ) -> str:
         """
         HVAC domain manager (unified).
 
         - discover: list loops and components
+        - inspect_controls: thermostat, availability, outdoor-air and economizer
+          coverage. By default (detail="summary") targets are counts by role and
+          type, and skipped/ambiguous problems are kept; detail="full" lists every
+          target and shared relationship.
         - topology: detailed loop topology for a given loop
         - visualize: draw loop topology and return the file path. The default
           image_format html is a self-contained page (clickable supply/demand
@@ -169,6 +175,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     "input_sha256": sha256(Path(resolved).read_bytes()).hexdigest(),
                     "mode": "inspect",
                 })
+                if action == "inspect_controls" and detail != "full":
+                    payload = reply_summary.hvac_controls(payload)
                 return json.dumps(payload, indent=2)
             if action in CONTROL_OPERATIONS:
                 if value is None:

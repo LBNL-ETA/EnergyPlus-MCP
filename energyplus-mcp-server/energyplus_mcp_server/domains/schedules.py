@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
 
 from ..utils.schedule_graph import ScheduleEditor
 from ..utils.model_cache import with_shared_models
+from ..utils import reply_summary
 
 
 SCHEDULE_SCOPES = {
@@ -179,8 +180,16 @@ def register(
         expected_model_sha256: Optional[str] = None,
         mode: Literal["dry_run", "apply"] = "dry_run",
         percentage_change: Optional[float] = None,
+        detail: Literal["summary", "full"] = "summary",
     ) -> str:
-        """Inspect IDF schedules or plan/apply a selected-consumer schedule edit."""
+        """Inspect IDF schedules or plan/apply a selected-consumer schedule edit.
+
+        inspect returns a summary by default (detail="summary"): schedule counts
+        by type, invalid schedules, coverage problems, and the consumers that
+        edits refer to while there are at most 100 (otherwise counts by role).
+        Narrow scope (e.g. scope="lighting") for a smaller complete list, or pass
+        detail="full" for every schedule's segments and references.
+        """
         if action == "capabilities":
             return json.dumps({
                 "tool": "schedule_manager",
@@ -217,7 +226,10 @@ def register(
             return json.dumps({"success": False, "error": "Missing required parameter: idf_path"})
         try:
             if action == "inspect":
-                return json.dumps(service.inspect(idf_path, scope), indent=2)
+                inspection = service.inspect(idf_path, scope)
+                if detail != "full":
+                    inspection = reply_summary.schedule_inspection(inspection)
+                return json.dumps(inspection, indent=2)
             if action == "adjust_percentage":
                 if scope not in SCHEDULE_SCOPES.values():
                     return json.dumps({
