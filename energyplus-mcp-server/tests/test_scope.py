@@ -179,7 +179,7 @@ def test_bare_sample_name_finds_category_folder(http_config, as_alice, tmp_path)
     assert resolve_path(http_config, "Nested.idf", file_types=[".idf"]) == _real(nested)
 
 
-def test_tool_guard_confines_output_arguments(http_config, as_alice, tmp_path):
+async def test_tool_guard_confines_output_arguments(http_config, as_alice, tmp_path):
     from energyplus_mcp_server.utils.output_guard import guard_tool
 
     def tool(idf_path, output_path=None, output_directory=None):
@@ -187,11 +187,11 @@ def test_tool_guard_confines_output_arguments(http_config, as_alice, tmp_path):
 
     guarded = guard_tool(tool, http_config)
     # Relative outputs are rewritten into the caller's workspace before the tool runs.
-    assert guarded("m.idf", "edited.idf", output_directory="runs/a") == (
+    assert await guarded("m.idf", "edited.idf", output_directory="runs/a") == (
         _real(tmp_path / "users/alice/edited.idf"), _real(tmp_path / "users/alice/runs/a"))
     for bad in (str(tmp_path / "users/bob/x.idf"), "../bob/x.idf", str(tmp_path / "server_secret.idf")):
         with pytest.raises(ScopeError):
-            guarded("m.idf", output_path=bad)
+            await guarded("m.idf", output_path=bad)
 
 
 def test_copy_file_cannot_exfiltrate_other_users_file(http_config, as_alice, tmp_path):

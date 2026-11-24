@@ -5,12 +5,14 @@ from datetime import datetime
 import os
 
 from energyplus_mcp_server.scope import ScopeError, require_admin
+from energyplus_mcp_server.utils.tool_threads import eppy_free
 
 STARTUP_TIME: datetime  # imported from boot module if needed
 
 
 def register(mcp: Any, ep_manager: Any, config: Any) -> None:
     @mcp.tool()
+    @eppy_free
     async def server_manager(
         action: Literal["status", "logs", "clear_logs"],
         include_config: bool = False,

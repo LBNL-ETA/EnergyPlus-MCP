@@ -9,6 +9,21 @@ version `0.1.0`.
 
 ## [Unreleased]
 
+### Fixed
+- **Tools no longer block the server's event loop.** Most tools are `async`
+  but did synchronous eppy and file work, so one large IDF load or capability
+  scan stalled every other request, including other users' calls and
+  `/health`. The tool wrapper in `utils/output_guard.py` now runs every tool
+  in a worker thread (`utils/tool_threads.py`). Tools that eppy may touch
+  still run one at a time under a process-wide reentrant lock, which
+  simulation staging shares; tools marked `eppy_free` (file transfer and
+  listing, reference docs, skills, `server_manager`) skip the lock. Tools that
+  await real asynchronous work are marked `native_async` and stay on the loop
+  (`simulation_manager`, `model_upgrade`); `simulation_manager`'s
+  `update_settings`/`update_run_period` edits and run-record lookups now run
+  in a thread as well. The caller's identity, and so the per-user workspace,
+  is visible inside the worker thread.
+
 ## [0.2.0] - 2026-11-23
 
 First tagged release. It combines the `main` branch with the domain-manager

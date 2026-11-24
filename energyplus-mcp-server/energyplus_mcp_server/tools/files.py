@@ -2,10 +2,12 @@ from typing import Any, Dict, List, Optional
 import json
 from pathlib import Path
 from datetime import datetime
+from energyplus_mcp_server.utils.tool_threads import eppy_free
 
 
 def register(mcp: Any, ep_manager: Any, config: Any) -> None:
     @mcp.tool()
+    @eppy_free
     async def file_utils(
         action: str,
         include_example_files: bool = False,

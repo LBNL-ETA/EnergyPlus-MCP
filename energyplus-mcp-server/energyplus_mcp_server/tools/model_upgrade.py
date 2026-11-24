@@ -5,12 +5,14 @@ import json
 from typing import Any, Literal, Optional
 
 from energyplus_mcp_server.utils.model_upgrade import ModelUpgrade
+from energyplus_mcp_server.utils.tool_threads import native_async
 
 
 def register(mcp: Any, ep_manager: Any, config: Any) -> None:
     upgrade = ModelUpgrade(config)
 
     @mcp.tool()
+    @native_async
     async def model_upgrade(
         action: Literal["plan", "run"],
         idf_path: str,

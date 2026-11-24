@@ -17,7 +17,6 @@ import re
 import shutil
 import subprocess
 import functools
-import threading
 import time
 import uuid
 from hashlib import sha256
@@ -53,6 +52,7 @@ from .utils.path_utils import (
     work_dir,
 )
 from .utils import energyplus_process
+from .utils.tool_threads import EPPY_LOCK
 from .utils.simulation_queue import SimulationJob, SimulationQueue, mark_interrupted_runs, server_identity
 from .utils.schedules import ScheduleValueParser
 from .utils.output_variables import OutputVariableManager
@@ -3624,8 +3624,9 @@ class EnergyPlusManager:
 
     # ------------------------ Simulation Execution ------------------------
     # eppy parses IDFs against class-level IDD state; staging runs from several
-    # worker threads at once must not interleave those parses.
-    _EPPY_LOCK = threading.Lock()
+    # worker threads at once must not interleave those parses, nor overlap
+    # tool calls, which hold the same lock in their worker thread.
+    _EPPY_LOCK = EPPY_LOCK
 
     def submit_simulation(self, idf_path: str, weather_file: str = None,
                           output_directory: str = None, annual: bool = True,
