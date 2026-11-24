@@ -31,6 +31,8 @@ SECRET="${SECRET:-mcp-tokens}"
 BUCKET="${BUCKET:-}"                  # Cloud Storage bucket for per-user files
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-}" # runtime identity; avoid the default compute account
 ADMIN_LABELS="${ADMIN_LABELS:-}"       # token labels allowed to read logs/config
+OAUTH_SECRET="${OAUTH_SECRET:-}"       # optional: secret holding MCP_OAUTH (Google sign-in)
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-}" # the service's https URL; required with OAUTH_SECRET
 TAG="${TAG:-$(git rev-parse --short HEAD)}"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/server:${TAG}"
 
@@ -58,6 +60,14 @@ ENV_VARS="MCP_TRANSPORT=streamable-http;MCP_USER_DATA_ROOT=/data/users"
 if [[ -n "$ADMIN_LABELS" ]]; then
     ENV_VARS="${ENV_VARS};MCP_ADMIN_LABELS=${ADMIN_LABELS}"
 fi
+SECRETS="MCP_TOKENS=${SECRET}:latest"
+if [[ -n "$OAUTH_SECRET" ]]; then
+    : "${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required with OAUTH_SECRET}"
+    SECRETS="${SECRETS},MCP_OAUTH=${OAUTH_SECRET}:latest"
+fi
+if [[ -n "$PUBLIC_BASE_URL" ]]; then
+    ENV_VARS="${ENV_VARS};MCP_PUBLIC_BASE_URL=${PUBLIC_BASE_URL}"
+fi
 
 DEPLOY_ARGS=(
     --image="${IMAGE}"
@@ -70,14 +80,17 @@ DEPLOY_ARGS=(
     --memory=4Gi
     --cpu=2
     --timeout=3600
-    --concurrency=8
+    # Connections per instance. Simulations are limited separately by the
+    # server's own queue, so this only needs to cover open MCP requests.
+    --concurrency=80
     --cpu-boost
     --no-cpu-throttling
     --execution-environment=gen2
-    # Bearer tokens (MCP_TOKENS) authenticate callers; /health and the
-    # one-time /files links must be reachable without Google credentials.
+    # Bearer tokens (MCP_TOKENS) or OAuth sign-in (MCP_OAUTH) authenticate
+    # callers; /health, the sign-in pages and the one-time /files links must
+    # be reachable without Google Cloud credentials.
     --allow-unauthenticated
-    --set-secrets="MCP_TOKENS=${SECRET}:latest"
+    --set-secrets="${SECRETS}"
     --set-env-vars="^;^${ENV_VARS}"
 )
 if [[ -n "$SERVICE_ACCOUNT" ]]; then

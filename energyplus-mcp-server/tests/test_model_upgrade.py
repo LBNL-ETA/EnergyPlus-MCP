@@ -1,9 +1,12 @@
 import json
+import os
 from hashlib import sha256
 from pathlib import Path
 import re
 from subprocess import TimeoutExpired
 from types import SimpleNamespace
+
+import pytest
 
 from energyplus_mcp_server.utils.model_upgrade import EnergyPlusVersion, ModelUpgrade
 
@@ -163,3 +166,100 @@ def test_timeout_records_failed_step_and_byte_output(tmp_path, monkeypatch):
     assert record["warnings"]["count"] == 1
     assert "slow transition" in (tmp_path / "timed-out" / record["warnings"]["stdout_log"]).read_text()
     assert source.read_bytes() == _source_text("9.2")
+
+
+def test_run_never_copies_metadata_or_executes_in_the_output_directory(tmp_path, monkeypatch):
+    """Cloud Run workspaces are Cloud Storage mounts that refuse chmod/utime and
+    cannot execute programs, so transitions must run from local scratch."""
+    upgrade, transition_dir = _upgrade(tmp_path, monkeypatch)
+    source = _source(tmp_path)
+    _step(transition_dir, "9.2", "9.3")
+    _step(transition_dir, "9.3", "9.4")
+    output = (tmp_path / "upgrade").resolve()
+    executed_from: list[Path] = []
+
+    def _transition(command, **kwargs):
+        executed_from.append(Path(command[0]).resolve())
+        return _successful_transition(command, **kwargs)
+
+    import shutil as real_shutil
+
+    real_copy2 = real_shutil.copy2
+
+    def _copy2(src, dst, *args, **kwargs):
+        if Path(dst).resolve().is_relative_to(output):
+            raise PermissionError(1, "Operation not permitted")
+        return real_copy2(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr("energyplus_mcp_server.utils.model_upgrade.subprocess.run", _transition)
+    monkeypatch.setattr("energyplus_mcp_server.utils.model_upgrade.shutil.copy2", _copy2)
+
+    result = upgrade.run(str(source), "9.4", str(output))
+
+    assert result["status"] == "completed", result.get("error")
+    assert len(executed_from) == 2
+    assert all(not path.is_relative_to(output) for path in executed_from)
+    assert all(not path.exists() for path in executed_from), "scratch directory was not cleaned up"
+    assert {child.name for child in output.iterdir()} == {
+        "migration-manifest.json",
+        "stages",
+        "transition-artifacts",
+    }
+    assert EnergyPlusVersion.parse("9.4") == upgrade._idf_version(Path(result["final_path"]))
+    assert any(name.endswith("__runtime-Transition.audit") for name in os.listdir(output / "transition-artifacts"))
+
+
+def test_no_scratch_directory_is_left_when_setup_fails(tmp_path, monkeypatch):
+    """A failure before the transition loop (here, the first manifest write) must not
+    leave a scratch directory behind."""
+    upgrade, transition_dir = _upgrade(tmp_path, monkeypatch)
+    source = _source(tmp_path)
+    _step(transition_dir, "9.2", "9.3")
+    import tempfile as real_tempfile
+
+    created: list[Path] = []
+    real_temporary_directory = real_tempfile.TemporaryDirectory
+
+    def _tracking(*args, **kwargs):
+        scratch = real_temporary_directory(*args, **kwargs)
+        created.append(Path(scratch.name))
+        return scratch
+
+    def _fail_manifest(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("energyplus_mcp_server.utils.model_upgrade.tempfile.TemporaryDirectory", _tracking)
+    monkeypatch.setattr(ModelUpgrade, "_write_manifest", staticmethod(_fail_manifest))
+
+    with pytest.raises(OSError, match="disk full"):
+        upgrade.run(str(source), "9.3", str(tmp_path / "upgrade"))
+
+    assert all(not path.exists() for path in created)
+    assert created == [], "the scratch directory should only be created inside the guarded block"
+
+
+def test_scratch_directory_is_removed_when_staging_fails(tmp_path, monkeypatch):
+    upgrade, transition_dir = _upgrade(tmp_path, monkeypatch)
+    source = _source(tmp_path)
+    _step(transition_dir, "9.2", "9.3")
+    import tempfile as real_tempfile
+
+    created: list[Path] = []
+    real_temporary_directory = real_tempfile.TemporaryDirectory
+
+    def _tracking(*args, **kwargs):
+        scratch = real_temporary_directory(*args, **kwargs)
+        created.append(Path(scratch.name))
+        return scratch
+
+    def _fail_copy(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("energyplus_mcp_server.utils.model_upgrade.tempfile.TemporaryDirectory", _tracking)
+    monkeypatch.setattr("energyplus_mcp_server.utils.model_upgrade.shutil.copyfile", _fail_copy)
+
+    result = upgrade.run(str(source), "9.3", str(tmp_path / "upgrade"))
+
+    assert result["status"] == "failed"
+    assert "disk full" in result["error"]
+    assert len(created) == 1 and not created[0].exists()

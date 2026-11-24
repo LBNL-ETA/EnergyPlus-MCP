@@ -973,44 +973,102 @@ class OutputMeterManager:
                 "note": "Duplicate checking skipped (failed to get configured meters)"
             }
         
-        # Create set of existing specifications
-        existing_specs = set()
-        
+        # EnergyPlus matches meter names and frequencies case-insensitively,
+        # and a full meter (Output:Meter, Output:Meter:Cumulative) also writes
+        # the .mtr file that its MeterFileOnly variant would. Requesting both
+        # for the same meter makes EnergyPlus warn and report it twice.
+        existing_by_key: Dict[tuple, set] = {}
         for meter in configured_meters:
-            spec = (
-                meter.get("key_name", ""),
-                meter.get("reporting_frequency", ""),
-                meter.get("meter_type", "")
+            meter_type = meter.get("meter_type", "")
+            key = self._meter_identity(
+                meter.get("key_name", ""), meter.get("reporting_frequency", ""), meter_type
             )
-            existing_specs.add(spec)
-        
+            existing_by_key.setdefault(key, set()).add(meter_type)
+
         new_meters = []
         duplicate_meters = []
-        
+        replaced_meters = []
+
         for meter_spec in meters:
-            spec = (
-                meter_spec.get("meter_name", ""),
-                meter_spec.get("frequency", ""),
-                meter_spec.get("meter_type", "")
+            meter_type = meter_spec.get("meter_type", "Output:Meter")
+            key = self._meter_identity(
+                meter_spec.get("meter_name", ""), meter_spec.get("frequency", ""), meter_type
             )
-            
-            if spec in existing_specs:
+            existing_types = existing_by_key.get(key, set())
+            full_type = self._full_meter_type(meter_type)
+            covered = meter_type in existing_types or full_type in existing_types
+
+            if covered:
                 duplicate_meters.append(meter_spec)
                 if allow_duplicates:
                     new_meters.append(meter_spec)
-            else:
-                new_meters.append(meter_spec)
-        
+                continue
+
+            narrower = sorted(t for t in existing_types if t != meter_type)
+            if narrower and not allow_duplicates:
+                # Only reachable for a full meter over its MeterFileOnly variant.
+                meter_spec = {**meter_spec, "replaces": narrower}
+                replaced_meters.append(meter_spec)
+            new_meters.append(meter_spec)
+            existing_by_key[key] = {meter_type}
+
         return {
             "new_meters": new_meters,
             "duplicate_meters": duplicate_meters,
             "duplicates_found": len(duplicate_meters),
+            "replaced_meters": replaced_meters,
             "will_add": len(new_meters)
         }
-    
-    def add_meters_to_idf(self, idf_path: str, meters: List[Dict], 
-                         output_path: str) -> Dict[str, Any]:
-        """Add output meters to IDF file and save"""
+
+    def _remove_redundant_file_only(self, idf: Any, specs: List[Dict]) -> List[Dict]:
+        """Drop MeterFileOnly objects for requested meters that also have the full meter."""
+        removed: List[Dict] = []
+        for full_type in ("Output:Meter", "Output:Meter:Cumulative"):
+            file_only_type = f"{full_type}:MeterFileOnly"
+            wanted = {
+                self._meter_identity(spec.get("meter_name", ""), spec.get("frequency", ""), full_type)
+                for spec in specs
+                if self._full_meter_type(spec.get("meter_type", "Output:Meter")) == full_type
+            }
+            full = {
+                self._meter_identity(getattr(obj, "Key_Name", ""), getattr(obj, "Reporting_Frequency", ""), full_type)
+                for obj in idf.idfobjects.get(full_type, [])
+            }
+            for obj in list(idf.idfobjects.get(file_only_type, [])):
+                identity = self._meter_identity(
+                    getattr(obj, "Key_Name", ""), getattr(obj, "Reporting_Frequency", ""), file_only_type
+                )
+                if identity in wanted and identity in full:
+                    idf.removeidfobject(obj)
+                    removed.append({
+                        "meter_type": file_only_type,
+                        "meter_name": getattr(obj, "Key_Name", ""),
+                        "frequency": getattr(obj, "Reporting_Frequency", ""),
+                    })
+        return removed
+
+    @staticmethod
+    def _full_meter_type(meter_type: str) -> str:
+        """Output:Meter[:Cumulative]:MeterFileOnly -> Output:Meter[:Cumulative]."""
+        return meter_type.removesuffix(":MeterFileOnly")
+
+    @classmethod
+    def _meter_identity(cls, name: str, frequency: str, meter_type: str) -> tuple:
+        """Case-insensitive meter identity; cumulative and plain meters differ."""
+        return (
+            str(name).strip().lower(),
+            str(frequency).strip().lower(),
+            cls._full_meter_type(meter_type),
+        )
+
+    def add_meters_to_idf(self, idf_path: str, meters: List[Dict],
+                         output_path: str, tidy: Optional[List[Dict]] = None) -> Dict[str, Any]:
+        """Add output meters to IDF file and save.
+
+        ``tidy`` lists requested meters (including skipped duplicates): for each,
+        a MeterFileOnly variant is removed when the model also has the full
+        meter, since the full meter already writes the .mtr file.
+        """
         try:
             # Load IDF
             idf = IDF(idf_path)
@@ -1020,7 +1078,21 @@ class OutputMeterManager:
             # Add each meter
             for meter_spec in meters:
                 meter_type = meter_spec.get("meter_type", "Output:Meter")
-                
+
+                # Drop the MeterFileOnly variant this full meter supersedes.
+                identity = self._meter_identity(
+                    meter_spec["meter_name"], meter_spec["frequency"], meter_type
+                )
+                for replaced_type in meter_spec.get("replaces", []):
+                    for existing in list(idf.idfobjects.get(replaced_type, [])):
+                        existing_identity = self._meter_identity(
+                            getattr(existing, "Key_Name", ""),
+                            getattr(existing, "Reporting_Frequency", ""),
+                            replaced_type,
+                        )
+                        if existing_identity == identity:
+                            idf.removeidfobject(existing)
+
                 # Create new meter object of the specified type
                 output_meter = idf.newidfobject(meter_type)
                 
@@ -1035,13 +1107,16 @@ class OutputMeterManager:
                 added_meters.append(meter_spec)
                 logger.debug(f"Added {meter_type}: {meter_spec}")
             
+            removed = self._remove_redundant_file_only(idf, tidy or [])
+
             # Save modified IDF
             idf.save(output_path)
-            
+
             return {
                 "success": True,
                 "added_count": len(added_meters),
                 "added_meters": added_meters,
+                "removed_redundant_meters": removed,
                 "output_file": output_path
             }
             
