@@ -45,6 +45,7 @@ from plotly.subplots import make_subplots
 from .config import get_config, Config
 from .utils.diagrams import HVACDiagramGenerator
 from .utils.diagram_html import write_loops_html
+from .utils.model_cache import read_only_idf
 from .utils.model_guard import check_model_for_caller
 from .utils.path_utils import (
     derived_model_path,
@@ -3648,7 +3649,7 @@ class EnergyPlusManager:
             try:
                 resolved_path = self._resolve_idf_path(idf_path)
                 version_info = self._assert_simulation_version_matches(resolved_path)
-                idf = IDF(resolved_path)
+                idf = read_only_idf(resolved_path)
                 lights_count = len(idf.idfobjects.get("Lights", []))
             except Exception as error:
                 return {

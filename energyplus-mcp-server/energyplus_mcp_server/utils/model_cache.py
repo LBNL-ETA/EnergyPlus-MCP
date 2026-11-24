@@ -1,0 +1,105 @@
+"""Parse each model once per capability call.
+
+A capability check runs several managers, and each used to parse the same IDF
+on its own (twelve parses of one model for ``parameter_capabilities``). Within
+a ``shared_models()`` scope, ``read_only_idf(path)`` returns one parsed model
+per file instead.
+
+Safety rules:
+
+- Only read-only callers use ``read_only_idf`` (capability checks,
+  inspections, dry-run plans). Anything that edits and saves a model keeps
+  parsing its own fresh copy.
+- The cache lives only for the outermost scope (one tool call) and is keyed by
+  the resolved path, file size, modification time and loader, so a file that
+  changes is parsed again and nothing outlives the call.
+- Outside a scope, ``read_only_idf`` simply parses, exactly as before.
+- With ``EPLUS_MCP_VERIFY_SHARED_MODELS=1`` (tests and the equivalence
+  harness), leaving the outermost scope re-parses every shared file and fails
+  if any shared model was changed in memory.
+
+The scope is a ContextVar, so concurrent tool calls in different threads never
+share models.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+from contextvars import ContextVar
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
+
+VERIFY_ENV = "EPLUS_MCP_VERIFY_SHARED_MODELS"
+
+_Key = Tuple[str, int, int, int]
+_scope: ContextVar[Optional[Dict[_Key, Tuple[Any, Callable[[str], Any], str]]]] = ContextVar(
+    "eplus_shared_models", default=None
+)
+
+
+def _default_loader(path: str) -> Any:
+    from eppy.modeleditor import IDF
+
+    return IDF(path)
+
+
+@contextlib.contextmanager
+def shared_models() -> Iterator[None]:
+    """Share read-only parsed models until the outermost scope ends (re-entrant)."""
+    if _scope.get() is not None:
+        yield
+        return
+    cache: Dict[_Key, Tuple[Any, Callable[[str], Any], str]] = {}
+    token = _scope.set(cache)
+    try:
+        yield
+        if os.environ.get(VERIFY_ENV) == "1":
+            _verify_unchanged(cache)
+    finally:
+        _scope.reset(token)
+
+
+def with_shared_models(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Run ``fn`` inside a ``shared_models()`` scope."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with shared_models():
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def read_only_idf(path: str, loader: Optional[Callable[[str], Any]] = None) -> Any:
+    """Parsed model for ``path``; shared within a ``shared_models()`` scope.
+
+    Callers must not modify the returned model.
+    """
+    load = loader or _default_loader
+    cache = _scope.get()
+    if cache is None:
+        return load(path)
+    resolved = str(Path(path).resolve())
+    stat = os.stat(resolved)
+    key = (resolved, stat.st_size, stat.st_mtime_ns, id(load))
+    entry = cache.get(key)
+    if entry is None:
+        entry = (load(resolved), load, resolved)
+        cache[key] = entry
+    return entry[0]
+
+
+def _text(idf: Any) -> Optional[str]:
+    idfstr = getattr(idf, "idfstr", None)
+    return idfstr() if callable(idfstr) else None
+
+
+def _verify_unchanged(cache: Dict[_Key, Tuple[Any, Callable[[str], Any], str]]) -> None:
+    for idf, load, path in cache.values():
+        shared = _text(idf)
+        if shared is None:
+            continue
+        if shared != _text(load(path)):
+            raise AssertionError(f"a shared read-only model was modified in memory: {path}")

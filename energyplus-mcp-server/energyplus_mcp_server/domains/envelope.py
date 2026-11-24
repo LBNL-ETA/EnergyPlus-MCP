@@ -2,6 +2,8 @@ from typing import Any, Dict, Optional, Literal, List
 import json
 import logging
 
+from ..utils.model_cache import with_shared_models
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,6 +28,7 @@ def _tag_parameter_response(payload: Dict[str, Any], action: str) -> Dict[str, A
     return result
 
 
+@with_shared_models
 def _parameter_capabilities(ep_manager: Any, idf_path: Optional[str]) -> Dict[str, Any]:
     payload = ep_manager.parameter_capabilities(idf_path, list(PARAMETERS))
     result = _tag_parameter_response(payload, "parameter_capabilities")

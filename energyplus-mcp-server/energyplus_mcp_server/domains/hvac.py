@@ -12,6 +12,7 @@ from ..utils.hvac_controls import (
     execute_control_operation,
     inspect_hvac_controls,
 )
+from ..utils.model_cache import read_only_idf, with_shared_models
 from ..utils.schedule_graph import GraphScheduleControlAdapter
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ def _tag_parameter_response(payload: Dict[str, Any], action: str) -> Dict[str, A
     return result
 
 
+@with_shared_models
 def _parameter_capabilities(ep_manager: Any, idf_path: Optional[str]) -> Dict[str, Any]:
     payload = ep_manager.parameter_capabilities(idf_path, list(PARAMETERS))
     result = _tag_parameter_response(payload, "parameter_capabilities")
@@ -57,7 +59,7 @@ def _parameter_capabilities(ep_manager: Any, idf_path: Optional[str]) -> Dict[st
         resolved = ep_manager._resolve_idf_path(idf_path)
         ep_manager._assert_simulation_version_matches(resolved)
         source_hash = sha256(Path(resolved).read_bytes()).hexdigest()
-        controls = control_capabilities(IDF(resolved), schedule_adapter=GraphScheduleControlAdapter())
+        controls = control_capabilities(read_only_idf(resolved), schedule_adapter=GraphScheduleControlAdapter())
         for parameter, operation in GENERIC_CONTROL_PARAMETERS.items():
             detail = dict(controls["operations"][operation])
             detail.update({
