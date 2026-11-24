@@ -104,6 +104,12 @@ def read_only_idf(path: str, loader: Optional[Callable[[str], Any]] = None) -> A
     return entry[0]
 
 
+def is_shared(model: Any) -> bool:
+    """True when ``model`` is a shared read-only model of the current scope."""
+    scope = _scope.get()
+    return scope is not None and id(model) in scope.shared_ids
+
+
 def derived(model: Any, name: str, factory: Callable[[], Any]) -> Any:
     """Data computed from ``model``, computed once per scope for a shared model.
 

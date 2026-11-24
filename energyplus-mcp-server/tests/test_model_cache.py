@@ -236,3 +236,29 @@ def test_aggregate_capabilities_build_the_schedule_graph_once(monkeypatch):
 
     assert result["success"] is True, (result.get("error"), result.get("errors"))
     assert len(builds) == 1
+
+
+def test_zone_geometry_is_computed_once_and_copied_per_caller(model, monkeypatch):
+    from energyplus_mcp_server.utils import parameter_load_setters as setters
+
+    computed = []
+
+    def fake_compute(idf):
+        computed.append(idf)
+        return {"zone 1": {"name": "Zone 1", "floor_area_m2": 10.0}}
+
+    monkeypatch.setattr(setters, "_compute_zone_geometry", fake_compute)
+    loader = CountingLoader()
+    private = FakeIDF(str(model))
+
+    with shared_models():
+        shared = read_only_idf(str(model), loader)
+        first = setters._zone_geometry(shared)
+        first["zone 1"]["floor_area_m2"] = 999.0  # a caller modifying its copy
+        second = setters._zone_geometry(shared)
+        setters._zone_geometry(private)
+        setters._zone_geometry(private)
+
+    assert second["zone 1"]["floor_area_m2"] == 10.0
+    assert computed.count(shared) == 1
+    assert computed.count(private) == 2

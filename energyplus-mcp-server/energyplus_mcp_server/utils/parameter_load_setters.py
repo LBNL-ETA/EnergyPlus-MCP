@@ -9,11 +9,12 @@ the requested canonical density in every affected zone.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import math
 from typing import Any
 
-from . import parameter_loads
+from . import model_cache, parameter_loads
 from .geometry_utils import extract_vertices
 
 
@@ -601,6 +602,17 @@ def _scaled_changes(
 
 
 def _zone_geometry(idf: Any) -> dict[str, dict[str, Any]]:
+    """Per-zone areas and volumes; computed once per capability call for a shared model.
+
+    Callers may modify the result, so a shared model's cached geometry is
+    handed out as a copy.
+    """
+    if not model_cache.is_shared(idf):
+        return _compute_zone_geometry(idf)
+    return copy.deepcopy(model_cache.derived(idf, "zone_geometry", lambda: _compute_zone_geometry(idf)))
+
+
+def _compute_zone_geometry(idf: Any) -> dict[str, dict[str, Any]]:
     zones: dict[str, dict[str, Any]] = {}
     for zone in parameter_loads._objects(idf, "Zone"):
         name = parameter_loads._object_name(zone)
