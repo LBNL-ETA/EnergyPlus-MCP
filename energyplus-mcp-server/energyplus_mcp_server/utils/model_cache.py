@@ -14,6 +14,9 @@ Safety rules:
   the resolved path, file size, modification time and loader, so a file that
   changes is parsed again and nothing outlives the call.
 - Outside a scope, ``read_only_idf`` simply parses, exactly as before.
+- ``derived(model, name, factory)`` memoizes data computed from a shared
+  model (such as its schedule graph) for the same scope, under the same
+  read-only rule; for any other model it simply computes.
 - With ``EPLUS_MCP_VERIFY_SHARED_MODELS=1`` (tests and the equivalence
   harness), leaving the outermost scope re-parses every shared file and fails
   if any shared model was changed in memory.
@@ -33,9 +36,18 @@ from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 VERIFY_ENV = "EPLUS_MCP_VERIFY_SHARED_MODELS"
 
 _Key = Tuple[str, int, int, int]
-_scope: ContextVar[Optional[Dict[_Key, Tuple[Any, Callable[[str], Any], str]]]] = ContextVar(
-    "eplus_shared_models", default=None
-)
+
+
+class _Scope:
+    """Parsed models and data derived from them, for one capability call."""
+
+    def __init__(self) -> None:
+        self.models: Dict[_Key, Tuple[Any, Callable[[str], Any], str]] = {}
+        self.shared_ids: set[int] = set()
+        self.derived: Dict[Tuple[int, str], Any] = {}
+
+
+_scope: ContextVar[Optional[_Scope]] = ContextVar("eplus_shared_models", default=None)
 
 
 def _default_loader(path: str) -> Any:
@@ -50,12 +62,12 @@ def shared_models() -> Iterator[None]:
     if _scope.get() is not None:
         yield
         return
-    cache: Dict[_Key, Tuple[Any, Callable[[str], Any], str]] = {}
-    token = _scope.set(cache)
+    scope = _Scope()
+    token = _scope.set(scope)
     try:
         yield
         if os.environ.get(VERIFY_ENV) == "1":
-            _verify_unchanged(cache)
+            _verify_unchanged(scope.models)
     finally:
         _scope.reset(token)
 
@@ -78,17 +90,34 @@ def read_only_idf(path: str, loader: Optional[Callable[[str], Any]] = None) -> A
     Callers must not modify the returned model.
     """
     load = loader or _default_loader
-    cache = _scope.get()
-    if cache is None:
+    scope = _scope.get()
+    if scope is None:
         return load(path)
     resolved = str(Path(path).resolve())
     stat = os.stat(resolved)
     key = (resolved, stat.st_size, stat.st_mtime_ns, id(load))
-    entry = cache.get(key)
+    entry = scope.models.get(key)
     if entry is None:
         entry = (load(resolved), load, resolved)
-        cache[key] = entry
+        scope.models[key] = entry
+        scope.shared_ids.add(id(entry[0]))
     return entry[0]
+
+
+def derived(model: Any, name: str, factory: Callable[[], Any]) -> Any:
+    """Data computed from ``model``, computed once per scope for a shared model.
+
+    For a model that is not a shared read-only model of the current scope (for
+    example the private copy an applied edit works on) ``factory`` simply runs
+    every time. Callers must not modify the returned data.
+    """
+    scope = _scope.get()
+    if scope is None or id(model) not in scope.shared_ids:
+        return factory()
+    key = (id(model), name)
+    if key not in scope.derived:
+        scope.derived[key] = factory()
+    return scope.derived[key]
 
 
 def _text(idf: Any) -> Optional[str]:

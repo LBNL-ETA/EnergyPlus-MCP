@@ -32,6 +32,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field as dataclass_field
 from hashlib import sha256
 import copy
+import functools
 import math
 from pathlib import Path
 import re
@@ -138,6 +139,7 @@ def _object_name(obj: Any) -> str:
     return _as_text(_get(obj, "Name", "")) or "<unnamed>"
 
 
+@functools.lru_cache(maxsize=4096)
 def _is_schedule_reference_field(field: str) -> bool:
     normalized = field.casefold().replace("_", "")
     if normalized in {"name", "scheduletypelimitsname"}:
@@ -674,6 +676,16 @@ def _transform_shift_or_extend(
     }
 
 
+def _graph_for(idf: Any) -> "ScheduleGraph":
+    """Schedule graph of ``idf``; built once per capability call for a shared read-only model.
+
+    Only callers that do not modify the graph or the model use this. An applied
+    edit works on its own parsed copy, which is never shared, so it always gets
+    a fresh graph.
+    """
+    return model_cache.derived(idf, "schedule_graph", lambda: ScheduleGraph(idf))
+
+
 class ScheduleEditor:
     """Plan and safely apply graph-aware schedule edits to a distinct IDF copy."""
 
@@ -694,7 +706,7 @@ class ScheduleEditor:
         source = Path(resolved)
         if not source.is_file():
             raise FileNotFoundError(f"IDF file not found: {resolved}")
-        result = ScheduleGraph(model_cache.read_only_idf(str(source), self.idf_loader)).inspect(scope)
+        result = _graph_for(model_cache.read_only_idf(str(source), self.idf_loader)).inspect(scope)
         result.update({
             "input_file": str(source),
             "output_file": None,
@@ -748,7 +760,7 @@ class ScheduleEditor:
             idf = model_cache.read_only_idf(str(resolved_input), self.idf_loader)
         else:
             idf = self.idf_loader(str(resolved_input))
-        graph = ScheduleGraph(idf)
+        graph = _graph_for(idf)
         plan = self._plan(
             graph, consumer_references, operation, value, target_ids, bounds, clone_on_write
         )
@@ -1154,7 +1166,7 @@ class GraphScheduleControlAdapter:
     def inspect_consumers(
         self, *, idf: Any, consumer_refs: list[dict[str, Any]]
     ) -> dict[str, Any]:
-        graph = ScheduleGraph(idf)
+        graph = _graph_for(idf)
         references, skipped = self._resolve_references(graph, consumer_refs)
         profiles: dict[str, dict[str, Any]] = {}
         for reference in references:
@@ -1242,7 +1254,7 @@ class GraphScheduleControlAdapter:
         bounds: Optional[Mapping[str, Any]],
         clone_on_write: bool,
     ) -> dict[str, Any]:
-        graph = ScheduleGraph(idf)
+        graph = _graph_for(idf)
         references, skipped = self._resolve_references(graph, consumer_refs)
         if skipped:
             return {"changes": [], "skipped": skipped, "ambiguous": []}
@@ -1311,7 +1323,7 @@ class GraphScheduleControlAdapter:
 
 def inspect_schedule_graph(idf: Any, scope: str = "all") -> dict[str, Any]:
     """Convenience in-memory inspection seam for domain and HVAC callers."""
-    return ScheduleGraph(idf).inspect(scope)
+    return _graph_for(idf).inspect(scope)
 
 
 def edit_schedule_graph(

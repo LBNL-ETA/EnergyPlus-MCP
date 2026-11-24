@@ -172,3 +172,67 @@ def test_aggregate_capabilities_parse_the_model_once(monkeypatch):
     assert result["success"] is True, (result.get("error"), result.get("errors"))
     # One shared parse, plus one more by the tripwire's own re-parse.
     assert len(parses) == 2
+
+
+def test_derived_data_is_shared_only_for_shared_models(model):
+    loader = CountingLoader()
+    builds = []
+
+    def build():
+        builds.append(1)
+        return object()
+
+    private = FakeIDF(str(model))
+    with shared_models():
+        shared = read_only_idf(str(model), loader)
+        first = model_cache.derived(shared, "graph", build)
+        again = model_cache.derived(shared, "graph", build)
+        other_name = model_cache.derived(shared, "geometry", build)
+        # A model that is not shared (e.g. an applied edit's private copy) always computes.
+        private_one = model_cache.derived(private, "graph", build)
+        private_two = model_cache.derived(private, "graph", build)
+    outside = model_cache.derived(shared, "graph", build)
+
+    assert first is again
+    assert other_name is not first
+    assert private_one is not private_two
+    assert outside is not first
+    assert len(builds) == 5
+
+
+def test_schedule_reference_check_is_memoized_and_unchanged():
+    from energyplus_mcp_server.utils import schedule_graph
+
+    check = schedule_graph._is_schedule_reference_field
+    original = check.__wrapped__
+    for field in ("Schedule_Name", "Availability_Schedule_Name", "Name", "Schedule_Type_Limits_Name",
+                  "Heating_Setpoint_Temperature_Schedule_Name", "Field_1", "Through_1", "SCHEDULE_NAME"):
+        assert check(field) == original(field)
+    assert check.cache_info().hits > 0
+
+
+@pytest.mark.skipif(not os.path.isfile(REAL_IDD), reason="EnergyPlus IDD not installed")
+def test_aggregate_capabilities_build_the_schedule_graph_once(monkeypatch):
+    from energyplus_mcp_server.domains import capabilities
+    from energyplus_mcp_server.energyplus_tools import EnergyPlusManager
+    from energyplus_mcp_server.utils import schedule_graph
+
+    sample = Path(__file__).resolve().parents[1] / "sample_files" / "basic" / "5ZoneAirCooled.idf"
+    manager = EnergyPlusManager()
+    manager._resolve_idf_path = lambda path: str(Path(path).resolve())
+    manager._assert_simulation_version_matches = lambda path: {"runtime_version": "26.1.0", "model_version": "26.1"}
+    manager._runtime_energyplus_version = lambda: "26.1.0"
+    builds = []
+    original_build = schedule_graph.ScheduleGraph._build
+
+    def counting_build(self):
+        builds.append(1)
+        return original_build(self)
+
+    monkeypatch.setattr(schedule_graph.ScheduleGraph, "_build", counting_build)
+    managers = [tool for _, tool, _ in capabilities.PARAMETER_DOMAINS]
+
+    result = capabilities.combined_capabilities(manager, str(sample), managers, "summary")
+
+    assert result["success"] is True, (result.get("error"), result.get("errors"))
+    assert len(builds) == 1
