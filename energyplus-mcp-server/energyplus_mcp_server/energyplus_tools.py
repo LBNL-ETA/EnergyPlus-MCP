@@ -65,6 +65,22 @@ from .utils.error_parser import ErrorParser
 logger = logging.getLogger(__name__)
 
 
+# Monthly facility meters that simulation_manager(action="run", runs_dir=...)
+# stages in canonical SQL, and where that evidence lands. Capability reports
+# state both; domain/capabilities.py states them for the aggregate tool.
+MONTHLY_FACILITY_METERS = ("Electricity:Facility", "NaturalGas:Facility")
+
+
+def simulation_evidence_contract() -> Dict[str, Any]:
+    return {
+        "tool": "simulation_manager",
+        "action": "run",
+        "required_args": ["idf_path", "runs_dir"],
+        "optional_args": ["run_id", "weather_file"],
+        "paths": "<runs_dir>/<run_id>/run/eplusout.sql and <runs_dir>/<run_id>/run_record.json",
+    }
+
+
 class EnergyPlusManager:
     """Manager class for EnergyPlus operations using eppy with configuration management"""
     
@@ -3234,7 +3250,27 @@ class EnergyPlusManager:
         return ".".join(str(int(number)) for number in numbers)
 
     def _runtime_energyplus_version(self) -> str:
+        """Installed EnergyPlus version, cached per executable file.
+
+        Capability checks ask for it once per manager; each ask started an
+        ``energyplus --version`` process. The cache key includes the file's
+        modification time, so replacing the executable is noticed.
+        """
         executable = self.config.energyplus.executable_path
+        try:
+            stat = os.stat(executable)
+            key = (executable, stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            key = None
+        cached = getattr(self, "_runtime_version_cache", None)
+        if key is not None and cached is not None and cached[0] == key:
+            return cached[1]
+        version = self._query_runtime_energyplus_version(executable)
+        if key is not None:
+            self._runtime_version_cache = (key, version)
+        return version
+
+    def _query_runtime_energyplus_version(self, executable: str) -> str:
         completed = subprocess.run(
             [executable, "--version"],
             check=True,
@@ -3597,15 +3633,9 @@ class EnergyPlusManager:
                 "lights_count": lights_count,
                 "lpd_reachable": capabilities.get("LPD", {}).get("supported"),
             },
-            "monthly_meters": ["Electricity:Facility", "NaturalGas:Facility"],
+            "monthly_meters": list(MONTHLY_FACILITY_METERS),
             "parameters": capabilities,
-            "simulation_evidence": {
-                "tool": "simulation_manager",
-                "action": "run",
-                "required_args": ["idf_path", "runs_dir"],
-                "optional_args": ["run_id", "weather_file"],
-                "paths": "<runs_dir>/<run_id>/run/eplusout.sql and <runs_dir>/<run_id>/run_record.json",
-            },
+            "simulation_evidence": simulation_evidence_contract(),
         }
 
     def calibration_capabilities(self, idf_path: Optional[str] = None) -> Dict[str, Any]:

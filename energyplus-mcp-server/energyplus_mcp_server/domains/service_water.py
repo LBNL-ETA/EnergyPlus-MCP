@@ -133,6 +133,17 @@ def _capability(ep_manager: Any, idf_path: Optional[str]) -> Dict[str, Any]:
     }
 
 
+def _parameter_capabilities(ep_manager: Any, idf_path: Optional[str]) -> Dict[str, Any]:
+    return {
+        "success": True,
+        "tool": "service_water_manager",
+        "manager": "service_water_manager",
+        "action": "parameter_capabilities",
+        "model_format": "idf",
+        "parameters": {"service_water_efficiency": _capability(ep_manager, idf_path)},
+    }
+
+
 def register(mcp: Any, ep_manager: Any, config: Any) -> None:
     """Register service-water inspection and copy-based semantic edits."""
 
@@ -153,14 +164,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             if action == "capabilities":
                 return json.dumps(operation_contract(), indent=2)
             if action == "parameter_capabilities":
-                return json.dumps({
-                    "success": True,
-                    "tool": "service_water_manager",
-                    "manager": "service_water_manager",
-                    "action": "parameter_capabilities",
-                    "model_format": "idf",
-                    "parameters": {"service_water_efficiency": _capability(ep_manager, idf_path)},
-                }, indent=2)
+                return json.dumps(_parameter_capabilities(ep_manager, idf_path), indent=2)
             if not idf_path:
                 return json.dumps({"success": False, "error": "Missing required parameter: idf_path"})
             resolved, idf, source_hash = _load(ep_manager, idf_path)

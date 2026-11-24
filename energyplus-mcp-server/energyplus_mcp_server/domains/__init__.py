@@ -52,3 +52,10 @@ def register_all(mcp: Any, ep_manager: Any, config: Any,
         from . import geometry as _geom
         _geom.register(mcp, ep_manager, config)
         logger.info("Registered geometry_manager tool")
+    from . import capabilities as _caps
+    flags = {"envelope": envelope, "internal_loads": internal_loads, "schedules": schedules,
+             "hvac": hvac, "service_water": service_water}
+    managers = [manager for domain, manager, _ in _caps.PARAMETER_DOMAINS if flags[domain]]
+    if managers:
+        _caps.register(mcp, ep_manager, config, managers)
+        logger.info("Registered parameter_capabilities tool for %s", ", ".join(managers))

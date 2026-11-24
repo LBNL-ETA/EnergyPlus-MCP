@@ -110,14 +110,15 @@ def _field_names(obj: Any) -> list[str]:
     names = list(getattr(obj, "fieldnames", []) or [])
     if not names:
         names = [name for name in vars(obj) if not name.startswith("_")]
-    result: list[str] = []
+    # Ordered de-duplication in linear time: Schedule:Compact objects can have
+    # thousands of fields, and a list-membership test made this quadratic.
+    result: dict[str, None] = {}
     for name in names:
         text = str(name)
         if text.casefold() in {"key", "idfobject"}:
             continue
-        if text not in result:
-            result.append(text)
-    return result
+        result.setdefault(text, None)
+    return list(result)
 
 
 def _get(obj: Any, field: str, default: Any = None) -> Any:
@@ -160,7 +161,30 @@ def _role(object_type: str, field: str) -> str:
 
 
 def _field_values(obj: Any, names: Sequence[str]) -> list[Any]:
-    return [_get(obj, name) for name in names]
+    """Read many fields at once, matching Eppy attribute access.
+
+    Eppy resolves each attribute with ``fieldnames.index(name)``, so reading
+    every field of a large object one by one is quadratic. For an Eppy object
+    this indexes the field list once and reads values by position, keeping
+    Eppy's rules: functions and aliases first, the first matching field, and
+    "" past the stored values. Anything else falls back to attribute access.
+    """
+    fieldnames = getattr(obj, "fieldnames", None) if isinstance(obj, dict) else None
+    fieldvalues = getattr(obj, "fieldvalues", None) if fieldnames else None
+    if not fieldnames or fieldvalues is None:
+        return [_get(obj, name) for name in names]
+    special = set(dict.get(obj, "__functions", None) or ()) | set(dict.get(obj, "__aliases", None) or ())
+    position: dict[str, int] = {}
+    for index, name in enumerate(fieldnames):
+        position.setdefault(name, index)
+    values: list[Any] = []
+    for name in names:
+        index = position.get(name)
+        if index is None or name in special:
+            values.append(_get(obj, name))
+        else:
+            values.append(fieldvalues[index] if index < len(fieldvalues) else "")
+    return values
 
 
 @dataclass(frozen=True)
