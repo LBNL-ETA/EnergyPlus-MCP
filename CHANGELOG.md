@@ -31,6 +31,15 @@ version `0.1.0`.
   instead of 398K characters across the five manager calls);
   `detail="full"` keeps them. The tool is registered whenever at least one of
   those domain managers is enabled.
+- `hvac_manager` `visualize` accepts `image_format="html"`: a self-contained
+  page (inline SVG; no Graphviz or network access) that draws each loop's
+  supply side (left to right) and demand side (right to left) in dashed
+  frames, with splitters, parallel branches, and mixers, and closes the loop
+  outside the frames with arrows labelled by their nodes. Hovering a component
+  shows its inlet and outlet nodes, and a table lists every component and its
+  nodes. Clicking a frame focuses that side and filters the table (a short
+  inline script; without scripts the frames still work as links). Without
+  `loop_name` it draws every loop on one page.
 
 ### Fixed
 - Schedule capability checks and schedule edits were quadratic in a
@@ -64,6 +73,15 @@ version `0.1.0`.
   skipped, and a full-meter request replaces its `MeterFileOnly` variant
   (reported as `replaced_meter_file_only`). The monthly meters that
   calibration runs add follow the same rules.
+- `hvac_manager` `visualize` never drew the detailed loop diagram on Cloud
+  Run: the production image lacked the Graphviz `dot` program, so every call
+  fell back to a sketch of plant-loop boxes while reporting success, and for
+  an air loop drew nothing. `Dockerfile.prod` now installs `graphviz`. If
+  Graphviz still cannot run, the diagram is written as HTML and the result
+  gives `fallback_reason`; an unknown `loop_name` or a model without loops is
+  an error listing `available_loops`; `image_format` (svg, pdf, jpg) now
+  reaches Graphviz instead of always producing PNG; and a failed render no
+  longer leaves the DOT source file in `reports/`.
 
 ## [0.2.0] - 2026-11-23
 

@@ -14,7 +14,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         loop_name: Optional[str] = None,
         detail: Literal["summary", "detailed"] = "summary",
         topology_format: Literal["json", "graph"] = "json",
-        image_format: Literal["png", "jpg", "pdf", "svg"] = "png",
+        image_format: Literal["png", "jpg", "pdf", "svg", "html"] = "png",
         show_legend: bool = True,
         output_path: Optional[str] = None,
     ) -> str:

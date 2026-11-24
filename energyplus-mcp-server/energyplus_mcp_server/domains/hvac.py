@@ -131,7 +131,11 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
 
         - discover: list loops and components
         - topology: detailed loop topology for a given loop
-        - visualize: generate a diagram (returns path)
+        - visualize: draw loop topology and return the file path. image_format
+          png/jpg/pdf/svg uses Graphviz (one loop: loop_name or the first loop);
+          html is a self-contained page with node tooltips and a component
+          table, and draws every loop when loop_name is omitted. If Graphviz
+          cannot run, an HTML diagram is written and fallback_reason says why.
         - capabilities: enumerate actions
         """
         try:

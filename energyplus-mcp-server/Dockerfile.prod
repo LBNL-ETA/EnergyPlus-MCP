@@ -45,8 +45,10 @@ RUN pip install --no-cache-dir uv \
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
+# graphviz provides the `dot` program that hvac_manager visualize uses for
+# image diagrams; without it the server falls back to HTML diagrams.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libxext6 libsm6 \
+        libgl1 libxext6 libsm6 graphviz \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 mcp
 

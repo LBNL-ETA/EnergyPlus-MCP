@@ -45,6 +45,7 @@ from plotly.subplots import make_subplots
 
 from .config import get_config, Config
 from .utils.diagrams import HVACDiagramGenerator
+from .utils.diagram_html import write_loops_html
 from .utils.model_guard import check_model_for_caller
 from .utils.path_utils import (
     derived_model_path,
@@ -2651,60 +2652,111 @@ class EnergyPlusManager:
         return zone_equipment
 
 
-    def visualize_loop_diagram(self, idf_path: str, loop_name: str = None, 
-                            output_path: Optional[str] = None, format: str = "png", 
+    def visualize_loop_diagram(self, idf_path: str, loop_name: str = None,
+                            output_path: Optional[str] = None, format: str = "png",
                             show_legend: bool = True) -> str:
         """
-        Generate and save a visual diagram of HVAC loop(s) using custom topology-based approach
-        
-        Args:
-            idf_path: Path to the IDF file
-            loop_name: Optional specific loop name (if None, creates diagram for first found loop)
-            output_path: Optional custom output path (if None, creates one automatically)
-            format: Image format for the diagram (png, jpg, pdf, svg)
-            show_legend: Whether to include legend in topology-based diagrams (default: True)
-        
+        Draw HVAC loop topology as an image (Graphviz) or a self-contained HTML page.
+
+        ``format`` is png, jpg, pdf, svg (Graphviz) or html. HTML needs no Graphviz
+        and, with no ``loop_name``, draws every loop on one page; the image formats
+        draw ``loop_name`` or, without it, the first loop found. When Graphviz
+        cannot run, the diagram is written as HTML instead and the result says why
+        (``fallback_reason``). Only if the topology itself cannot be read is a
+        plant-loop-only sketch drawn.
+
         Returns:
             JSON string with diagram generation results and file path
         """
         resolved_path = self._resolve_idf_path(idf_path)
-        
+        fmt = (format or "png").lower().lstrip(".")
+        if fmt not in {"png", "jpg", "pdf", "svg", "html"}:
+            return json.dumps({
+                "success": False,
+                "input_file": resolved_path,
+                "error": f"Unsupported format {format!r}; use png, jpg, pdf, svg or html",
+            }, indent=2)
+
         try:
-            logger.info(f"Creating custom loop diagram for: {resolved_path}")
-            
-            # Determine output path
+            loops_info = json.loads(self.discover_hvac_loops(resolved_path))
+            available = [
+                loop.get("name")
+                for key in ("plant_loops", "condenser_loops", "air_loops")
+                for loop in loops_info.get(key, [])
+            ]
+            if not available:
+                return json.dumps({
+                    "success": False, "input_file": resolved_path,
+                    "error": "No HVAC loops (PlantLoop, CondenserLoop, AirLoopHVAC) found in the model",
+                }, indent=2)
+            if loop_name and loop_name not in available:
+                return json.dumps({
+                    "success": False, "input_file": resolved_path,
+                    "error": f"Loop {loop_name!r} not found", "available_loops": available,
+                }, indent=2)
+
+            path_obj = Path(resolved_path)
+            stem = f"{path_obj.stem}_hvac_diagram" if not loop_name else f"{path_obj.stem}_{loop_name}_diagram"
             if output_path is None:
-                path_obj = Path(resolved_path)
-                diagram_name = f"{path_obj.stem}_hvac_diagram" if not loop_name else f"{path_obj.stem}_{loop_name}_diagram"
-                output_path = report_path(self.config, f"{diagram_name}.{format}")
-            
-            # Method 1: Use topology data for custom diagram (PRIMARY)
+                output_path = report_path(self.config, f"{stem}.{fmt}")
+
+            if fmt == "html":
+                result = self._create_html_diagram(
+                    resolved_path, [loop_name] if loop_name else available, output_path, show_legend
+                )
+                result["available_loops"] = available
+                return json.dumps(result, indent=2)
+
             try:
-                result = self._create_topology_based_diagram(resolved_path, loop_name, output_path, show_legend)
-                if result["success"]:
-                    logger.info(f"Custom topology diagram created: {output_path}")
-                    return json.dumps(result, indent=2)
+                result = self._create_topology_based_diagram(
+                    resolved_path, loop_name, output_path, show_legend, fmt
+                )
+                result["available_loops"] = available
+                return json.dumps(result, indent=2)
             except Exception as e:
-                logger.warning(f"Topology-based diagram failed: {e}. Using simplified approach.")
-            
-            # Method 2: Simplified diagram (LAST RESORT)
-            result = self._create_simplified_diagram(resolved_path, loop_name, output_path, format)
-            logger.info(f"Simplified diagram created: {output_path}")
+                fallback_reason = f"Graphviz diagram failed: {e}"
+                logger.warning(f"{fallback_reason}. Writing an HTML diagram instead.")
+
+            html_path = str(Path(output_path).with_suffix(".html"))
+            target = loop_name or available[0]
+            try:
+                result = self._create_html_diagram(resolved_path, [target], html_path, show_legend)
+                result.update({
+                    "requested_format": fmt,
+                    "fallback_reason": fallback_reason,
+                    "available_loops": available,
+                })
+                return json.dumps(result, indent=2)
+            except Exception as e:
+                fallback_reason += f"; HTML diagram failed: {e}"
+                logger.warning(f"{fallback_reason}. Using simplified approach.")
+
+            result = self._create_simplified_diagram(resolved_path, loop_name, output_path, fmt)
+            result.update({"fallback_reason": fallback_reason, "available_loops": available})
             return json.dumps(result, indent=2)
-            
+
         except Exception as e:
             logger.error(f"Error creating loop diagram for {resolved_path}: {e}")
             raise RuntimeError(f"Error creating loop diagram: {str(e)}")
 
+    def _create_html_diagram(self, idf_path: str, loop_names: List[str],
+                             output_path: str, show_legend: bool = True) -> Dict[str, Any]:
+        """Write a self-contained HTML/SVG diagram of the named loops."""
+        topologies = [json.loads(self.get_loop_topology(idf_path, name)) for name in loop_names]
+        title = f"{Path(idf_path).stem} — HVAC loops"
+        result = write_loops_html(topologies, output_path, title, show_legend)
+        result.update({"input_file": idf_path, "method": "topology_based", "format": "html"})
+        return result
 
-    def _create_topology_based_diagram(self, idf_path: str, loop_name: Optional[str], 
-                                     output_path: str, show_legend: bool = True) -> Dict[str, Any]:
+    def _create_topology_based_diagram(self, idf_path: str, loop_name: Optional[str],
+                                     output_path: str, show_legend: bool = True,
+                                     fmt: str = "png") -> Dict[str, Any]:
         """
         Create diagram using topology data from get_loop_topology
         """
         # Get available loops
         loops_info = json.loads(self.discover_hvac_loops(idf_path))
-        
+
         # Determine which loop to diagram
         target_loop = None
         if loop_name:
@@ -2723,28 +2775,30 @@ class EnergyPlusManager:
                 if loops:
                     target_loop = loops[0].get('name')
                     break
-        
+
         if not target_loop:
             raise ValueError("No HVAC loops found or specified loop not found")
-        
+
         # Get detailed topology for the target loop
         topology_json = self.get_loop_topology(idf_path, target_loop)
-        
+
         # Create custom diagram using the topology data
         result = self.diagram_generator.create_diagram_from_topology(
-            topology_json, output_path, f"Custom HVAC Diagram - {target_loop}", show_legend=show_legend
+            topology_json, output_path, f"Custom HVAC Diagram - {target_loop}",
+            fmt=fmt, show_legend=show_legend
         )
-        
+
         # Add additional metadata
         result.update({
             "input_file": idf_path,
             "method": "topology_based",
-            "total_loops_available": sum(len(loops_info.get(key, [])) 
+            "format": fmt,
+            "total_loops_available": sum(len(loops_info.get(key, []))
                                        for key in ['plant_loops', 'condenser_loops', 'air_loops'])
         })
-        
+
         return result
-    
+
 
     def _create_simplified_diagram(self, idf_path: str, loop_name: str, 
                                 output_path: str, format: str) -> Dict[str, Any]:

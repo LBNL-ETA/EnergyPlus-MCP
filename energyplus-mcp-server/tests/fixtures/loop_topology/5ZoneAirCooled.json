@@ -1,0 +1,539 @@
+{
+ "VAV Sys 1": {
+  "loop_name": "VAV Sys 1",
+  "loop_type": "AirLoopHVAC",
+  "supply_side": {
+   "branches": [
+    {
+     "name": "VAV Sys 1 Main Branch",
+     "components": [
+      {
+       "type": "AirLoopHVAC:OutdoorAirSystem",
+       "name": "OA Sys 1",
+       "inlet_node": "VAV Sys 1 Inlet Node",
+       "outlet_node": "Mixed Air Node 1"
+      },
+      {
+       "type": "Coil:Cooling:Water",
+       "name": "Main Cooling Coil 1",
+       "inlet_node": "Mixed Air Node 1",
+       "outlet_node": "Main Cooling Coil 1 Outlet Node"
+      },
+      {
+       "type": "Coil:Heating:Water",
+       "name": "Main Heating Coil 1",
+       "inlet_node": "Main Cooling Coil 1 Outlet Node",
+       "outlet_node": "Main Heating Coil 1 Outlet Node"
+      },
+      {
+       "type": "Fan:VariableVolume",
+       "name": "Supply Fan 1",
+       "inlet_node": "Main Heating Coil 1 Outlet Node",
+       "outlet_node": "VAV Sys 1 Outlet Node"
+      }
+     ]
+    }
+   ],
+   "inlet_node": "VAV Sys 1 Inlet Node",
+   "outlet_node": "VAV Sys 1 Outlet Node",
+   "components": [
+    {
+     "type": "AirLoopHVAC:OutdoorAirSystem",
+     "name": "OA Sys 1",
+     "inlet_node": "VAV Sys 1 Inlet Node",
+     "outlet_node": "Mixed Air Node 1"
+    },
+    {
+     "type": "Coil:Cooling:Water",
+     "name": "Main Cooling Coil 1",
+     "inlet_node": "Mixed Air Node 1",
+     "outlet_node": "Main Cooling Coil 1 Outlet Node"
+    },
+    {
+     "type": "Coil:Heating:Water",
+     "name": "Main Heating Coil 1",
+     "inlet_node": "Main Cooling Coil 1 Outlet Node",
+     "outlet_node": "Main Heating Coil 1 Outlet Node"
+    },
+    {
+     "type": "Fan:VariableVolume",
+     "name": "Supply Fan 1",
+     "inlet_node": "Main Heating Coil 1 Outlet Node",
+     "outlet_node": "VAV Sys 1 Outlet Node"
+    }
+   ],
+   "supply_paths": []
+  },
+  "demand_side": {
+   "inlet_node": "Zone Eq In Node",
+   "outlet_node": "PLENUM-1 Out Node",
+   "zone_splitters": [
+    {
+     "name": "Zone Supply Air Splitter 1",
+     "type": "AirLoopHVAC:ZoneSplitter",
+     "inlet_node": "Zone Eq In Node",
+     "outlet_nodes": [
+      "SPACE1-1 ATU In Node",
+      "SPACE2-1 ATU In Node",
+      "SPACE3-1 ATU In Node",
+      "SPACE4-1 ATU In Node",
+      "SPACE5-1 ATU In Node"
+     ]
+    }
+   ],
+   "zone_mixers": [],
+   "return_plenums": [
+    {
+     "name": "Return-Plenum-1",
+     "type": "AirLoopHVAC:ReturnPlenum",
+     "zone_name": "PLENUM-1",
+     "zone_node_name": "PLENUM-1 Node",
+     "outlet_node": "PLENUM-1 Out Node",
+     "induced_air_outlet_node": "",
+     "inlet_nodes": [
+      "SPACE1-1 Out Node",
+      "SPACE2-1 Out Node",
+      "SPACE3-1 Out Node",
+      "SPACE4-1 Out Node",
+      "SPACE5-1 Out Node"
+     ]
+    }
+   ],
+   "zone_equipment": [
+    {
+     "type": "AirTerminal:SingleDuct:VAV:Reheat",
+     "name": "SPACE1-1 VAV Reheat",
+     "inlet_node": "SPACE1-1 ATU In Node",
+     "outlet_node": "SPACE1-1 In Node"
+    },
+    {
+     "type": "AirTerminal:SingleDuct:VAV:Reheat",
+     "name": "SPACE2-1 VAV Reheat",
+     "inlet_node": "SPACE2-1 ATU In Node",
+     "outlet_node": "SPACE2-1 In Node"
+    },
+    {
+     "type": "AirTerminal:SingleDuct:VAV:Reheat",
+     "name": "SPACE3-1 VAV Reheat",
+     "inlet_node": "SPACE3-1 ATU In Node",
+     "outlet_node": "SPACE3-1 In Node"
+    },
+    {
+     "type": "AirTerminal:SingleDuct:VAV:Reheat",
+     "name": "SPACE4-1 VAV Reheat",
+     "inlet_node": "SPACE4-1 ATU In Node",
+     "outlet_node": "SPACE4-1 In Node"
+    },
+    {
+     "type": "AirTerminal:SingleDuct:VAV:Reheat",
+     "name": "SPACE5-1 VAV Reheat",
+     "inlet_node": "SPACE5-1 ATU In Node",
+     "outlet_node": "SPACE5-1 In Node"
+    }
+   ],
+   "supply_paths": [
+    {
+     "name": "Zone Supply Air Path 1",
+     "inlet_node": "Zone Eq In Node",
+     "components": [
+      {
+       "type": "AirLoopHVAC:ZoneSplitter",
+       "name": "Zone Supply Air Splitter 1"
+      }
+     ]
+    }
+   ],
+   "return_paths": [
+    {
+     "name": "ReturnAirPath1",
+     "outlet_node": "PLENUM-1 Out Node",
+     "components": [
+      {
+       "type": "AirLoopHVAC:ReturnPlenum",
+       "name": "Return-Plenum-1"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "Hot Water Loop": {
+  "loop_name": "Hot Water Loop",
+  "loop_type": "PlantLoop",
+  "supply_side": {
+   "branches": [
+    {
+     "name": "Heating Supply Inlet Branch",
+     "components": [
+      {
+       "type": "Pump:VariableSpeed",
+       "name": "HW Circ Pump",
+       "inlet_node": "HW Supply Inlet Node",
+       "outlet_node": "HW Pump Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "Central Boiler Branch",
+     "components": [
+      {
+       "type": "Boiler:HotWater",
+       "name": "Central Boiler",
+       "inlet_node": "Central Boiler Inlet Node",
+       "outlet_node": "Central Boiler Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "Heating Supply Bypass Branch",
+     "components": [
+      {
+       "type": "Pipe:Adiabatic",
+       "name": "Heating Supply Side Bypass",
+       "inlet_node": "Heating Supply Bypass Inlet Node",
+       "outlet_node": "Heating Supply Bypass Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "Heating Supply Outlet Branch",
+     "components": [
+      {
+       "type": "Pipe:Adiabatic",
+       "name": "Heating Supply Outlet",
+       "inlet_node": "Heating Supply Exit Pipe Inlet Node",
+       "outlet_node": "HW Supply Outlet Node"
+      }
+     ]
+    }
+   ],
+   "inlet_node": "HW Supply Inlet Node",
+   "outlet_node": "HW Supply Outlet Node",
+   "connector_lists": [
+    {
+     "name": "Heating Supply Splitter",
+     "type": "Connector:Splitter",
+     "inlet_branch": "Heating Supply Inlet Branch",
+     "outlet_branches": [
+      "Central Boiler Branch",
+      "Heating Supply Bypass Branch"
+     ]
+    },
+    {
+     "name": "Heating Supply Mixer",
+     "type": "Connector:Mixer",
+     "outlet_branch": "Heating Supply Outlet Branch",
+     "inlet_branches": [
+      "Central Boiler Branch",
+      "Heating Supply Bypass Branch"
+     ]
+    }
+   ]
+  },
+  "demand_side": {
+   "branches": [
+    {
+     "name": "Heating Demand Inlet Branch",
+     "components": [
+      {
+       "type": "Pipe:Adiabatic",
+       "name": "Heating Demand Inlet Pipe",
+       "inlet_node": "HW Demand Inlet Node",
+       "outlet_node": "HW Demand Entrance Pipe Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "SPACE1-1 Reheat Branch",
+     "components": [
+      {
+       "type": "Coil:Heating:Water",
+       "name": "SPACE1-1 Zone Coil",
+       "inlet_node": "SPACE1-1 Zone Coil Water In Node",
+       "outlet_node": "SPACE1-1 Zone Coil Water Out Node"
+      }
+     ]
+    },
+    {
+     "name": "SPACE2-1 Reheat Branch",
+     "components": [
+      {
+       "type": "Coil:Heating:Water",
+       "name": "SPACE2-1 Zone Coil",
+       "inlet_node": "SPACE2-1 Zone Coil Water In Node",
+       "outlet_node": "SPACE2-1 Zone Coil Water Out Node"
+      }
+     ]
+    },
+    {
+     "name": "SPACE3-1 Reheat Branch",
+     "components": [
+      {
+       "type": "Coil:Heating:Water",
+       "name": "SPACE3-1 Zone Coil",
+       "inlet_node": "SPACE3-1 Zone Coil Water In Node",
+       "outlet_node": "SPACE3-1 Zone Coil Water Out Node"
+      }
+     ]
+    },
+    {
+     "name": "SPACE4-1 Reheat Branch",
+     "components": [
+      {
+       "type": "Coil:Heating:Water",
+       "name": "SPACE4-1 Zone Coil",
+       "inlet_node": "SPACE4-1 Zone Coil Water In Node",
+       "outlet_node": "SPACE4-1 Zone Coil Water Out Node"
+      }
+     ]
+    },
+    {
+     "name": "SPACE5-1 Reheat Branch",
+     "components": [
+      {
+       "type": "Coil:Heating:Water",
+       "name": "SPACE5-1 Zone Coil",
+       "inlet_node": "SPACE5-1 Zone Coil Water In Node",
+       "outlet_node": "SPACE5-1 Zone Coil Water Out Node"
+      }
+     ]
+    },
+    {
+     "name": "OA Heating Coil Branch",
+     "components": [
+      {
+       "type": "Coil:Heating:Water",
+       "name": "OA Heating Coil 1",
+       "inlet_node": "OA Heating Coil 1 Water Inlet Node",
+       "outlet_node": "OA Heating Coil 1 Water Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "Main Heating Coil 1 Branch",
+     "components": [
+      {
+       "type": "Coil:Heating:Water",
+       "name": "Main Heating Coil 1",
+       "inlet_node": "Main Heating Coil 1 Water Inlet Node",
+       "outlet_node": "Main Heating Coil 1 Water Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "Heating Demand Bypass Branch",
+     "components": [
+      {
+       "type": "Pipe:Adiabatic",
+       "name": "Heating Demand Bypass",
+       "inlet_node": "Heating Demand Bypass Inlet Node",
+       "outlet_node": "Heating Demand Bypass Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "Heating Demand Outlet Branch",
+     "components": [
+      {
+       "type": "Pipe:Adiabatic",
+       "name": "Heating Demand Outlet Pipe",
+       "inlet_node": "HW Demand Exit Pipe Inlet Node",
+       "outlet_node": "HW Demand Outlet Node"
+      }
+     ]
+    }
+   ],
+   "inlet_node": "Unknown",
+   "outlet_node": "HW Demand Outlet Node",
+   "connector_lists": [
+    {
+     "name": "Heating Demand Splitter",
+     "type": "Connector:Splitter",
+     "inlet_branch": "Heating Demand Inlet Branch",
+     "outlet_branches": [
+      "SPACE1-1 Reheat Branch",
+      "SPACE2-1 Reheat Branch",
+      "SPACE3-1 Reheat Branch",
+      "SPACE4-1 Reheat Branch",
+      "SPACE5-1 Reheat Branch",
+      "OA Heating Coil Branch",
+      "Main Heating Coil 1 Branch",
+      "Heating Demand Bypass Branch"
+     ]
+    },
+    {
+     "name": "Heating Demand Mixer",
+     "type": "Connector:Mixer",
+     "outlet_branch": "Heating Demand Outlet Branch",
+     "inlet_branches": [
+      "SPACE1-1 Reheat Branch",
+      "SPACE2-1 Reheat Branch",
+      "SPACE3-1 Reheat Branch",
+      "SPACE4-1 Reheat Branch",
+      "SPACE5-1 Reheat Branch",
+      "OA Heating Coil Branch",
+      "Main Heating Coil 1 Branch",
+      "Heating Demand Bypass Branch"
+     ]
+    }
+   ]
+  }
+ },
+ "Chilled Water Loop": {
+  "loop_name": "Chilled Water Loop",
+  "loop_type": "PlantLoop",
+  "supply_side": {
+   "branches": [
+    {
+     "name": "CW Pump Branch",
+     "components": [
+      {
+       "type": "Pump:VariableSpeed",
+       "name": "CW Circ Pump",
+       "inlet_node": "CW Supply Inlet Node",
+       "outlet_node": "CW Pump Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "Central Chiller Branch",
+     "components": [
+      {
+       "type": "Chiller:Electric",
+       "name": "Central Chiller",
+       "inlet_node": "Central Chiller Inlet Node",
+       "outlet_node": "Central Chiller Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "Cooling Supply Bypass Branch",
+     "components": [
+      {
+       "type": "Pipe:Adiabatic",
+       "name": "Supply Side Bypass",
+       "inlet_node": "CW Supply Bypass Inlet Node",
+       "outlet_node": "CW Supply Bypass Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "Cooling Supply Outlet",
+     "components": [
+      {
+       "type": "Pipe:Adiabatic",
+       "name": "Supply Side Outlet Pipe",
+       "inlet_node": "Supply Side Exit Pipe Inlet Node",
+       "outlet_node": "CW Supply Outlet Node"
+      }
+     ]
+    }
+   ],
+   "inlet_node": "CW Supply Inlet Node",
+   "outlet_node": "CW Supply Outlet Node",
+   "connector_lists": [
+    {
+     "name": "CW Loop Splitter",
+     "type": "Connector:Splitter",
+     "inlet_branch": "CW Pump Branch",
+     "outlet_branches": [
+      "Central Chiller Branch",
+      "Cooling Supply Bypass Branch"
+     ]
+    },
+    {
+     "name": "CW Loop Mixer",
+     "type": "Connector:Mixer",
+     "outlet_branch": "Cooling Supply Outlet",
+     "inlet_branches": [
+      "Central Chiller Branch",
+      "Cooling Supply Bypass Branch"
+     ]
+    }
+   ]
+  },
+  "demand_side": {
+   "branches": [
+    {
+     "name": "Cooling Demand Inlet",
+     "components": [
+      {
+       "type": "Pipe:Adiabatic",
+       "name": "Cooling Demand Side Inlet Pipe",
+       "inlet_node": "CW Demand Inlet Node",
+       "outlet_node": "CW Demand Entrance Pipe Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "Cooling Coil Branch",
+     "components": [
+      {
+       "type": "Coil:Cooling:Water",
+       "name": "Main Cooling Coil 1",
+       "inlet_node": "Main Cooling Coil 1 Water Inlet Node",
+       "outlet_node": "Main Cooling Coil 1 Water Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "OA Cooling Coil Branch",
+     "components": [
+      {
+       "type": "Coil:Cooling:Water",
+       "name": "OA Cooling Coil 1",
+       "inlet_node": "OA Cooling Coil 1 Water Inlet Node",
+       "outlet_node": "OA Cooling Coil 1 Water Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "Cooling Demand Bypass Branch",
+     "components": [
+      {
+       "type": "Pipe:Adiabatic",
+       "name": "Cooling Demand Side Bypass",
+       "inlet_node": "CW Demand Bypass Inlet Node",
+       "outlet_node": "CW Demand Bypass Outlet Node"
+      }
+     ]
+    },
+    {
+     "name": "Cooling Demand Outlet",
+     "components": [
+      {
+       "type": "Pipe:Adiabatic",
+       "name": "CW Demand Side Outlet Pipe",
+       "inlet_node": "CW Demand Exit Pipe Inlet Node",
+       "outlet_node": "CW Demand Outlet Node"
+      }
+     ]
+    }
+   ],
+   "inlet_node": "Unknown",
+   "outlet_node": "CW Demand Outlet Node",
+   "connector_lists": [
+    {
+     "name": "CW Demand Splitter",
+     "type": "Connector:Splitter",
+     "inlet_branch": "Cooling Demand Inlet",
+     "outlet_branches": [
+      "Cooling Coil Branch",
+      "OA Cooling Coil Branch",
+      "Cooling Demand Bypass Branch"
+     ]
+    },
+    {
+     "name": "CW Demand Mixer",
+     "type": "Connector:Mixer",
+     "outlet_branch": "Cooling Demand Outlet",
+     "inlet_branches": [
+      "Cooling Coil Branch",
+      "OA Cooling Coil Branch",
+      "Cooling Demand Bypass Branch"
+     ]
+    }
+   ]
+  }
+ }
+}
