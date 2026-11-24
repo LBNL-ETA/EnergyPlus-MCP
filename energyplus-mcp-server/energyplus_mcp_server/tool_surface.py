@@ -27,6 +27,10 @@ DOMAIN_TOOLS = {
     "outputs": "outputs_manager",
     "geometry": "geometry_manager",
 }
+# Aggregate capability tool, registered with the domain managers whenever at
+# least one parameter-owning domain is enabled (domains/capabilities.py).
+CAPABILITY_TOOL = "parameter_capabilities"
+PARAMETER_DOMAINS = ("envelope", "internal_loads", "schedules", "hvac", "service_water")
 MASTER_TOOLS = (
     "inspect_model",
     "get_outputs",
@@ -164,6 +168,8 @@ def expected_tool_names(surface: Mapping[str, Any]) -> set[str]:
             for name, enabled in surface["domains"].items()
             if enabled
         )
+        if any(surface["domains"].get(name) for name in PARAMETER_DOMAINS):
+            names.add(CAPABILITY_TOOL)
     if mode in {"masters", "hybrid"}:
         names.update(MASTER_TOOLS)
     if surface["compatibility"]["workflow_managers"]:
@@ -205,7 +211,8 @@ def register_tool_surface(mcp: Any, ep_manager: Any, config: Any, surface: Mappi
                 cfg,
                 **{name: name in enabled for name in DOMAIN_TOOLS},
             ),
-            {DOMAIN_TOOLS[name] for name in enabled},
+            {DOMAIN_TOOLS[name] for name in enabled}
+            | ({CAPABILITY_TOOL} if enabled & set(PARAMETER_DOMAINS) else set()),
             mcp,
             ep_manager,
             config,

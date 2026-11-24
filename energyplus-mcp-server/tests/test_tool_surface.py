@@ -30,7 +30,7 @@ def write_config(tmp_path: Path, text: str) -> Path:
 
 @pytest.mark.parametrize(
     ("mode", "expected_count"),
-    [("domains", 18), ("masters", 15), ("hybrid", 22)],
+    [("domains", 19), ("masters", 15), ("hybrid", 23)],
 )
 def test_supported_surfaces_register_exactly_once(tmp_path, mode, expected_count):
     path = write_config(
@@ -59,7 +59,7 @@ def test_workflow_compatibility_is_explicit_and_adds_only_facades(tmp_path):
     names = register_tool_surface(FakeMCP(), object(), object(), surface)
 
     assert {"calibration_manager", "retrofit_manager"} <= names
-    assert len(names) == 20
+    assert len(names) == 21
 
 
 def test_geometry_toggle_is_loaded(tmp_path):
@@ -107,3 +107,23 @@ def test_duplicate_registration_is_rejected(tmp_path):
 
     with pytest.raises(RuntimeError, match="duplicate MCP tool"):
         register_tool_surface(mcp, object(), object(), surface)
+
+
+def test_capability_tool_follows_parameter_domains(tmp_path):
+    enabled = write_config(tmp_path, "tool_surface:\n  mode: domains\n")
+    names = register_tool_surface(FakeMCP(), object(), object(), load_tool_surface(enabled, {}))
+    assert "parameter_capabilities" in names
+
+    only_geometry = tmp_path / "geometry.yaml"
+    only_geometry.write_text(
+        "tool_surface:\n  mode: domains\n  domains:\n    envelope: false\n"
+        "    internal_loads: false\n    schedules: false\n    hvac: false\n"
+        "    service_water: false\n    geometry: true\n"
+    )
+    surface = load_tool_surface(only_geometry, {})
+    names = register_tool_surface(FakeMCP(), object(), object(), surface)
+    assert "parameter_capabilities" not in names
+    assert names == expected_tool_names(surface)
+
+    masters = write_config(tmp_path, "tool_surface:\n  mode: masters\n")
+    assert "parameter_capabilities" not in expected_tool_names(load_tool_surface(masters, {}))

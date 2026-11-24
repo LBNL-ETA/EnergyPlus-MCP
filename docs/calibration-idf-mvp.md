@@ -12,9 +12,10 @@ slice, not the full SF calibration campaign or PNNL harness integration.
 ## Minimal workflow
 
 1. Select an EnergyPlus executable and IDD compatible with the input IDF.
-   Call `parameter_capabilities` on `internal_load_manager`,
-   `envelope_manager`, and `hvac_manager`, and pass the reports to the
-   calibration service's backend-aware gate.
+   Call the `parameter_capabilities` tool once with the staged IDF and pass
+   its whole response unchanged to the calibration service's backend-aware
+   gates. (It aggregates the domain managers' `parameter_capabilities`
+   reports; do not assemble them by hand.)
 2. Create a calibration project with `backend="energyplus"` and a shared
    `runs_dir`; ingest the monthly bills and classify climate as usual.
 3. Run the baseline with `simulation_manager(action="run", idf_path=...,

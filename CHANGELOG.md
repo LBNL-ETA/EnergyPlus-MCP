@@ -9,6 +9,37 @@ version `0.1.0`.
 
 ## [Unreleased]
 
+### Added
+- `parameter_capabilities(idf_path, detail="summary")` tool: the
+  `parameter_capabilities` reports of every enabled parameter-owning domain
+  manager (internal loads, envelope, schedules, HVAC, service water) in one
+  response, with the model format, IDF path, EnergyPlus version, monthly
+  meters, and simulation-evidence contract stated once and each manager's
+  report under `domain_capabilities`. A consumer such as the calibration
+  service's meter and measure-reach gates takes it unchanged. Agents
+  previously called five managers and assembled the result by hand; in an
+  LLM-driven calibration pilot the hand-built object dropped the heating and
+  cooling setpoint, outdoor-air, and economizer reports, closing those
+  parameters as unreachable. `detail="summary"` omits per-object target and
+  relationship listings (on a 15-zone office model, a 31K-character response
+  instead of 398K characters across the five manager calls);
+  `detail="full"` keeps them. The tool is registered whenever at least one of
+  those domain managers is enabled.
+
+### Fixed
+- Schedule capability checks and schedule edits were quadratic in a
+  schedule's field count: `_field_names` removed duplicate names with a
+  list-membership test, and reading every field through Eppy attributes
+  scans the field list once per name. Both are now linear, with field values
+  read by position under Eppy's own lookup rules. Results are byte-identical
+  (capability reports, edit reports, and edited IDFs on three models). The
+  aggregate `parameter_capabilities` call on the ASHRAE 90.1 medium office
+  example went from 205 s to 8 s, the small office from 103 s to 4 s, and a
+  15-zone SF office from 42 s to 5 s.
+- The installed EnergyPlus version is cached per executable (keyed by path,
+  size, and modification time) instead of starting `energyplus --version`
+  for every manager.
+
 ## [0.2.0] - 2026-11-23
 
 First tagged release. It combines the `main` branch with the domain-manager
