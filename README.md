@@ -847,11 +847,12 @@ installation, and the older `sample_files/<name>` form still works.
   "arguments": {
     "action": "visualize",
     "idf_path": "sample_files/basic/5ZoneAirCooled.idf",
-    "loop_name": "VAV Sys 1",
-    "image_format": "png"
+    "loop_name": "VAV Sys 1"
   }
 }
 ```
+
+`visualize` writes a self-contained HTML page by default (inline SVG: clickable supply/demand frames, node tooltips, and a component/node table; every loop when `loop_name` is omitted). Pass `"image_format": "png"` (or `svg`, `pdf`, `jpg`) for a Graphviz image of one loop.
 
 **Preflight: Readiness check**
 ```json

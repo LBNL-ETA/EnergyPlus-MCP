@@ -2653,13 +2653,13 @@ class EnergyPlusManager:
 
 
     def visualize_loop_diagram(self, idf_path: str, loop_name: str = None,
-                            output_path: Optional[str] = None, format: str = "png",
+                            output_path: Optional[str] = None, format: str = "html",
                             show_legend: bool = True) -> str:
         """
         Draw HVAC loop topology as an image (Graphviz) or a self-contained HTML page.
 
-        ``format`` is png, jpg, pdf, svg (Graphviz) or html. HTML needs no Graphviz
-        and, with no ``loop_name``, draws every loop on one page; the image formats
+        ``format`` is html (the default) or png, jpg, pdf, svg (Graphviz). HTML needs
+        no Graphviz and, with no ``loop_name``, draws every loop on one page; the image formats
         draw ``loop_name`` or, without it, the first loop found. When Graphviz
         cannot run, the diagram is written as HTML instead and the result says why
         (``fallback_reason``). Only if the topology itself cannot be read is a

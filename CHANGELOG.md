@@ -31,7 +31,9 @@ version `0.1.0`.
   instead of 398K characters across the five manager calls);
   `detail="full"` keeps them. The tool is registered whenever at least one of
   those domain managers is enabled.
-- `hvac_manager` `visualize` accepts `image_format="html"`: a self-contained
+- `hvac_manager` `visualize` now writes HTML by default (`image_format`
+  defaults to `html`; pass `png`, `svg`, `pdf` or `jpg` for a Graphviz image
+  of one loop): a self-contained
   page (inline SVG; no Graphviz or network access) that draws each loop's
   supply side (left to right) and demand side (right to left) in dashed
   frames, with splitters, parallel branches, and mixers, and closes the loop

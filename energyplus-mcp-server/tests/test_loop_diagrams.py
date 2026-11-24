@@ -202,3 +202,28 @@ def test_production_image_installs_graphviz():
     runtime = dockerfile.split("AS runtime", 1)[1]
     install = re.search(r"apt-get install[^&]*", runtime).group(0)
     assert re.search(r"\bgraphviz\b", install), "runtime stage must install graphviz (the dot program)"
+
+
+def test_html_is_the_default_format(tmp_path, monkeypatch):
+    def _unexpected(self, *args, **kwargs):
+        raise AssertionError("Graphviz must not run for the default format")
+
+    manager = _manager(tmp_path, monkeypatch, render=_unexpected)
+
+    result = json.loads(manager.visualize_loop_diagram("Model.idf"))
+
+    assert result["diagram_type"] == "html_topology"
+    assert result["loops_drawn"] == ["Hot Water Loop", "Chilled Water Loop", "VAV Sys 1"]
+    assert result["output_file"].endswith("Model_hvac_diagram.html")
+
+
+def test_hvac_manager_tool_defaults_to_html():
+    import inspect
+
+    from energyplus_mcp_server.domains import hvac
+    from energyplus_mcp_server.tools import hvac_loop
+
+    assert inspect.signature(hvac.hvac_visualize).parameters["image_format"].default == "html"
+    source = inspect.getsource(hvac)
+    assert 'image_format: str = "png"' not in source
+    assert '= "html"' in inspect.getsource(hvac_loop)

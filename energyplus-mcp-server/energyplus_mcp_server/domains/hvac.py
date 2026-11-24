@@ -111,7 +111,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         idf_path: Optional[str] = None,
         loop_name: Optional[str] = None,
         output_path: Optional[str] = None,
-        image_format: str = "png",
+        image_format: str = "html",
         show_legend: bool = True,
         # Semantic parameter operations
         parameter: Optional[str] = None,
@@ -131,11 +131,12 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
 
         - discover: list loops and components
         - topology: detailed loop topology for a given loop
-        - visualize: draw loop topology and return the file path. image_format
-          png/jpg/pdf/svg uses Graphviz (one loop: loop_name or the first loop);
-          html is a self-contained page with node tooltips and a component
-          table, and draws every loop when loop_name is omitted. If Graphviz
-          cannot run, an HTML diagram is written and fallback_reason says why.
+        - visualize: draw loop topology and return the file path. The default
+          image_format html is a self-contained page (clickable supply/demand
+          frames, node tooltips, a component table) that draws every loop when
+          loop_name is omitted. png/jpg/pdf/svg use Graphviz for an image of one
+          loop (loop_name or the first loop); if Graphviz cannot run, an HTML
+          diagram is written and fallback_reason says why.
         - capabilities: enumerate actions
         """
         try:
@@ -248,7 +249,7 @@ def hvac_visualize(
     idf_path: str,
     loop_name: Optional[str] = None,
     output_path: Optional[str] = None,
-    image_format: str = "png",
+    image_format: str = "html",
     show_legend: bool = True,
 ) -> str:
     return ep_manager.visualize_loop_diagram(idf_path, loop_name, output_path, image_format, show_legend)
