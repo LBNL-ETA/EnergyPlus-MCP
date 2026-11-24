@@ -56,6 +56,20 @@ against the budget and accepts `completed` as success.
 `tests/test_simulation_queue.py` uses a fake `energyplus` executable to check
 overlap, the cap, cancel, timeout, and the calibration layout.
 
+## Shared parsed models
+
+`utils/eppy_speedups.py` memoizes eppy's field-name helpers process-wide;
+they depend only on IDD label text. `utils/model_cache.py` lets read-only
+code share one parsed model per call: inside `shared_models()` (or a
+`@with_shared_models` function), `read_only_idf(path)` returns one parse per
+file, and `derived(model, name, factory)` memoizes data computed from it
+(the schedule graph, zone geometry). Use these only where the model and the
+derived data are never modified: capability checks, inspections and dry-run
+plans. Anything that edits and saves a model must parse its own copy with
+`IDF(path)` or the editor's loader. `EPLUS_MCP_VERIFY_SHARED_MODELS=1` makes a
+scope fail if a shared model was changed; `tests/test_model_cache.py` covers
+the rules.
+
 ## Ownership and local repository map
 
 Han Li explicitly clarified that the existing calibration evaluation framework

@@ -9,6 +9,26 @@ version `0.1.0`.
 
 ## [Unreleased]
 
+### Changed
+- **Capability checks and model parsing are about ten times faster.** The
+  aggregate `parameter_capabilities` call on six test models went from
+  0.11–5.10 s to 0.02–0.50 s locally (5-zone model: 2.09 s to 0.19 s;
+  a 950 KB OpenStudio-generated model: 5.10 s to 0.50 s), with identical
+  output. Four changes:
+  - eppy's field-name helpers (`makefieldname`, `onlylegalchar`) are
+    memoized for the process (`utils/eppy_speedups.py`). They depend only on
+    IDD label text, so this speeds up every model parse in every tool.
+  - Within one capability call, read-only callers share one parsed model
+    (`utils/model_cache.py`): twelve parses of the same file became one.
+    Applied edits still parse their own copy.
+  - The schedule graph is built once per call instead of seven times, and
+    the schedule-reference field check is memoized.
+  - Zone geometry is computed once per call and copied to each caller.
+  Shared data lives only for one call, is keyed by the file's path, size and
+  modification time, and is never shared between concurrent calls. Setting
+  `EPLUS_MCP_VERIFY_SHARED_MODELS=1` re-parses each shared model when the
+  call ends and fails if one was changed in memory.
+
 ### Added
 - Google sign-in (OAuth) for the streamable-HTTP transport, for clients such
   as ChatGPT apps that cannot send a fixed bearer token. Set `MCP_OAUTH` and
