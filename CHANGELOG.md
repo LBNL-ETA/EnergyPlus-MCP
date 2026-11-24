@@ -45,6 +45,25 @@ version `0.1.0`.
 - The installed EnergyPlus version is cached per executable (keyed by path,
   size, and modification time) instead of starting `energyplus --version`
   for every manager.
+- `model_upgrade` `action="run"` failed on Cloud Run with `[Errno 1]
+  Operation not permitted`. It copied the transition programs into the output
+  directory with `shutil.copy2` and ran them there; over HTTP that directory
+  is the caller's workspace, which on Cloud Run is a Cloud Storage mount that
+  refuses `chmod`/`utime` and cannot execute programs. Transitions now run in
+  a local temporary directory that is removed afterwards, and only the
+  stages, logs, and manifest are written to the output directory, as plain
+  data copies. The output directory no longer contains `transition-runtime/`
+  or `work/`. `file_utils` copy also no longer fails when the destination
+  refuses file metadata.
+- Duplicate meter checks compared names and frequencies case-sensitively and
+  treated `Output:Meter` and `Output:Meter:MeterFileOnly` for the same meter
+  as unrelated, so adding `Electricity:Facility, Monthly` to a model that
+  already had it as `MeterFileOnly, monthly` (as the 26.1 `5ZoneAirCooled`
+  example does) made EnergyPlus warn and report the meter twice. Checks now
+  ignore case; a `MeterFileOnly` request already covered by the full meter is
+  skipped, and a full-meter request replaces its `MeterFileOnly` variant
+  (reported as `replaced_meter_file_only`). The monthly meters that
+  calibration runs add follow the same rules.
 
 ## [0.2.0] - 2026-11-23
 

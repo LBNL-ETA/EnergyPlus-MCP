@@ -6,8 +6,9 @@
 # Build from the energyplus-mcp-server directory:
 #   docker build -f Dockerfile.prod -t energyplus-mcp .
 #
-# Not included (they need the larger dev build): the reference_docs index and
-# the model_upgrade transition bundle. Those tools report themselves unavailable.
+# Not included (it needs the larger dev build): the reference_docs index, so
+# that tool reports itself unavailable. model_upgrade uses the transition
+# programs in the EnergyPlus release (PreProcess/IDFVersionUpdater).
 
 # ── Stage 1: builder — EnergyPlus + locked Python dependencies ───────────────
 FROM python:3.12-slim AS builder

@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 from typing import Any, Optional
 
 
@@ -295,7 +296,7 @@ class ModelUpgrade:
             source = runtime_dir / name
             if source.is_file():
                 target = artifact_dir / f"{label}__runtime-{name}"
-                shutil.copy2(source, target)
+                shutil.copyfile(source, target)
                 copied.append(str(target.relative_to(artifact_dir.parent)))
         return copied
 
@@ -306,7 +307,7 @@ class ModelUpgrade:
             if source.name == "current.idf" or not source.is_file():
                 continue
             target = artifact_dir / f"{label}__{source.name}"
-            shutil.copy2(source, target)
+            shutil.copyfile(source, target)
             copied.append(str(target.relative_to(artifact_dir.parent)))
         return copied
 
@@ -403,10 +404,18 @@ class ModelUpgrade:
         transition_dir = Path(plan["transition_directory"])
         output_dir.mkdir(parents=True)
         stages_dir = output_dir / "stages"
-        runtime_dir = output_dir / "transition-runtime"
-        work_dir = output_dir / "work"
         artifact_dir = output_dir / "transition-artifacts"
-        for directory in (stages_dir, runtime_dir, work_dir, artifact_dir):
+        for directory in (stages_dir, artifact_dir):
+            directory.mkdir()
+        # Transition programs run from a local scratch directory, never from
+        # the output directory: over HTTP that is the caller's workspace, which
+        # on Cloud Run is a Cloud Storage mount that refuses chmod/utime and
+        # cannot execute programs. Only stages, logs, and the manifest are
+        # written to the output directory, with plain data copies.
+        scratch = tempfile.TemporaryDirectory(prefix="eplus-transition-")
+        runtime_dir = Path(scratch.name) / "transition-runtime"
+        work_dir = Path(scratch.name) / "work"
+        for directory in (runtime_dir, work_dir):
             directory.mkdir()
         manifest_path = output_dir / "migration-manifest.json"
         manifest: dict[str, Any] = {
@@ -434,11 +443,12 @@ class ModelUpgrade:
 
         try:
             current = stages_dir / f"{source.stem}-{EnergyPlusVersion.parse(plan['source_version']).label}{source.suffix}"
-            shutil.copy2(source, current)
+            shutil.copyfile(source, current)
             manifest["source_copy"] = str(current.relative_to(output_dir))
             for step_data in plan["steps"]:
                 for asset in step_data["assets"]:
                     source_asset = Path(asset["path"])
+                    # Local scratch: keep the executable bit.
                     shutil.copy2(source_asset, runtime_dir / source_asset.name)
             self._write_manifest(manifest_path, manifest)
 
@@ -451,7 +461,7 @@ class ModelUpgrade:
                 step_work_dir = work_dir / label
                 step_work_dir.mkdir()
                 work_idf = step_work_dir / "current.idf"
-                shutil.copy2(current, work_idf)
+                shutil.copyfile(current, work_idf)
                 input_hash = self._file_hash(work_idf)
                 for name in RUNTIME_AUXILIARY_FILES:
                     generated = runtime_dir / name
@@ -525,7 +535,7 @@ class ModelUpgrade:
                         f"Transition {label} produced {actual_version.display}, expected {expected_version.display}"
                     )
                 stage = stages_dir / f"{source.stem}-{actual_version.label}{source.suffix}"
-                shutil.copy2(produced, stage)
+                shutil.copyfile(produced, stage)
                 record.update(
                     {
                         "status": "completed",
@@ -575,5 +585,7 @@ class ModelUpgrade:
                     "transition_warnings": self._transition_warning_summaries(manifest),
                 }
             )
+        finally:
+            scratch.cleanup()
         self._write_manifest(manifest_path, manifest)
         return result

@@ -351,7 +351,13 @@ class EnergyPlusManager:
             # Perform the copy
             import shutil
             start_time = datetime.now()
-            shutil.copy2(resolved_source_path, resolved_target_path)
+            shutil.copyfile(resolved_source_path, resolved_target_path)
+            try:
+                shutil.copystat(resolved_source_path, resolved_target_path)
+            except OSError:
+                # Some destinations (e.g. a Cloud Storage mount on Cloud Run)
+                # refuse chmod/utime; the copied data is what matters.
+                logger.debug("Could not copy file metadata to %s", resolved_target_path)
             end_time = datetime.now()
             copy_duration = end_time - start_time
             
@@ -1800,6 +1806,7 @@ class EnergyPlusManager:
                 "resolved_meters": len(resolved_meters),
                 "added_meters": addition_result["added_count"],
                 "skipped_duplicates": duplicate_report["duplicates_found"],
+                "replaced_meter_file_only": len(duplicate_report.get("replaced_meters", [])),
                 "validation_summary": {
                     "total_valid": len(validation_report["valid_meters"]),
                     "total_invalid": len(validation_report["invalid_meters"]),
@@ -3219,11 +3226,24 @@ class EnergyPlusManager:
             ("Electricity:Facility", "Monthly"),
             ("NaturalGas:Facility", "Monthly"),
         }
-        existing = {
-            (str(getattr(meter, "Key_Name", "")), str(getattr(meter, "Reporting_Frequency", "")))
-            for meter in idf.idfobjects.get("Output:Meter", [])
-        }
-        for meter_name, frequency in sorted(required - existing):
+
+        def identity(meter: Any) -> tuple[str, str]:
+            # EnergyPlus compares meter names and frequencies case-insensitively.
+            return (
+                str(getattr(meter, "Key_Name", "")).strip().lower(),
+                str(getattr(meter, "Reporting_Frequency", "")).strip().lower(),
+            )
+
+        existing = {identity(meter) for meter in idf.idfobjects.get("Output:Meter", [])}
+        for meter_name, frequency in sorted(required):
+            wanted = (meter_name.lower(), frequency.lower())
+            if wanted in existing:
+                continue
+            # Output:Meter also writes the .mtr file, so a MeterFileOnly
+            # request for the same meter would only make EnergyPlus warn.
+            for file_only in list(idf.idfobjects.get("Output:Meter:MeterFileOnly", [])):
+                if identity(file_only) == wanted:
+                    idf.removeidfobject(file_only)
             idf.newidfobject(
                 "Output:Meter",
                 Key_Name=meter_name,

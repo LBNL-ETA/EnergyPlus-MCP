@@ -453,7 +453,7 @@ ADMIN_LABELS=alice ./scripts/deploy.sh
 SVC_URL=https://<service>.run.app TOKEN=<a token> ./scripts/smoke.sh
 ```
 
-The service runs a single instance (upload/download links and the simulation queue live in memory) that scales to zero when idle. The bucket is mounted at `MCP_USER_DATA_ROOT` (`/data/users`), so uploads and results survive restarts. Clients connect to `https://<service>.run.app/mcp` with `Authorization: Bearer <token>`. To rotate tokens, add a new version of the `mcp-tokens` secret and redeploy (or run `gcloud run services update` to start a new revision). The production image does not include the `reference_docs` index or the `model_upgrade` transition bundle; build from `.devcontainer/Dockerfile` if you need them.
+The service runs a single instance (upload/download links and the simulation queue live in memory) that scales to zero when idle. The bucket is mounted at `MCP_USER_DATA_ROOT` (`/data/users`), so uploads and results survive restarts. Clients connect to `https://<service>.run.app/mcp` with `Authorization: Bearer <token>`. To rotate tokens, add a new version of the `mcp-tokens` secret and redeploy (or run `gcloud run services update` to start a new revision). The production image does not include the `reference_docs` index; build from `.devcontainer/Dockerfile` if you need it. `model_upgrade` works there, using the transition programs shipped with EnergyPlus.
 
 #### Signing in with Google (OAuth) for ChatGPT apps and other hosted clients
 
