@@ -13,18 +13,39 @@ tool at registration checks those arguments, so a new tool with an
 The same wrapper also moves each tool's synchronous work off the event loop
 (see ``tool_threads``): tools run in a worker thread unless marked
 ``native_async``.
+
+Finally it sends JSON replies without indentation (``compact_reply``). Tools
+build their replies with ``json.dumps(..., indent=2)``; the indentation was 25
+to 57 percent of each reply, and every reply is read by an agent. Set
+``MCP_COMPACT_JSON=0`` to keep the tools' own formatting.
 """
 
 from __future__ import annotations
 
 import functools
 import inspect
+import json
+import os
 from typing import Any, Callable
 
 from .path_utils import resolve_output_location
 from .tool_threads import is_native_async, run_tool_in_thread
 
 OUTPUT_ARGUMENTS = ("output_path", "output_directory", "target_path", "runs_dir")
+
+
+def compact_reply(result: Any) -> Any:
+    """Re-encode a JSON object/array reply without whitespace; leave anything else alone."""
+    if not isinstance(result, str) or os.environ.get("MCP_COMPACT_JSON") == "0":
+        return result
+    text = result.lstrip()
+    if not text.startswith(("{", "[")):
+        return result
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return result
+    return json.dumps(parsed, separators=(",", ":"), ensure_ascii=False)
 
 
 def guard_tool(fn: Callable[..., Any], config: Any) -> Callable[..., Any]:
@@ -57,8 +78,8 @@ def guard_tool(fn: Callable[..., Any], config: Any) -> Callable[..., Any]:
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         args, kwargs = check(args, kwargs)
         if native:
-            return await fn(*args, **kwargs)
-        return await run_tool_in_thread(fn, *args, **kwargs)
+            return compact_reply(await fn(*args, **kwargs))
+        return compact_reply(await run_tool_in_thread(fn, *args, **kwargs))
 
     return wrapper
 
