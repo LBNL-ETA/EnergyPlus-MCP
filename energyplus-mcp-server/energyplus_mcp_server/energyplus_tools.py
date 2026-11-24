@@ -3250,7 +3250,27 @@ class EnergyPlusManager:
         return ".".join(str(int(number)) for number in numbers)
 
     def _runtime_energyplus_version(self) -> str:
+        """Installed EnergyPlus version, cached per executable file.
+
+        Capability checks ask for it once per manager; each ask started an
+        ``energyplus --version`` process. The cache key includes the file's
+        modification time, so replacing the executable is noticed.
+        """
         executable = self.config.energyplus.executable_path
+        try:
+            stat = os.stat(executable)
+            key = (executable, stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            key = None
+        cached = getattr(self, "_runtime_version_cache", None)
+        if key is not None and cached is not None and cached[0] == key:
+            return cached[1]
+        version = self._query_runtime_energyplus_version(executable)
+        if key is not None:
+            self._runtime_version_cache = (key, version)
+        return version
+
+    def _query_runtime_energyplus_version(self, executable: str) -> str:
         completed = subprocess.run(
             [executable, "--version"],
             check=True,

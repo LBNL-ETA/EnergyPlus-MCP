@@ -26,6 +26,20 @@ version `0.1.0`.
   `detail="full"` keeps them. The tool is registered whenever at least one of
   those domain managers is enabled.
 
+### Fixed
+- Schedule capability checks and schedule edits were quadratic in a
+  schedule's field count: `_field_names` removed duplicate names with a
+  list-membership test, and reading every field through Eppy attributes
+  scans the field list once per name. Both are now linear, with field values
+  read by position under Eppy's own lookup rules. Results are byte-identical
+  (capability reports, edit reports, and edited IDFs on three models). The
+  aggregate `parameter_capabilities` call on the ASHRAE 90.1 medium office
+  example went from 205 s to 8 s, the small office from 103 s to 4 s, and a
+  15-zone SF office from 42 s to 5 s.
+- The installed EnergyPlus version is cached per executable (keyed by path,
+  size, and modification time) instead of starting `energyplus --version`
+  for every manager.
+
 ## [0.2.0] - 2026-11-23
 
 First tagged release. It combines the `main` branch with the domain-manager
