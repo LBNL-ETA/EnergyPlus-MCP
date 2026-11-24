@@ -9,8 +9,13 @@ any required approvals from the U.S. Dept. of Energy). All rights reserved.
 See License.txt in the parent directory for license details.
 """
 
-from .energyplus_tools import EnergyPlusManager
-from .config import Config, get_config
+# Memoize eppy's field-name helpers before anything parses an IDF.
+from .utils import eppy_speedups as _eppy_speedups
+
+_eppy_speedups.apply()
+
+from .energyplus_tools import EnergyPlusManager  # noqa: E402
+from .config import Config, get_config  # noqa: E402
 
 __version__ = "0.2.0"
 __all__ = ["EnergyPlusManager", "Config", "get_config"]
