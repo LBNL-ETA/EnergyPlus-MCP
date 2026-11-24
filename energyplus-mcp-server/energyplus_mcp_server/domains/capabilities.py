@@ -17,7 +17,11 @@ field.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import tempfile
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 from ..utils.model_cache import with_shared_models
@@ -42,9 +46,16 @@ BULKY_FIELDS = (
 )
 # Top-level fields repeated by every manager that this tool states once.
 SHARED_FIELDS = (
-    "model_format", "idf_path", "energyplus_version", "model_version",
+    "model_format", "idf_path", "model_sha256", "energyplus_version", "model_version",
     "monthly_meters", "simulation_evidence",
 )
+# Folder under a calibration runs_dir; run counters only look for
+# <runs_dir>/*/run_record.json, which this folder never contains.
+CAPABILITIES_SUBDIR = "capabilities"
+
+
+def _model_sha256(path: str) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def _domain_capability_function(module_name: str) -> Callable[[Any, Optional[str]], Dict[str, Any]]:
@@ -100,6 +111,7 @@ def combined_capabilities(
     try:
         resolved = ep_manager._resolve_idf_path(idf_path)
         versions = ep_manager._assert_simulation_version_matches(resolved)
+        model_sha256 = _model_sha256(resolved)
     except Exception as error:
         failure = {"success": False, "ready": False, "tool": TOOL_NAME,
                    "action": "parameter_capabilities", "model_format": "idf",
@@ -137,6 +149,7 @@ def combined_capabilities(
     shared: Dict[str, Any] = {
         "model_format": "idf",
         "idf_path": resolved,
+        "model_sha256": model_sha256,
         "energyplus_version": versions.get("runtime_version"),
         "model_version": versions.get("model_version"),
         "monthly_meters": list(MONTHLY_FACILITY_METERS),
@@ -178,6 +191,52 @@ def combined_capabilities(
     return result
 
 
+def write_capabilities_file(result: Dict[str, Any], path: Path) -> Dict[str, Any]:
+    """Write the full response atomically; return where it is and its sha256."""
+    text = json.dumps(result, indent=1, sort_keys=True) + "\n"
+    data = text.encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(data)
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+    return {
+        "capabilities_path": str(path),
+        "capabilities_sha256": hashlib.sha256(data).hexdigest(),
+        "capabilities_bytes": len(data),
+    }
+
+
+def file_reply(result: Dict[str, Any], written: Dict[str, Any]) -> Dict[str, Any]:
+    """Short reply naming the file instead of repeating the response."""
+    keys = ("success", "ready", "tool", "action", "model_format", "idf_path", "model_sha256",
+            "energyplus_version", "model_version", "detail", "managers", "coverage", "errors")
+    reply = {key: result[key] for key in keys if key in result}
+    reply.update(written)
+    reply["usage"] = (
+        "The full capability response is in capabilities_path. Give a consumer gate "
+        "capabilities_path and capabilities_sha256 instead of copying the response; if the "
+        "consumer cannot read this server's files, call again without runs_dir/output_path "
+        "to get the response inline."
+    )
+    return reply
+
+
+def capabilities_target(
+    result: Dict[str, Any], runs_dir: Optional[str], output_path: Optional[str]
+) -> Optional[Path]:
+    """Where to write the response, or None to reply inline."""
+    if output_path:
+        return Path(output_path).expanduser().resolve()
+    if runs_dir:
+        return Path(runs_dir).expanduser().resolve() / CAPABILITIES_SUBDIR / f"{result['model_sha256']}.json"
+    return None
+
+
 def register(mcp: Any, ep_manager: Any, config: Any, managers: Sequence[str]) -> None:
     """Register the aggregate tool for the enabled parameter-domain managers."""
     enabled = tuple(managers)
@@ -185,7 +244,9 @@ def register(mcp: Any, ep_manager: Any, config: Any, managers: Sequence[str]) ->
     @mcp.tool(name=TOOL_NAME)
     async def parameter_capabilities(
         idf_path: str,
-        detail: Literal["summary", "full"] = "summary",
+        detail: Optional[Literal["summary", "full"]] = None,
+        runs_dir: Optional[str] = None,
+        output_path: Optional[str] = None,
     ) -> str:
         """All semantic-parameter capabilities of one IDF in a single response.
 
@@ -198,8 +259,22 @@ def register(mcp: Any, ep_manager: Any, config: Any, managers: Sequence[str]) ->
         detail="summary" (default) omits per-object target and relationship
         lists but keeps coverage, skipped/ambiguous objects, and bounds;
         detail="full" includes everything.
+
+        To avoid copying a large response through the conversation, pass
+        runs_dir (writes <runs_dir>/capabilities/<model_sha256>.json) or
+        output_path: the full response (detail="full" unless given) goes to
+        that file, and the reply carries capabilities_path,
+        capabilities_sha256, model_sha256 and the coverage index. A calibration
+        gate can then read the file directly. Without either argument the
+        response is returned inline (detail="summary" unless given).
         """
         try:
-            return json.dumps(combined_capabilities(ep_manager, idf_path, enabled, detail), indent=1)
+            to_file = bool(runs_dir or output_path)
+            chosen = detail or ("full" if to_file else "summary")
+            result = combined_capabilities(ep_manager, idf_path, enabled, chosen)
+            target = capabilities_target(result, runs_dir, output_path) if "model_sha256" in result else None
+            if target is None:
+                return json.dumps(result, indent=1)
+            return json.dumps(file_reply(result, write_capabilities_file(result, target)), indent=1)
         except Exception as error:
             return json.dumps({"success": False, "tool": TOOL_NAME, "error": str(error)})
