@@ -5,22 +5,25 @@ This module provides a lightweight base class for modifying EnergyPlus IDF files
 with automatic validation using the Input Data Dictionary (IDD).
 
 Key Features:
-- IDD-based field validation (no hardcoded constraints)
-- Target filtering (all, zone:Name, name:Name)
-- Standard result formatting
-- Simple error handling with IDD context
-
-Design Philosophy: KISS - Keep It Simple and Stupid
+- IDD-based field validation (no hardcoded constraints): field names, numeric
+  ranges, allowed choice values, and references to other objects
+- Target filtering (all, zone:Name, name:Name), case-insensitive like
+  EnergyPlus names; any other target is refused rather than matching everything
+- All-or-nothing: when any requested change is invalid, nothing is saved
+- Deletes and renames refuse to break references unless forced
+- dry_run reports the planned change without writing
 """
 
 import difflib
 import fnmatch
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 
 from eppy.modeleditor import IDF
+
+from .idd_rules import IDDIndex
 
 logger = logging.getLogger(__name__)
 
@@ -32,16 +35,222 @@ class IDDValidationError(Exception):
     pass
 
 
-class IDFModifier:
-    """Simple foundation for IDF modifications with IDD validation.
+class TargetError(ValueError):
+    """An unrecognised target pattern; nothing is changed."""
 
-    This class provides basic CRUD operations on IDF objects with automatic
-    validation against the EnergyPlus IDD schema.
+
+TARGET_HELP = 'target must be "all", "name:<object name>" or "zone:<zone name>"'
+ZONE_FIELDS = (
+    "Zone_or_ZoneList_Name",
+    "Zone_Name",
+    "Zone_or_ZoneList_or_Space_or_SpaceList_Name",
+    "Zone_or_Space_Name",
+)
+SINGLETON_TYPES = {
+    'SIMULATIONCONTROL', 'BUILDING', 'GLOBALGEOMETRYRULES',
+    'SHADOWCALCULATION', 'HEATBALANCEALGORITHM', 'TIMESTEP',
+    'CONVERGANCELIMITS', 'PROGRAMCONTROL', 'VERSION',
+    'OUTPUTCONTROLTABLESTYLE', 'OUTPUTCONTROLREPORTINGTOLERANCES',
+    'OUTPUTCONTROLSIZINGSTYLE', 'OUTPUTDIAGNOSTICS',
+    'PERFORMANCEPRECISIONTRADEOFFS', 'LIFECYCLECOSTPARAMETERS'
+}
+_USERS_SHOWN = 20
+
+
+def _fold(value: Any) -> str:
+    return str(value).strip().casefold()
+
+
+class IDFModifier:
+    """Basic CRUD operations on IDF objects with validation against the IDD.
+
+    Every write is all-or-nothing: if any requested change is invalid, the
+    model is not saved and the reply lists every problem. ``force=True``
+    accepts references to objects that do not exist and deletes or renames
+    objects that others still use (reported as warnings). It never accepts
+    an unknown field, an out-of-range number, an invalid choice, or a
+    duplicate name. ``dry_run=True`` checks and reports without writing.
     """
 
     def __init__(self, output_dir: Optional[str] = None):
         """``output_dir`` receives auto-named outputs; None keeps them beside the input."""
         self.output_dir = output_dir
+
+    # -- shared helpers --------------------------------------------------------------------
+
+    @staticmethod
+    def parse_target(target: Optional[str]) -> Tuple[str, str]:
+        """("all", "") | ("name", value) | ("zone", value); raises TargetError otherwise."""
+        text = (target or "all").strip()
+        if text.casefold() == "all":
+            return "all", ""
+        kind, separator, value = text.partition(":")
+        kind, value = kind.strip().casefold(), value.strip()
+        if separator and kind in ("name", "zone") and value:
+            return kind, value
+        raise TargetError(f"Unrecognised target {target!r}: {TARGET_HELP}. Nothing was changed.")
+
+    def _filter_targets(self, objects: List[Any], target: str) -> List[Any]:
+        """Objects matching ``target`` (case-insensitive, like EnergyPlus names)."""
+        kind, value = self.parse_target(target)
+        if kind == "all":
+            return list(objects)
+        wanted = _fold(value)
+        if kind == "name":
+            return [obj for obj in objects if _fold(getattr(obj, "Name", "") or "") == wanted]
+        matched = []
+        for obj in objects:
+            for field in ZONE_FIELDS:
+                if field in obj.fieldnames and _fold(getattr(obj, field, "") or "") == wanted:
+                    matched.append(obj)
+                    break
+        return matched
+
+    @staticmethod
+    def _field_name(obj: Any, name: Any) -> Optional[str]:
+        """The object's field matching ``name``, ignoring case."""
+        if name in obj.fieldnames:
+            return name
+        folded = {field.casefold(): field for field in obj.fieldnames}
+        return folded.get(str(name).casefold())
+
+    @staticmethod
+    def _type_key(idf: Any, object_type: str) -> Optional[str]:
+        upper = object_type.strip().upper()
+        return upper if upper in idf.idfobjects else None
+
+    def _apply_fields(
+        self,
+        index: IDDIndex,
+        obj: Any,
+        fields: List[Tuple[Any, Any]],
+        force: bool,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Set fields on ``obj`` with every IDD check; (changes, errors, warnings)."""
+        changes: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        warnings: List[Dict[str, Any]] = []
+        name = str(getattr(obj, "Name", "") or "") if "Name" in obj.fieldnames else ""
+        for requested, new_value in fields:
+            if not requested:
+                errors.append({"object": name, "error": "Missing field name in modification"})
+                continue
+            field = self._field_name(obj, requested)
+            if field is None:
+                errors.append({
+                    "object": name, "field": requested,
+                    "error": f"Invalid field '{requested}' for {obj.key}",
+                    "hint": f"Valid fields include: {', '.join(obj.fieldnames[1:10])}...",
+                })
+                continue
+            old_value = getattr(obj, field, None)
+            field_idd = index.field_idd(obj.key, obj.fieldnames.index(field))
+            # Renaming an object others refer to would leave their references dangling.
+            if field_idd.get("reference") and old_value not in (None, "") and _fold(old_value) != _fold(new_value):
+                users = index.users_of(obj)
+                if users:
+                    entry = {
+                        "object": name, "field": field,
+                        "error": f"Renaming {obj.key} '{old_value}' would break {len(users)} reference(s)",
+                        "used_by": users[:_USERS_SHOWN], "used_by_count": len(users),
+                    }
+                    if not force:
+                        errors.append(entry)
+                        continue
+                    warnings.append(entry)
+            try:
+                setattr(obj, field, new_value)
+            except Exception as error:
+                errors.append({"object": name, "field": field, "error": str(error)})
+                continue
+            try:
+                obj.checkrange(field)
+            except Exception:
+                setattr(obj, field, old_value)
+                info = self.get_field_info(obj, field)
+                constraints = info.get("constraints") or {}
+                message = f"Value {new_value} out of range"
+                if constraints.get("minimum") is not None:
+                    message += f", min: {constraints['minimum']}"
+                if constraints.get("maximum") is not None:
+                    message += f", max: {constraints['maximum']}"
+                if info.get("units"):
+                    message += f" ({info['units']})"
+                errors.append({"object": name, "field": field, "value": new_value,
+                               "error": message, "constraints": constraints})
+                continue
+            choice_error, reference_problem = index.value_issue(obj, field, new_value)
+            if choice_error:
+                setattr(obj, field, old_value)
+                errors.append({"object": name, "field": field, "value": new_value, "error": choice_error})
+                continue
+            if reference_problem:
+                if not force:
+                    setattr(obj, field, old_value)
+                    errors.append({"object": name, "field": field, "value": new_value,
+                                   "error": reference_problem + " (pass force=True to accept it)"})
+                    continue
+                warnings.append({"object": name, "field": field, "warning": reference_problem})
+            info = self.get_field_info(obj, field)
+            changes.append({
+                "field": field,
+                "old_value": old_value,
+                "new_value": new_value,
+                "field_type": info.get("type"),
+                "units": info.get("units"),
+            })
+        return changes, errors, warnings
+
+    def _finish(
+        self,
+        idf: Any,
+        result: Dict[str, Any],
+        idf_path: str,
+        output_path: Optional[str],
+        dry_run: bool,
+        changed: bool,
+    ) -> Dict[str, Any]:
+        """Apply the all-or-nothing rule, then save unless this is a dry run."""
+        result["mode"] = "dry_run" if dry_run else "apply"
+        if result["errors"]:
+            result["success"] = False
+            result["saved"] = False
+            result["error"] = (
+                f"Nothing was saved: {len(result['errors'])} problem(s) listed in errors. "
+                "Fix them and call again."
+            )
+            return result
+        if not changed:
+            result["success"] = False
+            result["saved"] = False
+            result["error"] = "No changes to apply"
+            return result
+        if dry_run:
+            result["success"] = True
+            result["saved"] = False
+            result["note"] = "Dry run: every change passed validation; nothing was written."
+            return result
+        if output_path is None:
+            output_path = self._generate_output_path(idf_path)
+        try:
+            idf.save(output_path)
+        except Exception as error:
+            logger.error(f"Failed to save IDF: {error}")
+            result.update({"success": False, "saved": False, "error": f"Failed to save IDF: {error}"})
+            return result
+        result.update({"success": True, "saved": True, "output_file": output_path})
+        logger.info(f"Saved modified IDF to {output_path}")
+        return result
+
+    @staticmethod
+    def _load(idf_path: str) -> Tuple[Optional[Any], Optional[Dict[str, Any]]]:
+        try:
+            return IDF(idf_path), None
+        except Exception as error:
+            logger.error(f"Failed to load IDF: {error}")
+            return None, {"success": False, "error": f"Failed to load IDF: {error}"}
+
+    # -- modify ----------------------------------------------------------------------------
 
     def modify_objects(
         self,
@@ -49,191 +258,64 @@ class IDFModifier:
         object_type: str,
         modifications: List[Dict[str, Any]],
         target: str = "all",
-        output_path: Optional[str] = None
+        output_path: Optional[str] = None,
+        force: bool = False,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
-        """Modify IDF objects with IDD validation.
+        """Modify the objects of ``object_type`` that match ``target``.
 
         Args:
             idf_path: Path to input IDF file
             object_type: EnergyPlus object type (e.g., 'Lights', 'People')
             modifications: List of {field: name, value: new_value} dicts
-            target: Filter pattern - "all", "zone:ZoneName", "name:ObjectName"
+            target: "all", "zone:ZoneName" or "name:ObjectName" (case-insensitive)
             output_path: Where to save (auto-generated if None)
-
-        Returns:
-            Dict with modified_objects, errors, output_file, etc.
-
-        Example:
-            modifier = IDFModifier()
-            result = modifier.modify_objects(
-                idf_path="model.idf",
-                object_type="Lights",
-                modifications=[{"field": "Watts_per_Floor_Area", "value": 8.0}],
-                target="all"
-            )
+            force: Accept references to missing objects and renames that break references
+            dry_run: Validate and report without saving
         """
         logger.info(f"Modifying {object_type} objects in {idf_path} with target={target}")
-
-        # Load IDF
         try:
-            idf = IDF(idf_path)
-        except Exception as e:
-            logger.error(f"Failed to load IDF: {e}")
-            return {"success": False, "error": f"Failed to load IDF: {e}"}
-
-        # Get objects of this type
-        # Eppy uses uppercase with colons (e.g., "OUTPUTCONTROL:TABLE:STYLE")
-        object_type_normalized = object_type.upper()
-        objects = idf.idfobjects.get(object_type_normalized, [])
-
+            self.parse_target(target)
+        except TargetError as error:
+            return {"success": False, "saved": False, "error": str(error)}
+        idf, failure = self._load(idf_path)
+        if failure:
+            return failure
+        type_key = self._type_key(idf, object_type)
+        objects = idf.idfobjects.get(type_key, []) if type_key else []
         if not objects:
-            return {
-                "success": False,
-                "error": f"No {object_type} objects found in IDF"
-            }
-
-        # Filter targets
+            return {"success": False, "saved": False, "error": f"No {object_type} objects found in IDF"}
         target_objects = self._filter_targets(objects, target)
-
         if not target_objects:
-            return {
-                "success": False,
-                "error": f"No objects match target pattern: {target}"
-            }
+            return {"success": False, "saved": False, "error": f"No objects match target pattern: {target}"}
 
-        # Apply modifications
-        result = {
-            "success": True,
-            "modified_objects": [],
-            "errors": [],
-            "input_file": idf_path,
-            "object_type": object_type,
-            "target": target
+        index = IDDIndex(idf)
+        fields = [(mod.get("field"), mod.get("value")) for mod in modifications]
+        result: Dict[str, Any] = {
+            "success": False, "modified_objects": [], "errors": [], "warnings": [],
+            "input_file": idf_path, "object_type": object_type, "target": target,
+            "matched_count": len(target_objects),
         }
-
         for obj in target_objects:
-            obj_result = self._modify_single_object(obj, modifications)
-            result["modified_objects"].append(obj_result)
+            changes, errors, warnings = self._apply_fields(index, obj, fields, force)
+            result["modified_objects"].append({
+                "name": getattr(obj, "Name", "Unnamed"), "modified_fields": changes, "errors": errors,
+            })
+            result["errors"].extend(errors)
+            result["warnings"].extend(warnings)
+        modified_count = sum(1 for o in result["modified_objects"] if o["modified_fields"])
+        result["modified_count"] = modified_count
+        return self._finish(idf, result, idf_path, output_path, dry_run, modified_count > 0)
 
-            if obj_result.get("errors"):
-                result["errors"].extend(obj_result["errors"])
-
-        # Save if any modifications succeeded
-        modified_count = sum(1 for o in result["modified_objects"] if o.get("modified_fields"))
-
-        if modified_count > 0:
-            if output_path is None:
-                output_path = self._generate_output_path(idf_path)
-
-            try:
-                idf.save(output_path)
-                result["output_file"] = output_path
-                result["modified_count"] = modified_count
-                logger.info(f"Saved modified IDF to {output_path}")
-            except Exception as e:
-                logger.error(f"Failed to save IDF: {e}")
-                result["success"] = False
-                result["errors"].append({"error": f"Failed to save IDF: {e}"})
-        else:
-            result["success"] = False
-            result["error"] = "No modifications applied"
-
-        return result
-
-    def _modify_single_object(
-        self,
-        obj: Any,
-        modifications: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """Modify a single IDF object with IDD validation.
-
-        Args:
-            obj: Eppy IDF object
-            modifications: List of field modifications
-
-        Returns:
-            Dict with object name, modified fields, and errors
-        """
-        obj_result = {
-            "name": getattr(obj, "Name", "Unnamed"),
-            "modified_fields": [],
-            "errors": []
-        }
-
-        for mod in modifications:
-            field_name = mod.get("field")
-            new_value = mod.get("value")
-
-            if not field_name:
-                obj_result["errors"].append({"error": "Missing field name in modification"})
-                continue
-
-            # Validate field exists (IDD check)
-            if field_name not in obj.fieldnames:
-                valid_fields = ", ".join(obj.fieldnames[1:10])  # Show first 10
-                obj_result["errors"].append({
-                    "field": field_name,
-                    "error": f"Invalid field '{field_name}'",
-                    "hint": f"Valid fields include: {valid_fields}..."
-                })
-                continue
-
-            # Get old value
-            old_value = getattr(obj, field_name, None)
-
-            # Get field info from IDD
-            field_info = self.get_field_info(obj, field_name)
-
-            # Apply new value
-            try:
-                setattr(obj, field_name, new_value)
-
-                # Validate using IDD
-                try:
-                    obj.checkrange(field_name)
-
-                    # Success - record modification
-                    obj_result["modified_fields"].append({
-                        "field": field_name,
-                        "old_value": old_value,
-                        "new_value": new_value,
-                        "field_type": field_info.get("type"),
-                        "units": field_info.get("units")
-                    })
-
-                    logger.debug(f"Modified {field_name}: {old_value} → {new_value}")
-
-                except Exception as range_error:
-                    # IDD validation failed - revert
-                    setattr(obj, field_name, old_value)
-
-                    constraints = obj.getrange(field_name) if hasattr(obj, 'getrange') else {}
-
-                    error_msg = f"Value {new_value} out of range"
-                    if constraints.get('minimum') is not None:
-                        error_msg += f", min: {constraints['minimum']}"
-                    if constraints.get('maximum') is not None:
-                        error_msg += f", max: {constraints['maximum']}"
-                    if field_info.get('units'):
-                        error_msg += f" ({field_info['units']})"
-
-                    obj_result["errors"].append({
-                        "field": field_name,
-                        "value": new_value,
-                        "error": error_msg,
-                        "constraints": constraints
-                    })
-
-                    logger.warning(f"IDD validation failed for {field_name}: {range_error}")
-
-            except Exception as e:
-                obj_result["errors"].append({
-                    "field": field_name,
-                    "error": str(e)
-                })
-                logger.error(f"Error modifying {field_name}: {e}")
-
-        return obj_result
+    def _modify_single_object(self, obj: Any, modifications: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Backwards-compatible single-object modification (validates against the IDD)."""
+        index = IDDIndex(obj.theidf) if getattr(obj, "theidf", None) is not None else None
+        fields = [(mod.get("field"), mod.get("value")) for mod in modifications]
+        if index is None:
+            return {"name": getattr(obj, "Name", "Unnamed"), "modified_fields": [],
+                    "errors": [{"error": "object is not attached to a model"}]}
+        changes, errors, _ = self._apply_fields(index, obj, fields, force=False)
+        return {"name": getattr(obj, "Name", "Unnamed"), "modified_fields": changes, "errors": errors}
 
     def get_field_info(self, obj: Any, field_name: str) -> Dict[str, Any]:
         """Get field metadata from IDD.
@@ -261,51 +343,6 @@ class IDFModifier:
         except Exception as e:
             logger.warning(f"Failed to get field info for {field_name}: {e}")
             return {"name": field_name, "type": "unknown"}
-
-    def _filter_targets(
-        self,
-        objects: List[Any],
-        target: str
-    ) -> List[Any]:
-        """Filter objects based on target pattern.
-
-        Args:
-            objects: List of IDF objects
-            target: Filter pattern
-                - "all": All objects
-                - "zone:ZoneName": Objects in specific zone
-                - "name:ObjectName": Object with specific name
-
-        Returns:
-            Filtered list of objects
-        """
-        if target == "all":
-            return objects
-
-        if target.startswith("zone:"):
-            zone_name = target.replace("zone:", "").strip()
-            filtered = []
-            for obj in objects:
-                # Try common zone field names
-                zone_field = (
-                    getattr(obj, "Zone_or_ZoneList_Name", None) or
-                    getattr(obj, "Zone_Name", None) or
-                    getattr(obj, "Zone_or_ZoneList_or_Space_or_SpaceList_Name", None)
-                )
-                if zone_field == zone_name:
-                    filtered.append(obj)
-            return filtered
-
-        if target.startswith("name:"):
-            object_name = target.replace("name:", "").strip()
-            for obj in objects:
-                if getattr(obj, "Name", "") == object_name:
-                    return [obj]
-            return []
-
-        # Unknown target pattern - return all
-        logger.warning(f"Unknown target pattern '{target}', returning all objects")
-        return objects
 
     def find_objects(
         self,
@@ -463,392 +500,127 @@ class IDFModifier:
         object_type: str,
         fields: Dict[str, Any],
         output_path: Optional[str] = None,
-        replace_existing: bool = True
+        replace_existing: bool = True,
+        force: bool = False,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
-        """Add a new IDF object with IDD validation.
+        """Add a new object, or update the existing one for singleton types.
 
         Args:
             idf_path: Path to input IDF file
             object_type: EnergyPlus object type (e.g., 'OutputControl:Table:Style')
             fields: Dictionary of field names and values
             output_path: Where to save (auto-generated if None)
-            replace_existing: If True and object exists, modify it instead of creating duplicate (default: True)
+            replace_existing: For singleton types, update the existing object (default True)
+            force: Accept references to objects that do not exist
+            dry_run: Validate and report without saving
 
-        Returns:
-            Dict with success status, new object info, and errors
-
-        Example:
-            modifier = IDFModifier()
-            result = modifier.add_object(
-                idf_path="model.idf",
-                object_type="OutputControl:Table:Style",
-                fields={
-                    "Column_Separator": "CommaAndHTML",
-                    "Unit_Conversion": "JtoKWH"
-                }
-            )
+        A name already used by another object of the same type is refused.
         """
         logger.info(f"Adding new {object_type} object to {idf_path}")
+        idf, failure = self._load(idf_path)
+        if failure:
+            return failure
+        type_key = object_type.strip().upper()
+        existing = idf.idfobjects.get(type_key, []) if type_key in idf.idfobjects else []
+        is_singleton = type_key.replace(":", "").replace(" ", "") in SINGLETON_TYPES
+        index = IDDIndex(idf)
+        items = list(fields.items())
 
-        # Load IDF
-        try:
-            idf = IDF(idf_path)
-        except Exception as e:
-            logger.error(f"Failed to load IDF: {e}")
-            return {"success": False, "error": f"Failed to load IDF: {e}"}
-
-        # Normalize object type - try to preserve original case by checking existing objects
-        object_type_normalized = object_type.upper()
-
-        # Check if objects of this type already exist (case-insensitive search)
-        existing_objects = []
-        for key in idf.idfobjects.keys():
-            if key.upper() == object_type_normalized:
-                existing_objects = idf.idfobjects[key]
-                object_type_normalized = key  # Use the existing case
-                break
-
-        # Determine if this is a singleton object type
-        # Normalize for comparison (remove colons and spaces)
-        singleton_types = {
-            'SIMULATIONCONTROL', 'BUILDING', 'GLOBALGEOMETRYRULES',
-            'SHADOWCALCULATION', 'HEATBALANCEALGORITHM', 'TIMESTEP',
-            'CONVERGANCELIMITS', 'PROGRAMCONTROL', 'VERSION',
-            'OUTPUTCONTROLTABLESTYLE', 'OUTPUTCONTROLREPORTINGTOLERANCES',
-            'OUTPUTCONTROLSIZINGSTYLE', 'OUTPUTDIAGNOSTICS',
-            'PERFORMANCEPRECISIONTRADEOFFS', 'LIFECYCLECOSTPARAMETERS'
-        }
-
-        is_singleton = object_type_normalized.replace(':', '').replace(' ', '') in singleton_types
-
-        # If object exists and replace_existing is True, modify instead of creating duplicate
-        if existing_objects and replace_existing:
-            logger.info(f"Found {len(existing_objects)} existing {object_type} object(s). "
-                       f"{'Modifying first instance (singleton)' if is_singleton else 'Modifying existing objects'}.")
-
-            # For singleton types, modify the first (and should be only) instance
-            if is_singleton:
-                existing_obj = existing_objects[0]
-                return self._modify_existing_object(
-                    idf=idf,
-                    obj=existing_obj,
-                    object_type=object_type,
-                    fields=fields,
-                    idf_path=idf_path,
-                    output_path=output_path
-                )
-
-        # If object exists but replace_existing is False, warn about potential duplicate
-        if existing_objects and not replace_existing:
-            logger.warning(f"Creating new {object_type} object, but {len(existing_objects)} already exist. "
-                          f"This may create duplicates.")
-
-        # Create new object
-        try:
-            new_obj = idf.newidfobject(object_type_normalized)
-        except Exception as e:
-            logger.error(f"Failed to create {object_type} object: {e}")
-            return {
-                "success": False,
-                "error": f"Failed to create {object_type} object: {e}. Object type may not exist in IDD."
+        if existing and replace_existing and is_singleton:
+            obj = existing[0]
+            changes, errors, warnings = self._apply_fields(index, obj, items, force)
+            result: Dict[str, Any] = {
+                "success": False, "input_file": idf_path, "object_type": object_type,
+                "object_created": False, "object_modified": True, "existing_object_updated": True,
+                "fields_set": changes, "fields_set_count": len(changes),
+                "errors": errors, "warnings": warnings,
             }
-
-        # Track what we set
-        set_fields = []
-        errors = []
-
-        # Apply field values with IDD validation
-        for field_name, value in fields.items():
-            try:
-                # Check if field exists in IDD
-                if not hasattr(new_obj, field_name):
-                    # Get valid fields from IDD
-                    valid_fields = new_obj.fieldnames if hasattr(new_obj, 'fieldnames') else []
-                    errors.append({
-                        "field": field_name,
-                        "error": f"Field '{field_name}' not found in {object_type}",
-                        "valid_fields": valid_fields[:10]  # Show first 10 valid fields
-                    })
-                    continue
-
-                # Set the value
-                setattr(new_obj, field_name, value)
-
-                # Validate with IDD
-                try:
-                    if hasattr(new_obj, 'checkrange'):
-                        new_obj.checkrange(field_name)
-                except Exception as range_error:
-                    # Get IDD constraints for error message
-                    field_info = self.get_field_info(new_obj, field_name)
-                    errors.append({
-                        "field": field_name,
-                        "error": f"IDD validation failed: {range_error}",
-                        "constraints": field_info.get("constraints", {}),
-                        "value_attempted": value
-                    })
-                    # Revert the change
-                    setattr(new_obj, field_name, "")
-                    continue
-
-                set_fields.append({
-                    "field": field_name,
-                    "value": value
-                })
-
-            except Exception as e:
-                errors.append({
-                    "field": field_name,
-                    "error": str(e)
-                })
-
-        # Save the modified IDF
-        if not output_path:
-            output_path = self._generate_output_path(idf_path)
+            return self._finish(idf, result, idf_path, output_path, dry_run, bool(changes))
 
         try:
-            idf.save(output_path)
-            logger.info(f"Saved IDF with new {object_type} to {output_path}")
-        except Exception as e:
-            logger.error(f"Failed to save IDF: {e}")
-            return {"success": False, "error": f"Failed to save IDF: {e}"}
+            new_obj = idf.newidfobject(type_key)
+        except Exception as error:
+            logger.error(f"Failed to create {object_type} object: {error}")
+            return {"success": False, "saved": False,
+                    "error": f"Failed to create {object_type} object: {error}. Object type may not exist in IDD."}
 
-        # Build result
+        errors: List[Dict[str, Any]] = []
+        name_field = next((key for key, _ in items if self._field_name(new_obj, key) == "Name"), None)
+        if name_field is not None and "Name" in new_obj.fieldnames:
+            wanted = _fold(fields[name_field])
+            if wanted and any(_fold(getattr(o, "Name", "") or "") == wanted for o in existing if o is not new_obj):
+                errors.append({
+                    "field": "Name", "value": fields[name_field],
+                    "error": f"A {object_type} named '{fields[name_field]}' already exists; EnergyPlus requires unique names",
+                })
+        changes, field_errors, warnings = self._apply_fields(index, new_obj, items, force)
+        errors.extend(field_errors)
         result = {
-            "success": len(set_fields) > 0,
-            "input_file": idf_path,
-            "output_file": output_path,
-            "object_type": object_type,
+            "success": False, "input_file": idf_path, "object_type": object_type,
             "object_created": True,
-            "fields_set": set_fields,
-            "fields_set_count": len(set_fields),
-            "errors": errors
+            "fields_set": [{"field": c["field"], "value": c["new_value"]} for c in changes],
+            "fields_set_count": len(changes), "errors": errors, "warnings": warnings,
         }
-
-        if errors:
-            result["warnings"] = f"{len(errors)} field(s) had errors"
-
-        return result
-
-    def _modify_existing_object(
-        self,
-        idf: Any,
-        obj: Any,
-        object_type: str,
-        fields: Dict[str, Any],
-        idf_path: str,
-        output_path: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Modify an existing IDF object instead of creating a new one.
-
-        Args:
-            idf: Loaded IDF object
-            obj: Existing IDF object to modify
-            object_type: Object type name
-            fields: Fields to update
-            idf_path: Input file path
-            output_path: Output file path
-
-        Returns:
-            Dict with modification results
-        """
-        logger.info(f"Modifying existing {object_type} object instead of creating duplicate")
-
-        set_fields = []
-        errors = []
-
-        # Apply field values with IDD validation
-        for field_name, value in fields.items():
-            try:
-                # Check if field exists in IDD
-                if not hasattr(obj, field_name):
-                    # Get valid fields from IDD
-                    valid_fields = obj.fieldnames if hasattr(obj, 'fieldnames') else []
-                    errors.append({
-                        "field": field_name,
-                        "error": f"Field '{field_name}' not found in {object_type}",
-                        "valid_fields": valid_fields[:10]  # Show first 10 valid fields
-                    })
-                    continue
-
-                # Get old value
-                old_value = getattr(obj, field_name, None)
-
-                # Set the value
-                setattr(obj, field_name, value)
-
-                # Validate with IDD
-                try:
-                    if hasattr(obj, 'checkrange'):
-                        obj.checkrange(field_name)
-
-                    # Success
-                    set_fields.append({
-                        "field": field_name,
-                        "old_value": old_value,
-                        "new_value": value
-                    })
-                    logger.debug(f"Modified {field_name}: {old_value} → {value}")
-
-                except Exception as range_error:
-                    # Get IDD constraints for error message
-                    field_info = self.get_field_info(obj, field_name)
-                    errors.append({
-                        "field": field_name,
-                        "error": f"IDD validation failed: {range_error}",
-                        "constraints": field_info.get("constraints", {}),
-                        "value_attempted": value
-                    })
-                    # Revert the change
-                    setattr(obj, field_name, old_value)
-                    continue
-
-            except Exception as e:
-                errors.append({
-                    "field": field_name,
-                    "error": str(e)
-                })
-
-        # Save the modified IDF
-        if not output_path:
-            output_path = self._generate_output_path(idf_path)
-
-        try:
-            idf.save(output_path)
-            logger.info(f"Saved IDF with modified {object_type} to {output_path}")
-        except Exception as e:
-            logger.error(f"Failed to save IDF: {e}")
-            return {"success": False, "error": f"Failed to save IDF: {e}"}
-
-        # Build result
-        result = {
-            "success": len(set_fields) > 0,
-            "input_file": idf_path,
-            "output_file": output_path,
-            "object_type": object_type,
-            "object_created": False,
-            "object_modified": True,
-            "existing_object_updated": True,
-            "fields_set": set_fields,
-            "fields_set_count": len(set_fields),
-            "errors": errors
-        }
-
-        if errors:
-            result["warnings"] = f"{len(errors)} field(s) had errors"
-
-        return result
+        return self._finish(idf, result, idf_path, output_path, dry_run, True)
 
     def delete_objects(
         self,
         idf_path: str,
         object_type: str,
         target: str = "all",
-        output_path: Optional[str] = None
+        output_path: Optional[str] = None,
+        force: bool = False,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
-        """Delete IDF objects matching the target pattern.
+        """Delete the objects of ``object_type`` that match ``target``.
 
-        Args:
-            idf_path: Path to input IDF file
-            object_type: EnergyPlus object type (e.g., 'Lights', 'People')
-            target: Filter pattern - "all", "zone:ZoneName", "name:ObjectName"
-            output_path: Where to save (auto-generated if None)
-
-        Returns:
-            Dict with deleted_objects, errors, output_file, etc.
-
-        Example:
-            modifier = IDFModifier()
-            result = modifier.delete_objects(
-                idf_path="model.idf",
-                object_type="Lights",
-                target="name:SPACE1-1 Lights"
-            )
+        An object that other objects still refer to (per the IDD's reference
+        declarations) is not deleted; the reply lists who uses it. ``force``
+        deletes anyway and reports the references that now dangle.
         """
         logger.info(f"Deleting {object_type} objects in {idf_path} with target={target}")
-
-        # Load IDF
         try:
-            idf = IDF(idf_path)
-        except Exception as e:
-            logger.error(f"Failed to load IDF: {e}")
-            return {"success": False, "error": f"Failed to load IDF: {e}"}
-
-        # Get objects of this type
-        object_type_normalized = object_type.upper()
-        objects = idf.idfobjects.get(object_type_normalized, [])
-
+            self.parse_target(target)
+        except TargetError as error:
+            return {"success": False, "saved": False, "error": str(error)}
+        idf, failure = self._load(idf_path)
+        if failure:
+            return failure
+        type_key = self._type_key(idf, object_type)
+        objects = idf.idfobjects.get(type_key, []) if type_key else []
         if not objects:
-            return {
-                "success": False,
-                "error": f"No {object_type} objects found in IDF"
-            }
-
-        # Filter targets
+            return {"success": False, "saved": False, "error": f"No {object_type} objects found in IDF"}
         target_objects = self._filter_targets(objects, target)
-
         if not target_objects:
-            return {
-                "success": False,
-                "error": f"No objects match target pattern: {target}"
-            }
+            return {"success": False, "saved": False, "error": f"No objects match target pattern: {target}"}
 
-        # Track deleted objects
-        deleted_objects = []
-        errors = []
-
-        # Delete each target object
-        for obj in target_objects:
-            try:
-                obj_name = getattr(obj, "Name", "Unnamed")
-
-                # Remove the object from IDF
-                idf.removeidfobject(obj)
-
-                deleted_objects.append({
-                    "name": obj_name,
-                    "object_type": object_type
-                })
-
-                logger.debug(f"Deleted {object_type}: {obj_name}")
-
-            except Exception as e:
-                obj_name = getattr(obj, "Name", "Unnamed")
-                errors.append({
-                    "name": obj_name,
-                    "error": str(e)
-                })
-                logger.error(f"Error deleting {obj_name}: {e}")
-
-        # Build result
-        result = {
-            "success": len(deleted_objects) > 0,
-            "deleted_objects": deleted_objects,
-            "deleted_count": len(deleted_objects),
-            "errors": errors,
-            "input_file": idf_path,
-            "object_type": object_type,
-            "target": target
+        index = IDDIndex(idf)
+        deleting = {id(obj) for obj in target_objects}
+        result: Dict[str, Any] = {
+            "success": False, "deleted_objects": [], "errors": [], "warnings": [],
+            "input_file": idf_path, "object_type": object_type, "target": target,
         }
-
-        # Save if any deletions succeeded
-        if len(deleted_objects) > 0:
-            if output_path is None:
-                output_path = self._generate_output_path(idf_path)
-
-            try:
-                idf.save(output_path)
-                result["output_file"] = output_path
-                logger.info(f"Saved modified IDF to {output_path}")
-            except Exception as e:
-                logger.error(f"Failed to save IDF: {e}")
-                result["success"] = False
-                result["errors"].append({"error": f"Failed to save IDF: {e}"})
-        else:
-            result["success"] = False
-            result["error"] = "No objects were deleted"
-
-        return result
+        for obj in target_objects:
+            name = getattr(obj, "Name", "Unnamed")
+            users = index.users_of(obj, exclude=deleting)
+            if users:
+                entry = {
+                    "name": name,
+                    "error": f"{len(users)} object(s) still refer to {obj.key} '{name}'",
+                    "used_by": users[:_USERS_SHOWN], "used_by_count": len(users),
+                }
+                if not force:
+                    entry["hint"] = "Point them at another object first, or pass force=True to delete anyway."
+                    result["errors"].append(entry)
+                    continue
+                result["warnings"].append(entry)
+            result["deleted_objects"].append({"name": name, "object_type": object_type})
+        if not result["errors"]:
+            for obj in target_objects:
+                idf.removeidfobject(obj)
+        result["deleted_count"] = len(result["deleted_objects"]) if not result["errors"] else 0
+        return self._finish(idf, result, idf_path, output_path, dry_run, bool(result["deleted_objects"]))
 
     def _generate_output_path(self, input_path: str) -> str:
         """Generate timestamped output path.
