@@ -16,11 +16,27 @@ For semantic operations (e.g., "reduce lighting power density"), use domain mana
 from typing import Any, Dict, Optional, Literal, List
 import json
 import logging
+from pathlib import Path
 
 from energyplus_mcp_server.utils.idf_modifier import IDFModifier
 from energyplus_mcp_server.utils.path_utils import resolve_idf_path, work_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _same_file(first: str, second: str) -> bool:
+    try:
+        return Path(first).expanduser().resolve() == Path(second).expanduser().resolve()
+    except OSError:
+        return False
+
+
+def _is_within(path: str, folder: str) -> bool:
+    try:
+        Path(path).expanduser().resolve().relative_to(Path(folder).expanduser().resolve())
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 def register(mcp: Any, ep_manager: Any, config: Any) -> None:
@@ -38,6 +54,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         references: Optional[str] = None,
         name_contains: Optional[str] = None,
         limit: Optional[int] = None,
+        force: bool = False,
+        mode: Literal["apply", "dry_run"] = "apply",
     ) -> str:
         """
         Generic IDF modification tool for direct object modifications.
@@ -58,6 +76,25 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         - delete: Delete IDF objects matching the target pattern
         - capabilities: Show available actions and parameters
 
+        Safety rules for modify/add/delete:
+        - All or nothing: if any requested change is invalid, nothing is saved
+          and every problem is listed in errors.
+        - Checked against the IDD: field names (case-insensitive), numeric
+          ranges, allowed choice values, and references to other objects (a
+          Schedule_Name must name a schedule that exists). add refuses a
+          duplicate name.
+        - delete refuses to remove an object other objects still use, and
+          renaming such an object is refused; the reply lists the users.
+          force=True accepts missing references and broken uses (reported as
+          warnings); it never accepts invalid fields, values or duplicates.
+        - target must be "all", "name:<name>" or "zone:<zone>"; names and zones
+          match case-insensitively; anything else is refused.
+        - An original model is never overwritten: output_path may equal
+          idf_path only for a working copy in models/derived/ (where
+          file_utils copy puts copies).
+        - mode="dry_run" checks everything and reports the planned changes
+          without writing.
+
         Parameters:
         - idf_path: Path to the IDF file
         - object_type: EnergyPlus object type (e.g., "OutputControl:Table:Style", "Lights", "Zone")
@@ -68,7 +105,11 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         - limit: (find) Objects returned, 1-100 (default 20); total_matches counts all
         - output_path: Optional output path (if not specified, writes a timestamped copy
           to work/models/derived/). Paths inside sample_files/ or the EnergyPlus
-          installation are rejected; those inputs are read-only.
+          installation are rejected; those inputs are read-only. May equal
+          idf_path only for a working copy in models/derived/.
+        - force: Accept references to missing objects, and deletes/renames that
+          break references (default False)
+        - mode: "apply" (default) or "dry_run" to validate without writing
 
         Examples:
         0. Which setpoint managers set a node (directly or through a NodeList)?
@@ -162,20 +203,20 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                         {
                             "name": "modify",
                             "required": ["idf_path", "object_type", "fields"],
-                            "optional": ["target", "output_path"],
-                            "description": "Modify existing IDF objects with IDD validation"
+                            "optional": ["target", "output_path", "force", "mode"],
+                            "description": "Modify existing IDF objects with IDD validation; all or nothing"
                         },
                         {
                             "name": "add",
                             "required": ["idf_path", "object_type", "fields"],
-                            "optional": ["output_path"],
-                            "description": "Add a new IDF object with IDD validation"
+                            "optional": ["output_path", "force", "mode"],
+                            "description": "Add a new IDF object with IDD validation; duplicate names refused"
                         },
                         {
                             "name": "delete",
                             "required": ["idf_path", "object_type"],
-                            "optional": ["target", "output_path"],
-                            "description": "Delete IDF objects matching target pattern"
+                            "optional": ["target", "output_path", "force", "mode"],
+                            "description": "Delete IDF objects matching target pattern; refused while other objects use them"
                         }
                     ],
                     "target_formats": [
@@ -206,6 +247,16 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             # Accept the same bare or relative names as the other tools, e.g. a
             # model copied into work/models/derived.
             idf_path = resolve_idf_path(config, idf_path)
+            dry_run = mode == "dry_run"
+            if (action in {"modify", "add", "delete"} and output_path
+                    and _same_file(output_path, idf_path)
+                    and not _is_within(idf_path, work_dir(config, "derived"))):
+                return json.dumps({
+                    "success": False, "saved": False,
+                    "error": "output_path is the source model, which is never overwritten. Choose a new "
+                             "output_path, omit it, or copy the model first (file_utils copy puts the "
+                             "copy in models/derived/, where it can be edited in place).",
+                }, indent=2)
 
             if action == "find":
                 result = IDFModifier().find_objects(
@@ -235,7 +286,9 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     object_type=object_type,
                     modifications=modifications,
                     target=target,
-                    output_path=output_path
+                    output_path=output_path,
+                    force=force,
+                    dry_run=dry_run,
                 )
 
                 # Add tool metadata to result
@@ -257,7 +310,9 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     idf_path=idf_path,
                     object_type=object_type,
                     fields=fields,
-                    output_path=output_path
+                    output_path=output_path,
+                    force=force,
+                    dry_run=dry_run,
                 )
 
                 # Add tool metadata to result
@@ -275,7 +330,9 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     idf_path=idf_path,
                     object_type=object_type,
                     target=target,
-                    output_path=output_path
+                    output_path=output_path,
+                    force=force,
+                    dry_run=dry_run,
                 )
 
                 # Add tool metadata to result

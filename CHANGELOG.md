@@ -104,6 +104,27 @@ version `0.1.0`.
   `loop_name` it draws every loop on one page.
 
 ### Fixed
+- **`idf_modification` no longer applies unsafe edits.** Probing it on a
+  five-zone model found that a target without `name:` or `zone:` changed every
+  object of the type, an edit with one invalid field was saved with the
+  others, `output_path` could overwrite the source, and invalid choices,
+  references to missing objects, duplicate names, and deletes of objects still
+  in use were all accepted. Now:
+  - `target` must be `all`, `name:<name>` or `zone:<zone>`; names, zones and
+    field names match case-insensitively; anything else is refused.
+  - Edits are all or nothing: if any requested change fails, nothing is saved
+    and every problem is listed.
+  - Values are checked against the IDD's allowed choices (`\key`), and
+    references against objects that exist (`\object-list`/`\reference`); `add`
+    refuses a duplicate name.
+  - `delete` refuses to remove an object others still use, and renaming one is
+    refused; the reply lists the users. `force=True` accepts missing references
+    and broken uses as warnings, but never invalid fields, values or duplicates.
+  - An original model is never overwritten; a working copy in
+    `models/derived/` may still be edited in place.
+  - `mode="dry_run"` checks and reports without writing.
+  Valid edits produce byte-identical files to before (nine edits checked,
+  including `internal_load_manager`'s Lights update, which shares the editor).
 - **Tools no longer block the server's event loop.** Most tools are `async`
   but did synchronous eppy and file work, so one large IDF load or capability
   scan stalled every other request, including other users' calls and

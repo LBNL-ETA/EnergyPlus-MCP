@@ -70,9 +70,13 @@ accepts. Treat examples as evidence of *structure*; values still need a source.
 7. **Apply on one working copy.** Copy the model first
    (`file_utils(action="copy", ...)`), then call
    `idf_modification(action="add", idf_path=<copy>, output_path=<copy>, object_type=..., fields={...})`
-   once per object, using absolute paths. After each call check `errors`:
-   the file is saved even when a field fails, leaving a partial object, so fix
-   it with `action="modify"` or remove it with `action="delete"` before moving on.
+   once per object, using absolute paths. Each call is all or nothing: if any
+   field fails (unknown field, out-of-range value, invalid choice, a name that
+   already exists, or a reference to an object that does not exist), nothing is
+   saved and `errors` says why; fix the fields and call again. Add referenced
+   objects first. When an object must refer to one you add next, pass
+   `force=True` for that call and check `warnings`. `mode="dry_run"` checks a
+   call without writing.
 8. **Check the result.** `model_preflight(action="validate")` is shallow: it
    checks required objects and construction layers, not every reference, so
    compare each new object's reference fields against objects that exist in
