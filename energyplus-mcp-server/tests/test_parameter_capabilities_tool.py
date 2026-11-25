@@ -82,6 +82,7 @@ def _responses(failing=()):
 
 @pytest.fixture
 def fake_domains(monkeypatch):
+    monkeypatch.setattr(capabilities, "_model_sha256", lambda path: "0" * 64)
     def install(failing=()):
         funcs = _responses(failing)
         monkeypatch.setattr(capabilities, "_domain_capability_function", lambda module: funcs[module])
@@ -242,3 +243,101 @@ def test_http_caller_inspects_own_model_by_name(
     own = str((tmp_path / "users/alice/mine.idf").resolve())
     assert result["success"] is True and result["idf_path"] == own
     assert {path for _, path in calls} == {own}
+
+
+# -- capabilities by file ----------------------------------------------------------------------
+
+
+def _registered(manager=None):
+    class Registry:
+        def tool(self, name=None):
+            def capture(function):
+                self.call = function
+                return function
+            return capture
+
+    registry = Registry()
+    capabilities.register(registry, manager or Manager(), None, ALL_MANAGERS)
+    return registry.call
+
+
+def test_runs_dir_writes_the_full_response_and_replies_with_its_location(fake_domains, tmp_path):
+    import hashlib
+
+    fake_domains()
+    call = _registered()
+
+    reply = json.loads(asyncio.run(call(idf_path="/m/seed.idf", runs_dir=str(tmp_path / "runs"))))
+
+    path = tmp_path / "runs" / "capabilities" / f"{'0' * 64}.json"
+    assert reply["capabilities_path"] == str(path)
+    data = path.read_bytes()
+    assert reply["capabilities_sha256"] == hashlib.sha256(data).hexdigest()
+    assert reply["capabilities_bytes"] == len(data)
+    written = json.loads(data)
+    # The file holds the full response, exactly what the inline route returns for detail="full".
+    inline_full = json.loads(asyncio.run(call(idf_path="/m/seed.idf", detail="full")))
+    assert written == inline_full
+    assert written["detail"] == "full" and written["model_sha256"] == "0" * 64
+    # The reply is short: identity, coverage and the file, not the declarations.
+    assert reply["model_sha256"] == "0" * 64 and reply["coverage"] == written["coverage"]
+    assert "domain_capabilities" not in reply
+    assert len(json.dumps(reply)) < len(data) / 3
+
+
+def test_file_in_runs_dir_is_never_counted_as_a_simulation_run(fake_domains, tmp_path):
+    fake_domains()
+    runs = tmp_path / "runs"
+
+    asyncio.run(_registered()(idf_path="/m/seed.idf", runs_dir=str(runs)))
+
+    # Calibration run counters look for <runs_dir>/*/run_record.json.
+    assert list(runs.glob("*/run_record.json")) == []
+
+
+def test_output_path_and_explicit_detail_are_honoured(fake_domains, tmp_path):
+    fake_domains()
+    target = tmp_path / "nested" / "caps.json"
+
+    reply = json.loads(asyncio.run(_registered()(idf_path="/m/seed.idf", output_path=str(target), detail="summary")))
+
+    assert reply["capabilities_path"] == str(target)
+    assert json.loads(target.read_text())["detail"] == "summary"
+    assert [p.name for p in target.parent.iterdir()] == ["caps.json"]  # no temporary file left
+
+
+def test_inline_reply_is_unchanged_without_a_destination(fake_domains):
+    fake_domains()
+
+    reply = json.loads(asyncio.run(_registered()(idf_path="/m/seed.idf")))
+
+    assert reply["detail"] == "summary" and "domain_capabilities" in reply
+    assert "capabilities_path" not in reply and reply["model_sha256"] == "0" * 64
+
+
+def test_a_failure_is_reported_inline_and_writes_nothing(fake_domains, tmp_path):
+    fake_domains()
+
+    reply = json.loads(asyncio.run(_registered(Manager(missing=True))(
+        idf_path="/m/missing.idf", runs_dir=str(tmp_path / "runs"))))
+
+    assert reply["success"] is False and "capabilities_path" not in reply
+    assert not (tmp_path / "runs").exists()
+
+
+def test_http_caller_cannot_write_capabilities_outside_their_workspace(
+        http_config, as_alice, tmp_path, fake_domains, monkeypatch):
+    from energyplus_mcp_server.utils.output_guard import guard_tool
+
+    fake_domains()
+    manager = _scoped_manager(http_config, monkeypatch)
+    (tmp_path / "users/alice").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "users/alice/mine.idf").write_text("Version,26.1;\n")
+    guarded = guard_tool(_registered(manager), http_config)
+
+    with pytest.raises(Exception):
+        asyncio.run(guarded(idf_path="mine.idf", runs_dir=str(tmp_path / "users/bob/runs")))
+    assert not (tmp_path / "users/bob/runs").exists()
+
+    reply = json.loads(asyncio.run(guarded(idf_path="mine.idf", runs_dir="runs")))
+    assert reply["capabilities_path"].startswith(str((tmp_path / "users/alice").resolve()))

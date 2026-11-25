@@ -14,6 +14,8 @@ from ..utils.hvac_controls import (
 )
 from ..utils.model_cache import read_only_idf, with_shared_models
 from ..utils.schedule_graph import GraphScheduleControlAdapter
+from ..utils import reply_summary
+from ..utils.path_utils import saved_file_reply
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,21 @@ def _parameter_capabilities(ep_manager: Any, idf_path: Optional[str]) -> Dict[st
     return result
 
 
+def _with_saved_file_fields(text: str, config: Any) -> str:
+    """Add workspace_path and how_to_open to a reply that names a saved output_file."""
+    try:
+        reply = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+    output_file = reply.get("output_file") if isinstance(reply, dict) else None
+    if not reply.get("success") or not output_file or not Path(output_file).is_file():
+        return text
+    fields = saved_file_reply(config, output_file)
+    reply["workspace_path"] = fields["workspace_path"]
+    reply["how_to_open"] = fields["how_to_open"]
+    return json.dumps(reply, indent=2)
+
+
 def register(mcp: Any, ep_manager: Any, config: Any) -> None:
     logger.info("domains.hvac.register starting")
     @mcp.tool()
@@ -127,11 +144,16 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         clone_on_write: bool = True,
         deadband_c: float = 1.0,
         setpoint_bounds_c: Optional[List[float]] = None,
+        detail: Literal["summary", "full"] = "summary",
     ) -> str:
         """
         HVAC domain manager (unified).
 
         - discover: list loops and components
+        - inspect_controls: thermostat, availability, outdoor-air and economizer
+          coverage. By default (detail="summary") targets are counts by role and
+          type, and skipped/ambiguous problems are kept; detail="full" lists every
+          target and shared relationship.
         - topology: detailed loop topology for a given loop
         - visualize: draw loop topology and return the file path. The default
           image_format html is a self-contained page (clickable supply/demand
@@ -169,6 +191,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     "input_sha256": sha256(Path(resolved).read_bytes()).hexdigest(),
                     "mode": "inspect",
                 })
+                if action == "inspect_controls" and detail != "full":
+                    payload = reply_summary.hvac_controls(payload)
                 return json.dumps(payload, indent=2)
             if action in CONTROL_OPERATIONS:
                 if value is None:
@@ -226,7 +250,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                     return "Missing required parameter: loop_name"
                 return ep_manager.get_loop_topology(idf_path, loop_name)
             if action == "visualize":
-                return ep_manager.visualize_loop_diagram(idf_path, loop_name, output_path, image_format, show_legend)
+                text = ep_manager.visualize_loop_diagram(idf_path, loop_name, output_path, image_format, show_legend)
+                return _with_saved_file_fields(text, config)
             return f"Unsupported action: {action}"
         except FileNotFoundError as e:
             logger.warning(f"HVAC file not found: {str(e)}")

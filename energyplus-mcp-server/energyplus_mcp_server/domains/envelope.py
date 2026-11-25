@@ -1,8 +1,11 @@
+from pathlib import Path
 from typing import Any, Dict, Optional, Literal, List
 import json
 import logging
 
 from ..utils.model_cache import with_shared_models
+from ..utils import reply_summary
+from ..utils.path_utils import report_path, saved_file_reply
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +69,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         target: Optional[str] = None,  # Material or construction name
         properties: Optional[Dict[str, Any]] = None,  # For material.edit
         layers: Optional[List[str]] = None,  # For construction.edit
-        output_path: Optional[str] = None,  # For modify action only; deprecated for generate_html_str
+        output_path: Optional[str] = None,  # modify output, or where generate_html_str saves the viewer
         # Semantic parameter operations
         parameter: Optional[str] = None,
         value: Optional[float] = None,
@@ -74,6 +77,8 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         assignments: Optional[Dict[str, float]] = None,
         expected_model_sha256: Optional[str] = None,
         mode: Literal["apply", "dry_run"] = "apply",
+        detail: Literal["summary", "full"] = "summary",
+        return_html: bool = False,
     ) -> str:
         """
         Envelope domain manager for building envelope components.
@@ -81,7 +86,9 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         Actions:
         - inspect: Get comprehensive envelope data (surfaces, constructions, materials, relationships)
         - modify: Edit material properties or construction layers (optionally specify output_path for modified IDF)
-        - generate_html_str: Generate interactive HTML visualization of envelope relationships as string
+        - generate_html_str: Save the interactive envelope viewer to reports/ (or
+          output_path) and reply with its path and size; return_html=True
+          returns the page itself instead
         - parameter_capabilities: Model-specific support for INF, WIN-U, and WIN-SHGC
         - inspect_parameter: Inspect canonical absolute semantic targets
         - adjust_percentage: Apply a signed semantic percentage change to a new IDF
@@ -92,6 +99,10 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             action: The operation to perform
             idf_path: Path to the IDF file (required for all actions except capabilities)
             focus: Level of detail for inspect action (all/surfaces/constructions/materials/relationships)
+            detail: inspect with focus="all" returns the summary, constructions,
+                materials and relationships, with surfaces as counts ("summary",
+                the default); "full" adds every surface. focus="surfaces" always
+                lists every surface.
             op: Operation type for modify action (material.edit/construction.edit)
             target: Material or construction name for modify action
             properties: Dictionary of material properties for material.edit
@@ -261,13 +272,22 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             
             # Handle HTML generation
             if action == "generate_html_str":
-                return ep_manager.generate_envelope_html(idf_path)
+                html = ep_manager.generate_envelope_html(idf_path)
+                if return_html:
+                    return html
+                target = output_path or report_path(config, f"{Path(idf_path).stem}_envelope.html")
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                Path(target).write_text(html, encoding="utf-8")
+                return json.dumps(saved_file_reply(config, target, action="generate_html_str", viewer="envelope"))
             
             # Handle inspection
             if action == "inspect":
                 if focus == "all":
                     # Comprehensive inspection
-                    return ep_manager.inspect_envelope_comprehensive(idf_path)
+                    text = ep_manager.inspect_envelope_comprehensive(idf_path)
+                    if detail == "full":
+                        return text
+                    return reply_summary.summarize_text(text, reply_summary.envelope_inspection)
                 elif focus == "surfaces":
                     return ep_manager.get_surfaces(idf_path)
                 elif focus == "constructions":

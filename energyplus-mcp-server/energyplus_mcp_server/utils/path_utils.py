@@ -12,7 +12,7 @@ See License.txt in the parent directory for license details.
 
 import os
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 import fnmatch
 import difflib
 
@@ -321,6 +321,38 @@ def derived_model_path(config: Config, source_path: str, suffix: str = "_modifie
     directory = Path(work_dir(config, "derived"))
     directory.mkdir(parents=True, exist_ok=True)
     return str(directory / f"{source.stem}{suffix}{source.suffix or '.idf'}")
+
+
+def workspace_relative(config: Config, path: str) -> Optional[str]:
+    """``path`` relative to the caller's workspace (over HTTP) or the server workspace
+    (over stdio), or None when it lies outside it.
+
+    Agents can pass this short form back to tools and to file_transfer; the
+    absolute path of a hosted server's container means nothing to them.
+    """
+    scope = _current_scope(config)
+    root = Path(scope.user_root) if scope is not None else Path(config.paths.workspace_root)
+    try:
+        return Path(path).resolve().relative_to(root.resolve()).as_posix()
+    except (ValueError, OSError):
+        return None
+
+
+def saved_file_reply(config: Config, path: str, **extra: Any) -> Dict[str, Any]:
+    """A short reply describing a file a tool wrote, instead of its contents."""
+    file = Path(path)
+    relative = workspace_relative(config, str(file))
+    reply: Dict[str, Any] = {"success": True, "output_file": str(file), "workspace_path": relative,
+                             "bytes": file.stat().st_size}
+    reply.update(extra)
+    if _current_scope(config) is not None:
+        reply["how_to_open"] = (
+            f"Call file_transfer(action='request_download', path='{relative or file}') "
+            "and open the downloaded file in a browser."
+        )
+    else:
+        reply["how_to_open"] = "Open output_file in a browser."
+    return reply
 
 
 def report_path(config: Config, filename: str) -> str:
