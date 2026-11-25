@@ -49,6 +49,18 @@ version `0.1.0`.
   call ends and fails if one was changed in memory.
 
 ### Added
+- `parameter_capabilities` reports are tamper-evident: `report_sha256` is
+  the SHA-256 of the report's own content (sorted-key compact JSON without
+  that field; the method is stated in `report_digest_method`), in the inline
+  reply, the file, and the short file-mode reply.
+  `domains.capabilities.verify_report_digest` is the reference check for
+  consumers. A rewritten copy, such as one with `coverage` removed from a
+  declaration, which calibration gates currently accept, fails it.
+- `parameter_capabilities` enforces the capability contract at runtime:
+  every declaration must state `coverage` (complete, partial, none,
+  ambiguous or unverified) and a boolean `supported`, true only with
+  complete coverage. A manager that breaks it is listed in `errors` and the
+  report has `success: false`, so a consumer never has to guess coverage.
 - `parameter_capabilities` takes `runs_dir` or `output_path` and then writes
   the full response (`detail="full"` unless given) to
   `<runs_dir>/capabilities/<model_sha256>.json` or `output_path`, replying

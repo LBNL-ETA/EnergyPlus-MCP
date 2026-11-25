@@ -54,6 +54,66 @@ SHARED_FIELDS = (
 CAPABILITIES_SUBDIR = "capabilities"
 
 
+COVERAGE_VALUES = ("complete", "partial", "none", "ambiguous", "unverified")
+DIGEST_FIELD = "report_sha256"
+DIGEST_METHOD = (
+    "SHA-256 of the UTF-8 JSON of this report without the report_sha256 field, "
+    "encoded with sorted keys, separators (',', ':') and ensure_ascii=False"
+)
+
+
+def declaration_problems(manager: str, parameters: Any) -> List[str]:
+    """Contract every parameter declaration must meet; consumers rely on it.
+
+    Each declaration states ``coverage`` (one of COVERAGE_VALUES) and a boolean
+    ``supported``, and ``supported`` is only true with complete coverage. A
+    consumer must never have to guess a missing coverage.
+    """
+    if not isinstance(parameters, dict):
+        return [f"{manager}: parameters is not an object"]
+    problems: List[str] = []
+    for name, declaration in parameters.items():
+        if not isinstance(declaration, dict):
+            problems.append(f"{manager}.{name}: declaration is not an object")
+            continue
+        coverage = declaration.get("coverage")
+        supported = declaration.get("supported")
+        if coverage not in COVERAGE_VALUES:
+            problems.append(f"{manager}.{name}: coverage {coverage!r} is not one of {', '.join(COVERAGE_VALUES)}")
+        if not isinstance(supported, bool):
+            problems.append(f"{manager}.{name}: supported must be true or false, not {supported!r}")
+        elif supported and coverage in COVERAGE_VALUES and coverage != "complete":
+            problems.append(f"{manager}.{name}: supported is true but coverage is {coverage!r}")
+    return problems
+
+
+def report_digest(report: Dict[str, Any]) -> str:
+    """SHA-256 of a capability report's content (see DIGEST_METHOD)."""
+    body = {key: value for key, value in report.items() if key != DIGEST_FIELD}
+    text = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def verify_report_digest(report: Any) -> bool:
+    """True when ``report`` carries a report_sha256 that matches its content.
+
+    Reference implementation for consumers: any change to the report after it
+    left EnergyPlus-MCP (a dropped field, a moved key, an edited value) fails.
+    """
+    return (
+        isinstance(report, dict)
+        and isinstance(report.get(DIGEST_FIELD), str)
+        and report[DIGEST_FIELD] == report_digest(report)
+    )
+
+
+def _sealed(report: Dict[str, Any]) -> Dict[str, Any]:
+    report.pop(DIGEST_FIELD, None)
+    report["report_digest_method"] = DIGEST_METHOD
+    report[DIGEST_FIELD] = report_digest(report)
+    return report
+
+
 def _model_sha256(path: str) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -121,7 +181,7 @@ def combined_capabilities(
                 "Copy-upgrade the model with model_upgrade(action='run', idf_path=..., "
                 "output_directory=<new folder>) and pass the upgraded IDF."
             )
-        return failure
+        return _sealed(failure)
     responses: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
     for _, manager, module_name in PARAMETER_DOMAINS:
@@ -142,6 +202,10 @@ def combined_capabilities(
         response.setdefault("tool", manager)
         response.setdefault("manager", manager)
         response["action"] = "parameter_capabilities"
+        problems = declaration_problems(manager, response.get("parameters", {}))
+        if problems:
+            # Never let a consumer infer a missing or inconsistent coverage.
+            errors.append({"manager": manager, "error": "capability contract violated: " + "; ".join(problems)})
         responses.append(response)
 
     # Stated by this tool, not borrowed from whichever manager reports them:
@@ -181,14 +245,15 @@ def combined_capabilities(
             "This is the aggregate of every enabled domain manager's "
             "parameter_capabilities. Pass the whole response unchanged as "
             "`capabilities` to a consumer gate (for example calibration "
-            "check_model_meters and check_measure_reach); do not rebuild it."
+            "check_model_meters and check_measure_reach); do not rebuild it. "
+            "report_sha256 covers the whole report, so any edited copy is detectable."
         ),
     }
     if detail == "summary":
         result["omitted_fields"] = list(BULKY_FIELDS)
     if errors:
         result["errors"] = errors
-    return result
+    return _sealed(result)
 
 
 def write_capabilities_file(result: Dict[str, Any], path: Path) -> Dict[str, Any]:
@@ -214,7 +279,8 @@ def write_capabilities_file(result: Dict[str, Any], path: Path) -> Dict[str, Any
 def file_reply(result: Dict[str, Any], written: Dict[str, Any]) -> Dict[str, Any]:
     """Short reply naming the file instead of repeating the response."""
     keys = ("success", "ready", "tool", "action", "model_format", "idf_path", "model_sha256",
-            "energyplus_version", "model_version", "detail", "managers", "coverage", "errors")
+            "energyplus_version", "model_version", "detail", "managers", "coverage", "errors",
+            DIGEST_FIELD)
     reply = {key: result[key] for key in keys if key in result}
     reply.update(written)
     reply["usage"] = (
@@ -267,6 +333,11 @@ def register(mcp: Any, ep_manager: Any, config: Any, managers: Sequence[str]) ->
         capabilities_sha256, model_sha256 and the coverage index. A calibration
         gate can then read the file directly. Without either argument the
         response is returned inline (detail="summary" unless given).
+
+        Every declaration states coverage and supported; a manager that does
+        not is reported in errors and fails the report. report_sha256 is a
+        digest of the whole report (method in report_digest_method), so a
+        consumer can refuse any copy that was edited on the way.
         """
         try:
             to_file = bool(runs_dir or output_path)
