@@ -1,9 +1,11 @@
+from pathlib import Path
 from typing import Any, Dict, Optional, Literal, List
 import json
 import logging
 
 from ..utils.model_cache import with_shared_models
 from ..utils import reply_summary
+from ..utils.path_utils import report_path, saved_file_reply
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +69,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         target: Optional[str] = None,  # Material or construction name
         properties: Optional[Dict[str, Any]] = None,  # For material.edit
         layers: Optional[List[str]] = None,  # For construction.edit
-        output_path: Optional[str] = None,  # For modify action only; deprecated for generate_html_str
+        output_path: Optional[str] = None,  # modify output, or where generate_html_str saves the viewer
         # Semantic parameter operations
         parameter: Optional[str] = None,
         value: Optional[float] = None,
@@ -76,6 +78,7 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         expected_model_sha256: Optional[str] = None,
         mode: Literal["apply", "dry_run"] = "apply",
         detail: Literal["summary", "full"] = "summary",
+        return_html: bool = False,
     ) -> str:
         """
         Envelope domain manager for building envelope components.
@@ -83,7 +86,9 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         Actions:
         - inspect: Get comprehensive envelope data (surfaces, constructions, materials, relationships)
         - modify: Edit material properties or construction layers (optionally specify output_path for modified IDF)
-        - generate_html_str: Generate interactive HTML visualization of envelope relationships as string
+        - generate_html_str: Save the interactive envelope viewer to reports/ (or
+          output_path) and reply with its path and size; return_html=True
+          returns the page itself instead
         - parameter_capabilities: Model-specific support for INF, WIN-U, and WIN-SHGC
         - inspect_parameter: Inspect canonical absolute semantic targets
         - adjust_percentage: Apply a signed semantic percentage change to a new IDF
@@ -267,7 +272,13 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
             
             # Handle HTML generation
             if action == "generate_html_str":
-                return ep_manager.generate_envelope_html(idf_path)
+                html = ep_manager.generate_envelope_html(idf_path)
+                if return_html:
+                    return html
+                target = output_path or report_path(config, f"{Path(idf_path).stem}_envelope.html")
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                Path(target).write_text(html, encoding="utf-8")
+                return json.dumps(saved_file_reply(config, target, action="generate_html_str", viewer="envelope"))
             
             # Handle inspection
             if action == "inspect":

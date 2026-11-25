@@ -4,10 +4,13 @@ Geometry domain manager tool.
 Provides actions for extracting, analyzing, and visualizing building geometry.
 """
 
+from pathlib import Path
 from typing import Any, Optional, Literal
+import json
 import logging
 
 from ..utils import reply_summary
+from ..utils.path_utils import report_path, saved_file_reply
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +24,18 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
         action: Literal["extract_and_summary", "generate_html_str", "capabilities"],
         idf_path: Optional[str] = None,
         pretty: bool = True,
-        output_path: Optional[str] = None,  # Deprecated, kept for backwards compatibility
+        output_path: Optional[str] = None,  # generate_html_str: where to save the viewer
         detail: Literal["summary", "full"] = "summary",
+        return_html: bool = False,
     ) -> str:
         """
         Geometry domain manager for building geometry operations.
 
         Actions:
         - extract_and_summary: Extract building geometry with summary in single JSON response
-        - generate_html_str: Generate interactive 3D HTML viewer as string
+        - generate_html_str: Save the interactive 3D HTML viewer to reports/ (or
+          output_path) and reply with its path and size; return_html=True
+          returns the page itself instead
         - capabilities: List available actions and parameters
 
         Args:
@@ -74,7 +80,13 @@ def register(mcp: Any, ep_manager: Any, config: Any) -> None:
                 return reply_summary.summarize_text(text, reply_summary.geometry_summary, indent=2 if pretty else None)
 
             if action == "generate_html_str":
-                return ep_manager.generate_geometry_html(idf_path)
+                html = ep_manager.generate_geometry_html(idf_path)
+                if return_html:
+                    return html
+                target = output_path or report_path(config, f"{Path(idf_path).stem}_geometry.html")
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                Path(target).write_text(html, encoding="utf-8")
+                return json.dumps(saved_file_reply(config, target, action="generate_html_str", viewer="geometry"))
 
             return f'{{"error":"Unsupported action: {action}"}}'
             
