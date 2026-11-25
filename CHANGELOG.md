@@ -10,6 +10,25 @@ version `0.1.0`.
 ## [Unreleased]
 
 ### Changed
+- **Tool replies are 80–96 percent smaller.** For a typical set of read
+  calls an agent now receives 59 KB instead of 300 KB on a five-zone model,
+  and 55 KB instead of 1,339 KB on a 950 KB OpenStudio-generated model:
+  - Every JSON reply is sent without indentation (25–57 percent of each
+    reply); `MCP_COMPACT_JSON=0` restores the tools' own formatting.
+  - `schedule_manager` `inspect`, `geometry_manager` `extract_and_summary`,
+    `envelope_manager` `inspect` (focus `all`) and `hvac_manager`
+    `inspect_controls` return a summary by default and take
+    `detail="full"` for the previous reply, which is unchanged. Summaries
+    keep problems (skipped, ambiguous, invalid, missing items) and the
+    schedule consumers that edits refer to while there are at most 100; a
+    list is never truncated, only replaced by counts, and each summary says
+    what it omitted and how to get it.
+  - `geometry_manager` and `envelope_manager` `generate_html_str` save the
+    viewer to `reports/` (or `output_path`) and reply with its path and
+    size; `return_html=True` returns the page inline as before.
+  - Replies that name a saved file include `workspace_path`, relative to
+    the caller's workspace, and `how_to_open` (over HTTP, a `file_transfer`
+    download), instead of only the server's absolute path.
 - **Capability checks and model parsing are about ten times faster.** The
   aggregate `parameter_capabilities` call on six test models went from
   0.11–5.10 s to 0.02–0.50 s locally (5-zone model: 2.09 s to 0.19 s;
@@ -30,6 +49,15 @@ version `0.1.0`.
   call ends and fails if one was changed in memory.
 
 ### Added
+- `parameter_capabilities` takes `runs_dir` or `output_path` and then writes
+  the full response (`detail="full"` unless given) to
+  `<runs_dir>/capabilities/<model_sha256>.json` or `output_path`, replying
+  with `capabilities_path`, `capabilities_sha256`, `model_sha256` and the
+  coverage index (3 KB instead of 38 KB on a five-zone model). A consumer
+  such as the calibration gates can read the file instead of the agent
+  copying the response; calibration run counting only looks for
+  `<runs_dir>/*/run_record.json`, so the file is never counted as a run.
+  The response also states `model_sha256` at the top level.
 - Google sign-in (OAuth) for the streamable-HTTP transport, for clients such
   as ChatGPT apps that cannot send a fixed bearer token. Set `MCP_OAUTH` and
   `MCP_PUBLIC_BASE_URL`; only listed emails get in, each mapped to a workspace

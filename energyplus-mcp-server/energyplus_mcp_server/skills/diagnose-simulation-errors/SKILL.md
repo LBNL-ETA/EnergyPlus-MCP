@@ -73,7 +73,7 @@ EnergyPlus 26.1 messages, where to look, and the usual fix.
    | `missing_reference`, `duplicate_name` | `idf_modification(action="find", references=<name>)` shows whether the name is defined and who uses it; the owning manager's `inspect` (e.g. `schedule_manager(action="inspect")`, `envelope_manager(action="inspect", focus="constructions")`) for candidates |
    | `node_connection`, `setpoint` | `idf_modification(action="find", references=<node>)` lists every object on the node, including setpoint managers that reach it through a NodeList; `hvac_manager(action="discover")` and `hvac_manager(action="topology", loop_name=...)` for the loop around it |
    | `sizing`, `weather` | `model_preflight(action="readiness", weather_file=...)`, `model_preflight(action="info")` |
-   | `geometry` | `geometry_manager(action="extract_and_summary")`, `envelope_manager(action="inspect", focus="surfaces")` |
+   | `geometry` | `geometry_manager(action="extract_and_summary", detail="full")` (the default summary omits vertices), `envelope_manager(action="inspect", focus="surfaces")` |
    | other or none | `reference_docs(action="search", query=...)` with the message's key words |
 
 5. **Confirm what the message means.** Look it up rather than guess:
