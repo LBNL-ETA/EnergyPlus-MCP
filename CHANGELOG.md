@@ -104,6 +104,22 @@ version `0.1.0`.
   `loop_name` it draws every loop on one page.
 
 ### Fixed
+- **HVAC availability is no longer advertised as a supported percentage
+  edit.** HVAC availability schedules are on/off, and EnergyPlus treats any
+  value above 0 as available, so scaling them barely changes operating
+  hours; yet `parameter_capabilities` reported
+  `hvac_availability_schedule` as `adjust_percentage` with complete
+  coverage.
+  - `schedule_manager` now declares `hvac_availability_schedule` with
+    `coverage: none`, `supported: false`, `status: not_implemented`, no
+    action, and the reason in `limitations` (on a model it also reports
+    `availability_consumer_count`).
+  - `schedule_manager(action="adjust_percentage", scope="hvac_availability")`
+    is refused; `adjust_percentage` covers `lighting` and
+    `electric_equipment` only. The generic `edit` action is unchanged.
+  - `hvac_manager` `control_capabilities` keeps reporting the reach of
+    `availability_schedule_adjustment` but marks it `supported: false` with
+    the same limitation, and its plans carry that limitation.
 - **`idf_modification` no longer applies unsafe edits.** Probing it on a
   five-zone model found that a target without `name:` or `zone:` changed every
   object of the type, an edit with one invalid field was saved with the
