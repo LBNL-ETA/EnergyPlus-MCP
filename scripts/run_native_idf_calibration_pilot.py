@@ -59,7 +59,6 @@ EXPECTED_GENERIC_PARAMETER_ACTIONS = {
     "schedule_manager": {
         "lighting_schedule": "adjust_percentage",
         "equipment_schedule": "adjust_percentage",
-        "hvac_availability_schedule": "adjust_percentage",
     },
     "hvac_manager": {
         "COP": "adjust_percentage",

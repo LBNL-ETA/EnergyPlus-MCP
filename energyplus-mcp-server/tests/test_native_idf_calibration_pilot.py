@@ -141,7 +141,7 @@ def test_generic_domain_capability_smoke_uses_provider_recipes_and_hashes(tmp_pa
                 "supported": True, "coverage": "complete", "action": "adjust_percentage",
             },
             "hvac_availability_schedule": {
-                "supported": True, "coverage": "complete", "action": "adjust_percentage",
+                "supported": False, "coverage": "none", "action": None,
             },
         },
         "hvac_manager": {

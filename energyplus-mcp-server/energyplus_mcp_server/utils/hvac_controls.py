@@ -41,6 +41,11 @@ MODEL_FORMAT = "idf"
 DEFAULT_DEADBAND_C = 1.0
 DEFAULT_SETPOINT_BOUNDS_C = (-60.0, 60.0)
 DEFAULT_AVAILABILITY_BOUNDS = (0.0, 1.0)
+AVAILABILITY_SCALING_LIMITATION = (
+    "HVAC availability schedules are on/off: EnergyPlus treats any value above 0 as "
+    "available, so scaling their values barely changes operating hours. This is not "
+    "an operating-hours adjustment."
+)
 
 OPERATIONS = (
     "heating_setpoint_delta",
@@ -211,8 +216,11 @@ def control_capabilities(
             },
             "availability_schedule_adjustment": {
                 **status(availability["targets"], availability["skipped"], availability["ambiguous"], adapter=True),
+                # Reachable, but not a meaningful operating-hours parameter.
+                "supported": False,
                 "units": "percent",
                 "value_semantics": "signed percentage scaling of availability schedule values",
+                "limitations": [AVAILABILITY_SCALING_LIMITATION],
             },
             "outdoor_air_flow_adjustment": {
                 **status(outdoor_air["targets"], outdoor_air["skipped"], outdoor_air["ambiguous"]),
@@ -282,6 +290,7 @@ def plan_control_operation(
             idf, percent, targets, skipped, ambiguous, inspection["availability"],
             schedule_adapter, clone_on_write, expected_model_sha256, dry_run, output_path,
         ))
+        base["limitations"].append(AVAILABILITY_SCALING_LIMITATION)
     elif canonical == "outdoor_air_flow_adjustment":
         percent = _percentage(value, "outdoor-air adjustment")
         targets, skipped, ambiguous = _select_zone_targets(

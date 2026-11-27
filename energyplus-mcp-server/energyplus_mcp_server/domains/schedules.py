@@ -14,8 +14,44 @@ from ..utils import reply_summary
 SCHEDULE_SCOPES = {
     "lighting_schedule": "lighting",
     "equipment_schedule": "electric_equipment",
-    "hvac_availability_schedule": "hvac_availability",
 }
+
+# HVAC availability schedules are on/off: EnergyPlus treats any value above
+# zero as "available", so scaling them leaves operating hours almost
+# unchanged. Changing operating hours means moving the on/off window (and the
+# thermostat setpoints over the moved hours), which is not implemented yet.
+HVAC_AVAILABILITY_OPERATION = "hvac_availability_schedule"
+HVAC_AVAILABILITY_LIMITATION = (
+    "HVAC availability schedules are on/off: EnergyPlus treats any value above 0 as "
+    "available, so a percentage scaling barely changes operating hours. Changing "
+    "operating hours (moving the on/off window and coordinating thermostat setpoints "
+    "over the changed hours) is not implemented."
+)
+
+
+def _hvac_availability_declaration(service: Optional[ScheduleEditor], idf_path: Optional[str]) -> Dict[str, Any]:
+    """Explicitly unsupported: no operation here changes HVAC operating hours."""
+    declaration: Dict[str, Any] = {
+        "operation": HVAC_AVAILABILITY_OPERATION,
+        "scope": "hvac_availability",
+        "coverage": "none",
+        "supported": False,
+        "status": "not_implemented",
+        "tool": "schedule_manager",
+        "manager": "schedule_manager",
+        "action": None,
+        "capability_action": "parameter_capabilities",
+        "inspect_action": "inspect",
+        "operations": [],
+        "limitations": [HVAC_AVAILABILITY_LIMITATION],
+        "applicable_field_count": 0,
+    }
+    if service is not None and idf_path:
+        inspection = service.inspect(idf_path, "hvac_availability")
+        declaration["availability_consumer_count"] = len(inspection.get("consumers", []))
+        declaration["input_file"] = inspection.get("input_file")
+        declaration["input_sha256"] = inspection.get("input_sha256")
+    return declaration
 
 
 def _editor(ep_manager: Any) -> ScheduleEditor:
@@ -55,6 +91,7 @@ def _parameter_capabilities(ep_manager: Any, idf_path: Optional[str]) -> Dict[st
                 "minimum_inclusive": True,
                 "applicable_field_count": 0,
             }
+        result["parameters"][HVAC_AVAILABILITY_OPERATION] = _hvac_availability_declaration(None, None)
         return result
 
     service = _editor(ep_manager)
@@ -105,6 +142,7 @@ def _parameter_capabilities(ep_manager: Any, idf_path: Optional[str]) -> Dict[st
             "warnings": plan.get("warnings", []),
             "limitations": plan.get("limitations", []),
         }
+    result["parameters"][HVAC_AVAILABILITY_OPERATION] = _hvac_availability_declaration(service, idf_path)
     return result
 
 
@@ -203,7 +241,8 @@ def register(
                         "optional": ["output_path", "target_ids", "bounds", "clone_on_write", "expected_model_sha256", "mode"],
                     },
                     {"name": "parameter_capabilities", "required": [], "optional": ["idf_path"]},
-                    {"name": "adjust_percentage", "required": ["idf_path", "scope", "percentage_change"], "optional": ["output_path", "expected_model_sha256", "mode"]},
+                    {"name": "adjust_percentage", "required": ["idf_path", "scope", "percentage_change"], "optional": ["output_path", "expected_model_sha256", "mode"],
+                     "scopes": sorted(SCHEDULE_SCOPES.values())},
                 ],
                 "operations": {
                     "scale": {"value_semantics": "finite multiplier"},
@@ -231,10 +270,18 @@ def register(
                     inspection = reply_summary.schedule_inspection(inspection)
                 return json.dumps(inspection, indent=2)
             if action == "adjust_percentage":
+                if scope == "hvac_availability":
+                    return json.dumps({
+                        "success": False,
+                        "operation": HVAC_AVAILABILITY_OPERATION,
+                        "coverage": "none",
+                        "supported": False,
+                        "error": "adjust_percentage does not support hvac_availability. " + HVAC_AVAILABILITY_LIMITATION,
+                    })
                 if scope not in SCHEDULE_SCOPES.values():
                     return json.dumps({
                         "success": False,
-                        "error": "adjust_percentage scope must be lighting, electric_equipment, or hvac_availability",
+                        "error": "adjust_percentage scope must be lighting or electric_equipment",
                     })
                 requested_percent = percentage_change if percentage_change is not None else value
                 try:

@@ -136,8 +136,11 @@ def test_capabilities_and_inspection_cover_supported_hvac_control_families():
     assert {target["role"] for target in inspection["thermostats"]["targets"]} == {"heating", "cooling"}
     assert inspection["outdoor_air"]["targets"][0]["method"] == "Sum"
     assert inspection["economizers"]["targets"][0]["control_type"] == "NoEconomizer"
-    assert all(detail["coverage"] == "complete" and detail["supported"]
-               for detail in capabilities["operations"].values())
+    assert all(detail["coverage"] == "complete" for detail in capabilities["operations"].values())
+    availability = capabilities["operations"].pop("availability_schedule_adjustment")
+    # Reachable, but scaling an on/off schedule does not change operating hours.
+    assert availability["supported"] is False and "on/off" in availability["limitations"][0]
+    assert all(detail["supported"] for detail in capabilities["operations"].values())
 
 
 def test_heating_plan_checks_deadband_and_passes_clone_safe_adapter_contract():
